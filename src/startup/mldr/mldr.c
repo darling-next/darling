@@ -886,11 +886,12 @@ static void setup_space(struct load_results* lr, bool is_64_bit) {
 
 	struct rlimit limit;
 	getrlimit(RLIMIT_STACK, &limit);
-	// allocate a few pages 16 pages if it's less than the limit; otherwise, allocate the limit
-	unsigned long size = PAGE_SIZE * 16;
-	if (limit.rlim_cur != RLIM_INFINITY && limit.rlim_cur < size) {
-		size = limit.rlim_cur;
-	}
+	// Reserve the permitted stack range, not just its first 64 KiB. A successful
+	// MAP_GROWSDOWN mapping can still be unable to expand when another mapping
+	// lies below it (including after the kernel-chosen EEXIST fallback). Pages
+	// remain demand-paged; an unlimited stack starts with Darwin's 8 MiB default.
+	unsigned long size = limit.rlim_cur == RLIM_INFINITY
+			? 8UL * 1024 * 1024 : limit.rlim_cur;
 
 	// dar-stackmmap-eexist-9j9: the preferred fixed range [preferred_top - size,
 	// preferred_top) sits just below the commpage. For some guests the process's
