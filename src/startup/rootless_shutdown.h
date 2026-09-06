@@ -3,6 +3,6 @@
 
 #include <sys/types.h>
 
-int shutdown_rootless_process_session(pid_t member);
+int shutdown_rootless_process_tree(pid_t leader);
 
 #endif

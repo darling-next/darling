@@ -307,9 +307,9 @@ int main(int argc, char ** argv)
 		fclose(file);
 
 		if (rootless) {
-			int shutdown_result = shutdown_rootless_process_session(launchd_pid);
+			int shutdown_result = shutdown_rootless_process_tree(launchd_pid);
 			if (shutdown_result != 0) {
-				fprintf(stderr, "Failed to stop rootless Darling session: %s\n",
+				fprintf(stderr, "Failed to stop rootless Darling guest processes: %s\n",
 					strerror(-shutdown_result));
 				return 1;
 			}
