@@ -289,34 +289,34 @@ int main(int argc, char ** argv)
 			return 1;
 		}
 
-		// TODO: when we have a working launchd,
-		// this is where we ask it to shut down nicely
-
-		char path_buf[128];
-		FILE* file;
-		pid_t launchd_pid;
-		snprintf(path_buf, sizeof(path_buf), "/proc/%d/task/%d/children", pidInit, pidInit);
-		file = fopen(path_buf, "r");
-		if (!file || fscanf(file, "%d", &launchd_pid) != 1) {
-			fprintf(stderr, "Failed to shutdown Darling container\n");
-			if (file) {
-				fclose(file);
-			}
-			return 1;
-		}
-		fclose(file);
 
 		if (rootless) {
-			int shutdown_result = shutdown_rootless_process_tree(launchd_pid);
+			int shutdown_result = shutdown_rootless_process_tree(pidInit);
 			if (shutdown_result != 0) {
 				fprintf(stderr, "Failed to stop rootless Darling guest processes: %s\n",
 					strerror(-shutdown_result));
 				return 1;
 			}
 		} else {
+			// TODO: when we have a working launchd,
+			// this is where we ask it to shut down nicely
+
+			char path_buf[128];
+			FILE* file;
+			pid_t launchd_pid;
+			snprintf(path_buf, sizeof(path_buf), "/proc/%d/task/%d/children", pidInit, pidInit);
+			file = fopen(path_buf, "r");
+			if (!file || fscanf(file, "%d", &launchd_pid) != 1) {
+				fprintf(stderr, "Failed to shutdown Darling container\n");
+				if (file) {
+					fclose(file);
+				}
+				return 1;
+			}
+			fclose(file);
 			kill(launchd_pid, SIGKILL);
+			kill(pidInit, SIGKILL);
 		}
-		kill(pidInit, SIGKILL);
 		removeRuntimeStateFiles();
 		return 0;
 	}

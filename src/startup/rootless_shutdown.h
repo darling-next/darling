@@ -3,6 +3,8 @@
 
 #include <sys/types.h>
 
-int shutdown_rootless_process_tree(pid_t leader);
+/* The server must be the rootless prefix's live Linux child subreaper.
+ * Success means all guests exited before the pinned server was terminated. */
+int shutdown_rootless_process_tree(pid_t server);
 
 #endif
