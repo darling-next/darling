@@ -23,6 +23,7 @@ foreach(_homebrew_command IN ITEMS
 	"lipo_shim|/usr/bin/lipo" "otool_shim|/usr/bin/otool" "nm_shim|/usr/bin/nm"
 	"strip_shim|/usr/bin/strip" "install_name_tool_shim|/usr/bin/install_name_tool"
 	"ffi|/usr/lib/libffi.dylib"
+	"CoreServices|/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
 	"ranlib_shim|/usr/bin/ranlib" "dsymutil_shim|/usr/bin/dsymutil")
 	string(REPLACE "|" ";" _homebrew_parts "${_homebrew_command}")
 	list(GET _homebrew_parts 0 _homebrew_target)
