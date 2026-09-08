@@ -200,6 +200,7 @@ int darling_runtime_mode_stat_relative(
 	size_t error_size
 );
 
+/* With missing_ok, concurrent disappearance is successful cleanup too. */
 int darling_runtime_mode_unlink_relative(
 	const darling_runtime_prefix handle,
 	const char* relative,

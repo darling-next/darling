@@ -732,6 +732,8 @@ int darling_runtime_mode_unlink_relative(
 	if (unlinkat(parent_fd, leaf, flags) != 0) {
 		int saved_errno = errno;
 		close(parent_fd);
+		if (missing_ok && saved_errno == ENOENT)
+			return 0;
 		errno = saved_errno;
 		return prefix_error(error, error_size,
 			"cannot remove relative prefix entry: %s", strerror(errno));
