@@ -1463,6 +1463,38 @@ static int acquire_lifecycle_lock(
 	return fd;
 }
 
+int darling_runtime_prefix_lock_runtime(
+	const darling_runtime_prefix handle,
+	enum darling_runtime_mode mode,
+	uid_t owner_uid,
+	gid_t owner_gid,
+	char* error,
+	size_t error_size
+)
+{
+	if (handle == NULL || handle->parent_fd < 0 ||
+		handle->directory_fd < 0 || handle->leaf[0] == '\0')
+		return prefix_error(error, error_size,
+			"runtime prefix lock input is invalid: %s", "invalid");
+	struct lifecycle_names names;
+	if (format_lifecycle_names(handle, &names, error, error_size) != 0)
+		return -1;
+	int fd = acquire_lifecycle_lock(handle, &names, owner_uid, owner_gid,
+		error, error_size);
+	if (fd < 0)
+		return -1;
+	struct darling_runtime_prefix_state state;
+	if (darling_runtime_mode_verify_prefix_name(handle, error, error_size) != 0 ||
+		darling_runtime_prefix_read_state(handle, mode, owner_uid, owner_gid,
+			&state, error, error_size) != 0) {
+		int saved_errno = errno;
+		close(fd);
+		errno = saved_errno;
+		return -1;
+	}
+	return fd;
+}
+
 static int read_regular_file_at(
 	int directory_fd,
 	const char* name,

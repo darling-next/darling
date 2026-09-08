@@ -121,6 +121,21 @@ int darling_runtime_mode_prefix_needs_initialization(
 	size_t error_size
 );
 
+/*
+ * Acquire the existing lifecycle lock for a prepared runtime. Revalidate the
+ * retained prefix after waiting. The caller owns the returned CLOEXEC fd:
+ * retain it through PID publication or completed shutdown, then close it.
+ * Do not call prefix lifecycle mutators while holding this lease.
+ */
+int darling_runtime_prefix_lock_runtime(
+	const darling_runtime_prefix handle,
+	enum darling_runtime_mode mode,
+	uid_t owner_uid,
+	gid_t owner_gid,
+	char* error,
+	size_t error_size
+);
+
 int darling_runtime_prefix_prepare(
 	darling_runtime_prefix handle,
 	enum darling_runtime_mode mode,

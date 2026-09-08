@@ -279,6 +279,19 @@ int main(int argc, char ** argv)
 
 	const int commandIndex = cli.command_index;
 
+	/* Serialize lifecycle decisions, not the lifetime of guest commands. */
+	int runtime_lock_fd = -1;
+	if (rootless) {
+		runtime_lock_fd = darling_runtime_prefix_lock_runtime(g_runtimePrefix,
+			g_runtimeMode, g_originalUid, g_originalGid,
+			runtimeModeError, sizeof(runtimeModeError));
+		if (runtime_lock_fd < 0) {
+			fprintf(stderr, "Cannot acquire Darling runtime lifecycle: %s\n",
+				runtimeModeError);
+			return 1;
+		}
+	}
+
 	pidInit = getInitProcess();
 
 	if (strcmp(argv[commandIndex], "shutdown") == 0)
@@ -286,7 +299,7 @@ int main(int argc, char ** argv)
 		if (pidInit == 0)
 		{
 			fprintf(stderr, "Darling container is not running\n");
-			return 1;
+			return rootless ? 0 : 1;
 		}
 
 
@@ -363,6 +376,8 @@ int main(int argc, char ** argv)
 			}
 		}
 	}
+	if (runtime_lock_fd >= 0)
+		close(runtime_lock_fd);
 
 #if USE_LINUX_4_11_HACK
 	if (!rootless)

@@ -1133,6 +1133,44 @@ static void test_prefix_lifecycle(void)
 	require(result.recovery == DARLING_RUNTIME_PREFIX_NO_RECOVERY,
 		"fresh create unexpectedly reported recovery");
 	require_state(created, 1);
+	char lease_error[512] = {0};
+	int lease = darling_runtime_prefix_lock_runtime(created,
+		DARLING_RUNTIME_MODE_ROOTLESS_EUNION, getuid(), getgid(),
+		lease_error, sizeof(lease_error));
+	require(lease >= 0, lease_error);
+	int events[2];
+	require(pipe(events) == 0, "create runtime lease observer");
+	pid_t contender = fork();
+	require(contender >= 0, "fork runtime lease contender");
+	if (contender == 0) {
+		close(events[0]);
+		close(lease);
+		if (write(events[1], "R", 1) != 1)
+			_exit(1);
+		int acquired = darling_runtime_prefix_lock_runtime(created,
+			DARLING_RUNTIME_MODE_ROOTLESS_EUNION, getuid(), getgid(),
+			lease_error, sizeof(lease_error));
+		if (acquired < 0 || write(events[1], "A", 1) != 1)
+			_exit(1);
+		close(acquired);
+		_exit(0);
+	}
+	close(events[1]);
+	char event;
+	require(read(events[0], &event, 1) == 1 && event == 'R',
+		"runtime lease contender did not start");
+	struct pollfd observer = { .fd = events[0], .events = POLLIN };
+	require(poll(&observer, 1, 100) == 0,
+		"two runtime lifecycle owners entered concurrently");
+	close(lease);
+	require(poll(&observer, 1, 5000) == 1 &&
+		read(events[0], &event, 1) == 1 && event == 'A',
+		"runtime lifecycle ownership did not transfer");
+	close(events[0]);
+	int contender_status;
+	require(waitpid(contender, &contender_status, 0) == contender &&
+		WIFEXITED(contender_status) && WEXITSTATUS(contender_status) == 0,
+		"runtime lease contender failed");
 	struct stat generation_one;
 	require(fstat(created->directory_fd, &generation_one) == 0,
 		"stat generation one prefix");
