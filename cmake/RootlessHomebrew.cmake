@@ -70,12 +70,13 @@ foreach(_perl_directory IN ITEMS "" "/5.18" "/5.28")
 		PROPERTY BUILDSYSTEM_TARGETS)
 	add_dependencies(rootless_toolchain ${_perl_targets})
 endforeach()
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
 set(_rootless_toolchain_manifest "${CMAKE_BINARY_DIR}/darling-rootless-toolchain-base.json")
 add_custom_command(TARGET rootless_toolchain POST_BUILD
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/stage-homebrew-perl.py"
 		--cmake "${CMAKE_COMMAND}"
 		--build-dir "${CMAKE_BINARY_DIR}"
+		--install-prefix "${CMAKE_INSTALL_PREFIX}"
 		--manifest-input "${_rootless_toolchain_manifest}"
 		--manifest-output "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json"
 	COMMENT "Staging complete native Perl for the Homebrew runtime component"
