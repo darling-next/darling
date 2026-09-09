@@ -385,11 +385,12 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 	)
 	set(_rootless_toolchain_extra_entrypoints "")
 	set(_rootless_toolchain_extra_resources "")
+	set(_rootless_toolchain_manifest "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
 	file(GENERATE
-		OUTPUT "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json"
+		OUTPUT "${_rootless_toolchain_manifest}"
 		CONTENT
 "{
   \"schema\": 1,

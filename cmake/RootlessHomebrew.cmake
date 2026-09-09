@@ -16,6 +16,7 @@ foreach(_homebrew_command IN ITEMS
 	"touch|/usr/bin/touch" "tr|/usr/bin/tr" "uname|/usr/bin/uname"
 	"uniq|/usr/bin/uniq" "wc|/usr/bin/wc" "which|/usr/bin/which" "xargs|/usr/bin/xargs"
 	"awkexe|/usr/bin/awk" "cmp|/usr/bin/cmp" "diff|/usr/bin/diff"
+	"cut|/usr/bin/cut" "openssl|/usr/bin/openssl"
 	"bsdtar|/usr/bin/tar" "curlexe|/usr/bin/curl" "sw_vers|/usr/bin/sw_vers"
 	"sysctl|/usr/sbin/sysctl" "xcrun|/usr/bin/xcrun" "xcode-select|/usr/bin/xcode-select"
 	"git_shim|/usr/bin/git" "make_shim|/usr/bin/make" "ar_shim|/usr/bin/ar"
@@ -41,7 +42,9 @@ set(_homebrew_resources
 	"src/frameworks/CoreServices/SystemVersion.plist|/System/Library/CoreServices/SystemVersion.plist"
 	"src/frameworks/CoreServices/SystemVersionCompat.plist|/System/Library/CoreServices/SystemVersionCompat.plist"
 	"src/sandbox/sandbox-exec.sh|/usr/bin/sandbox-exec"
-	"src/external/libressl-2.8.3/apps/openssl/cert.pem|/private/etc/ssl/cert.pem")
+	"src/external/libressl-2.8.3/apps/openssl/cert.pem|/private/etc/ssl/cert.pem"
+	"src/external/libressl-2.8.3/apps/openssl/openssl.cnf|/private/etc/ssl/openssl.cnf"
+	"src/external/libressl-2.8.3/apps/openssl/x509v3.cnf|/private/etc/ssl/x509v3.cnf")
 set(_homebrew_locale_source "src/external/libc/darling/assets/locale")
 foreach(_homebrew_category IN ITEMS
 	LC_COLLATE LC_CTYPE LC_MESSAGES/LC_MESSAGES LC_MONETARY LC_NUMERIC LC_TIME)
@@ -59,3 +62,22 @@ foreach(_homebrew_resource IN LISTS _homebrew_resources)
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"${_homebrew_source}\", \"guest_path\": \"${_homebrew_guest_path}\", \"host_path\": \"${_homebrew_host_path}\"}")
 endforeach()
+
+# Use Perl's own install rules for its standard library and XS bundles. Building
+# only the versioner/interpreters leaves a runnable perl unable to load strict.
+foreach(_perl_directory IN ITEMS "" "/5.18" "/5.28")
+	get_property(_perl_targets DIRECTORY "${CMAKE_SOURCE_DIR}/src/external/perl${_perl_directory}"
+		PROPERTY BUILDSYSTEM_TARGETS)
+	add_dependencies(rootless_toolchain ${_perl_targets})
+endforeach()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(_rootless_toolchain_manifest "${CMAKE_BINARY_DIR}/darling-rootless-toolchain-base.json")
+add_custom_command(TARGET rootless_toolchain POST_BUILD
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/stage-homebrew-perl.py"
+		--cmake "${CMAKE_COMMAND}"
+		--build-dir "${CMAKE_BINARY_DIR}"
+		--manifest-input "${_rootless_toolchain_manifest}"
+		--manifest-output "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json"
+	COMMENT "Staging complete native Perl for the Homebrew runtime component"
+	VERBATIM
+)
