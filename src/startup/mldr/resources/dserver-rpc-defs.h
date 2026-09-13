@@ -12,7 +12,7 @@
 
 #include <darlingserver/rpc-supplement.h>
 
-#include <rtsig.h>
+#include "../signal_atomic.h"
 
 #define dserver_rpc_hooks_msghdr_t struct msghdr
 #define dserver_rpc_hooks_iovec_t struct iovec
@@ -159,17 +159,8 @@ extern int __dserver_main_thread_socket_fd;
 
 #define dserver_rpc_hooks_atomic_save_t sigset_t
 
-static void dserver_rpc_hooks_atomic_begin(dserver_rpc_hooks_atomic_save_t* atomic_save) {
-	sigset_t set;
-	sigfillset(&set);
-	sigdelset(&set, LINUX_SIGRTMIN);
-	sigdelset(&set, LINUX_SIGRTMIN + 1);
-	pthread_sigmask(SIG_BLOCK, &set, atomic_save);
-};
-
-static void dserver_rpc_hooks_atomic_end(dserver_rpc_hooks_atomic_save_t* atomic_save) {
-	pthread_sigmask(SIG_SETMASK, atomic_save, NULL);
-};
+#define dserver_rpc_hooks_atomic_begin mldr_block_async_signals
+#define dserver_rpc_hooks_atomic_end mldr_restore_signals
 
 #define dserver_rpc_hooks_get_interrupt_status() (-EINTR)
 

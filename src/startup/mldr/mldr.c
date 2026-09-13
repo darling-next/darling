@@ -35,6 +35,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 #include "commpage.h"
 #include "loader.h"
 #include "glibc_fork_reset.h"
+#include "signal_atomic.h"
 #include "stack_mapping.h"
 #include "elfcalls/threads.h"
 #include <sys/resource.h>
@@ -616,6 +617,7 @@ static socket_bitmap_t socket_bitmap = {
 static int* ring_fds;
 static size_t ring_fd_count;
 static size_t ring_fd_capacity;
+static __thread sigset_t fork_signal_mask;
 
 static int socket_bitmap_get_locked(socket_bitmap_t* bitmap) {
 	int fd = -1;
@@ -699,9 +701,12 @@ out:
 };
 
 static int socket_bitmap_get(socket_bitmap_t* bitmap) {
+	sigset_t saved;
+	mldr_block_async_signals(&saved);
 	pthread_mutex_lock(&bitmap->mutex);
 	int fd = socket_bitmap_get_locked(bitmap);
 	pthread_mutex_unlock(&bitmap->mutex);
+	mldr_restore_signals(&saved);
 	return fd;
 }
 
@@ -759,13 +764,18 @@ out:
 };
 
 static void socket_bitmap_put(socket_bitmap_t* bitmap, int socket) {
+	sigset_t saved;
+	mldr_block_async_signals(&saved);
 	pthread_mutex_lock(&bitmap->mutex);
 	socket_bitmap_put_locked(bitmap, socket);
 	pthread_mutex_unlock(&bitmap->mutex);
+	mldr_restore_signals(&saved);
 }
 
 int __mldr_adopt_ring_fd(int source) {
 	int result = -1;
+	sigset_t saved;
+	mldr_block_async_signals(&saved);
 	pthread_mutex_lock(&socket_bitmap.mutex);
 	if (ring_fd_count == ring_fd_capacity) {
 		size_t capacity = ring_fd_capacity ? ring_fd_capacity * 2 : 16;
@@ -798,11 +808,14 @@ int __mldr_adopt_ring_fd(int source) {
 	result = duplicate;
 out:
 	pthread_mutex_unlock(&socket_bitmap.mutex);
+	mldr_restore_signals(&saved);
 	return result;
 }
 
 bool __mldr_fd_is_internal(int fd) {
 	bool owned = false;
+	sigset_t saved;
+	mldr_block_async_signals(&saved);
 	pthread_mutex_lock(&socket_bitmap.mutex);
 	if (fd >= 0 && fd <= socket_bitmap.highest) {
 		size_t index = socket_bitmap.highest - fd;
@@ -810,17 +823,21 @@ bool __mldr_fd_is_internal(int fd) {
 			(socket_bitmap.bits[index / 8] & (1U << (index % 8))) != 0;
 	}
 	pthread_mutex_unlock(&socket_bitmap.mutex);
+	mldr_restore_signals(&saved);
 	return owned;
 }
 
 void __mldr_prefork_prepare(void) {
 	// Do not fork between installing an inherited ring FD and recording its
 	// ownership. The parent releases this lock on success and failure alike.
+	// A guest signal handler may call close/fcntl and reenter this registry.
+	mldr_block_async_signals(&fork_signal_mask);
 	pthread_mutex_lock(&socket_bitmap.mutex);
 }
 
 void __mldr_postfork_parent(void) {
 	pthread_mutex_unlock(&socket_bitmap.mutex);
+	mldr_restore_signals(&fork_signal_mask);
 }
 
 void __mldr_postfork_child(void) {
@@ -834,6 +851,7 @@ void __mldr_postfork_child(void) {
 		socket_bitmap_put(&socket_bitmap, ring_fds[i]);
 	}
 	ring_fd_count = 0;
+	mldr_restore_signals(&fork_signal_mask);
 }
 
 int __mldr_create_rpc_socket(void) {
