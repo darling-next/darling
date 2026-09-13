@@ -27,6 +27,8 @@ set(mldr_sources
 )
 
 add_executable(mldr ${mldr_sources})
+add_dependencies(mldr rtsig_h)
+target_include_directories(mldr PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/..)
 target_compile_definitions(mldr PRIVATE
 	DARLING_RUNTIME_EUNION_CAPABLE=$<BOOL:${DARLING_EUNION}>
 )
@@ -51,6 +53,8 @@ if (BUILD_TARGET_32BIT)
 	target_include_directories(mldr32_dserver_rpc PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/..)
 
 	add_executable(mldr32 ${mldr_sources})
+	add_dependencies(mldr32 rtsig_h)
+	target_include_directories(mldr32 PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/..)
 	target_compile_definitions(mldr32 PRIVATE
 		DARLING_RUNTIME_EUNION_CAPABLE=$<BOOL:${DARLING_EUNION}>
 	)
