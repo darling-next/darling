@@ -611,20 +611,15 @@ static socket_bitmap_t socket_bitmap = {
 	.highest = -1,
 };
 
-// __mldr_postfork_child() runs in a Darling raw-fork child, invoked from sys_fork
-// via the elfcalls bridge. It re-initializes mldr's own socket-bitmap mutex and
-// then resets the glibc loader/stack locks the raw fork left inherited-held - see
-// glibc_fork_reset.c for the full rationale (dar-gwn.5).
-void __mldr_postfork_child(void) {
-	socket_bitmap.mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
-	__mldr_glibc_fork_reset_child();
-}
+// Shared by dyld and libsystem_kernel through elfcalls. The loader owns these
+// descriptors; guest image-local lane tables own only their mappings.
+static int* ring_fds;
+static size_t ring_fd_count;
+static size_t ring_fd_capacity;
 
-static int socket_bitmap_get(socket_bitmap_t* bitmap) {
+static int socket_bitmap_get_locked(socket_bitmap_t* bitmap) {
 	int fd = -1;
 	bool updated = false;
-
-	pthread_mutex_lock(&bitmap->mutex);
 
 	if (bitmap->highest == -1) {
 		// we need to initialize this bitmap
@@ -640,6 +635,11 @@ static int socket_bitmap_get(socket_bitmap_t* bitmap) {
 		}
 
 		bitmap->highest = limit.rlim_cur - 1;
+	}
+
+	// Never reserve a standard descriptor, even with a reduced host limit.
+	if (bitmap->highest < 3 || bitmap->next_index > (size_t)(bitmap->highest - 3)) {
+		goto out;
 	}
 
 	if (bitmap->next_index >= bitmap->bit_length) {
@@ -695,15 +695,18 @@ static int socket_bitmap_get(socket_bitmap_t* bitmap) {
 	}
 
 out:
-	pthread_mutex_unlock(&bitmap->mutex);
-
 	return fd;
 };
 
-static void socket_bitmap_put(socket_bitmap_t* bitmap, int socket) {
-	size_t index;
-
+static int socket_bitmap_get(socket_bitmap_t* bitmap) {
 	pthread_mutex_lock(&bitmap->mutex);
+	int fd = socket_bitmap_get_locked(bitmap);
+	pthread_mutex_unlock(&bitmap->mutex);
+	return fd;
+}
+
+static void socket_bitmap_put_locked(socket_bitmap_t* bitmap, int socket) {
+	size_t index;
 
 	index = bitmap->highest - socket;
 
@@ -752,8 +755,86 @@ static void socket_bitmap_put(socket_bitmap_t* bitmap, int socket) {
 	}
 
 out:
-	pthread_mutex_unlock(&bitmap->mutex);
+	return;
 };
+
+static void socket_bitmap_put(socket_bitmap_t* bitmap, int socket) {
+	pthread_mutex_lock(&bitmap->mutex);
+	socket_bitmap_put_locked(bitmap, socket);
+	pthread_mutex_unlock(&bitmap->mutex);
+}
+
+int __mldr_adopt_ring_fd(int source) {
+	int result = -1;
+	pthread_mutex_lock(&socket_bitmap.mutex);
+	if (ring_fd_count == ring_fd_capacity) {
+		size_t capacity = ring_fd_capacity ? ring_fd_capacity * 2 : 16;
+		if (capacity < ring_fd_capacity || capacity > SIZE_MAX / sizeof(*ring_fds)) {
+			goto out;
+		}
+		int* resized = realloc(ring_fds, capacity * sizeof(*ring_fds));
+		if (!resized) {
+			goto out;
+		}
+		ring_fds = resized;
+		ring_fd_capacity = capacity;
+	}
+	int reserved = socket_bitmap_get_locked(&socket_bitmap);
+	if (reserved < 0) {
+		goto out;
+	}
+	// Unlike dup2, F_DUPFD_CLOEXEC cannot overwrite an application descriptor
+	// that occupies or races to acquire our preferred number. A collision is
+	// a clean attach failure; the caller retains and closes its source FD.
+	int duplicate = fcntl(source, F_DUPFD_CLOEXEC, reserved);
+	if (duplicate != reserved) {
+		if (duplicate >= 0) {
+			close(duplicate);
+		}
+		socket_bitmap_put_locked(&socket_bitmap, reserved);
+		goto out;
+	}
+	ring_fds[ring_fd_count++] = duplicate;
+	result = duplicate;
+out:
+	pthread_mutex_unlock(&socket_bitmap.mutex);
+	return result;
+}
+
+bool __mldr_fd_is_internal(int fd) {
+	bool owned = false;
+	pthread_mutex_lock(&socket_bitmap.mutex);
+	if (fd >= 0 && fd <= socket_bitmap.highest) {
+		size_t index = socket_bitmap.highest - fd;
+		owned = index < socket_bitmap.bit_length &&
+			(socket_bitmap.bits[index / 8] & (1U << (index % 8))) != 0;
+	}
+	pthread_mutex_unlock(&socket_bitmap.mutex);
+	return owned;
+}
+
+void __mldr_prefork_prepare(void) {
+	// Do not fork between installing an inherited ring FD and recording its
+	// ownership. The parent releases this lock on success and failure alike.
+	pthread_mutex_lock(&socket_bitmap.mutex);
+}
+
+void __mldr_postfork_parent(void) {
+	pthread_mutex_unlock(&socket_bitmap.mutex);
+}
+
+void __mldr_postfork_child(void) {
+	socket_bitmap.mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+	__mldr_glibc_fork_reset_child();
+	// Close both guest images' inherited ring descriptors before any child
+	// RPC socket can reuse their numbers. Image-local reset must not close
+	// these saved numbers a second time.
+	for (size_t i = 0; i < ring_fd_count; ++i) {
+		close(ring_fds[i]);
+		socket_bitmap_put(&socket_bitmap, ring_fds[i]);
+	}
+	ring_fd_count = 0;
+}
 
 int __mldr_create_rpc_socket(void) {
 	int pre_fd = -1;
