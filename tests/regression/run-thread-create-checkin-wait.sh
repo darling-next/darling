@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Regression test for perf #1 (dar-dar6x4-perf-5dq.1): __darling_thread_create() must
-# FUTEX_WAIT for the new thread's checkin, not busy-spin sched_yield().
+# Regression test for perf #1 (dar-dar6x4-perf-5dq.1): __darling_thread_create() must WAIT
+# for the new thread's checkin by BLOCKING (FUTEX_WAIT), not busy-spin sched_yield().
 #
 # Builds the handshake harness and asserts:
-#   - GREEN: the futex path keeps the creator's CPU ~0 while it waits  (exit 0)
-#   - RED:   the old spin path burns a core (exit 1) -- proves the test discriminates
+#   - RED:   the old polling-only wait never parks, so the checkin can only be released to a
+#            creator that is still polling. The harness must fail AND say so.
+#   - GREEN: the adaptive futex wait parks after its bounded spin, so the checkin is released
+#            to a blocked creator.
 #
-# HOST test (plain glibc, no Darling runtime). Finishes in ~1s. Exit 0 on PASS.
+# HOST test (plain glibc, no Darling runtime), no wall-clock oracle: see
+# thread_create_checkin_wait.c for why the handshake replaced the sampled-CPU check.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,12 +19,22 @@ cc="${CC:-cc}"
 
 "$cc" -O2 -g "$here/thread_create_checkin_wait.c" -o "$work/tccw" -lpthread
 
-# RED proof first: the discriminating spin path MUST fail (non-zero), else the test is blind.
-echo "--- RED proof (old sched_yield spin path, expected to FAIL) ---"
-if "$work/tccw" spin; then
+# RED proof first: the polling-only wait MUST fail, and must fail with the busy-spin
+# diagnosis -- a failure for any other reason would make the RED arm meaningless.
+echo "--- RED proof (old sched_yield polling wait, expected to FAIL) ---"
+set +e
+red_out="$("$work/tccw" spin 2>&1)"
+red_rc=$?
+set -e
+printf '%s\n' "$red_out"
+if [ "$red_rc" -eq 0 ]; then
 	echo "FAIL: spin path unexpectedly passed -- test does not discriminate busy-spin" >&2
 	exit 2
 fi
+printf '%s\n' "$red_out" | grep -F -q 'FAIL: creator burned' || {
+	echo "FAIL: spin path failed without the busy-spin diagnosis (rc=$red_rc)" >&2
+	exit 2
+}
 echo "(RED path failed as expected)"
 
 # GREEN: the production futex path must pass.
