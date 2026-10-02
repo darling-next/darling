@@ -63,6 +63,10 @@ static const void* __dserver_socket_address(void) {
 };
 
 extern void __mldr_postfork_child(void);
+extern void __mldr_prefork_prepare(void);
+extern void __mldr_postfork_parent(void);
+extern int __mldr_adopt_ring_fd(int fd);
+extern bool __mldr_fd_is_internal(int fd);
 extern void __mldr_close_rpc_socket(int socket);
 
 extern int __mldr_create_process_lifetime_pipe(int* fds);
@@ -129,4 +133,8 @@ void elfcalls_make(struct elf_calls* calls)
 	calls->dserver_get_process_lifetime_pipe = __dserver_get_process_lifetime_pipe;
 	calls->dserver_process_lifetime_pipe_refresh = __dserver_process_lifetime_pipe_refresh;
 	calls->dserver_close_process_lifetime_pipe = __mldr_close_process_lifetime_pipe;
+	calls->dserver_adopt_ring_fd = __mldr_adopt_ring_fd;
+	calls->dserver_fd_is_internal = __mldr_fd_is_internal;
+	calls->prefork_prepare = __mldr_prefork_prepare;
+	calls->postfork_parent = __mldr_postfork_parent;
 }
