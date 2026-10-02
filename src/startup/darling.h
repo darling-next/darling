@@ -71,6 +71,6 @@ void joinNamespace(pid_t pid, int type, const char* typeName);
 void setupCoredumpPattern(void);
 void setupUserHome(void);
 
-int shutdown_rootless_process_session(pid_t member);
+#include "rootless_shutdown.h"
 
 #endif

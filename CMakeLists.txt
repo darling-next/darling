@@ -305,17 +305,24 @@ add_custom_target(rootless_bootstrap DEPENDS ${DARLING_ROOTLESS_BOOTSTRAP_TARGET
 set(_rootless_bootstrap_resource_dir "${CMAKE_BINARY_DIR}/rootless-bootstrap-resources")
 file(MAKE_DIRECTORY
 	"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons"
+	"${_rootless_bootstrap_resource_dir}/private/etc"
 )
 configure_file(
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/shellspawn/org.darlinghq.shellspawn.plist"
 	"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist"
 	COPYONLY
 )
+configure_file(
+	"${CMAKE_CURRENT_SOURCE_DIR}/etc/hosts"
+	"${_rootless_bootstrap_resource_dir}/private/etc/hosts"
+	COPYONLY
+)
+# Schema 2 makes older consumers reject unsupported lower-default placement.
 file(GENERATE
 	OUTPUT "${CMAKE_BINARY_DIR}/darling-rootless-bootstrap.json"
 	CONTENT
 "{
-  \"schema\": 1,
+  \"schema\": 2,
   \"entrypoints\": [
     {\"target\": \"darling\", \"guest_path\": \"/bin/darling\", \"host_path\": \"$<TARGET_FILE:darling>\"},
     {\"target\": \"mldr\", \"guest_path\": \"/usr/libexec/darling/mldr\", \"host_path\": \"$<TARGET_FILE:mldr>\"},
@@ -328,7 +335,8 @@ file(GENERATE
     {\"target\": \"bash\", \"guest_path\": \"/bin/bash\", \"host_path\": \"$<TARGET_FILE:bash>\"}
   ],
   \"resources\": [
-    {\"target\": \"shellspawn_launchd_plist\", \"guest_path\": \"/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist\", \"host_path\": \"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist\"}
+    {\"target\": \"shellspawn_launchd_plist\", \"guest_path\": \"/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist\", \"host_path\": \"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist\"},
+    {\"target\": \"hosts_default\", \"guest_path\": \"/private/etc/hosts\", \"host_path\": \"${_rootless_bootstrap_resource_dir}/private/etc/hosts\", \"placement\": \"lower\"}
   ]
 }
 "
@@ -385,11 +393,12 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 	)
 	set(_rootless_toolchain_extra_entrypoints "")
 	set(_rootless_toolchain_extra_resources "")
+	set(_rootless_toolchain_manifest "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
 	file(GENERATE
-		OUTPUT "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json"
+		OUTPUT "${_rootless_toolchain_manifest}"
 		CONTENT
 "{
   \"schema\": 1,
@@ -416,7 +425,7 @@ install(DIRECTORY DESTINATION libexec/darling/private/tmp)
 InstallSymlink(private/etc ${CMAKE_INSTALL_PREFIX}/libexec/darling/etc)
 InstallSymlink(private/var ${CMAKE_INSTALL_PREFIX}/libexec/darling/var)
 
-install(FILES etc/resolv.conf
+install(FILES etc/resolv.conf etc/hosts
 	DESTINATION libexec/darling/private/etc)
 InstallSymlink(/Volumes/SystemRoot/etc/machine-id ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/machine-id)
 InstallSymlink(/Volumes/SystemRoot/etc/nsswitch.conf ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/nsswitch.conf)

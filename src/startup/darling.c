@@ -279,6 +279,19 @@ int main(int argc, char ** argv)
 
 	const int commandIndex = cli.command_index;
 
+	/* Serialize lifecycle decisions, not the lifetime of guest commands. */
+	int runtime_lock_fd = -1;
+	if (rootless) {
+		runtime_lock_fd = darling_runtime_prefix_lock_runtime(g_runtimePrefix,
+			g_runtimeMode, g_originalUid, g_originalGid,
+			runtimeModeError, sizeof(runtimeModeError));
+		if (runtime_lock_fd < 0) {
+			fprintf(stderr, "Cannot acquire Darling runtime lifecycle: %s\n",
+				runtimeModeError);
+			return 1;
+		}
+	}
+
 	pidInit = getInitProcess();
 
 	if (strcmp(argv[commandIndex], "shutdown") == 0)
@@ -286,37 +299,37 @@ int main(int argc, char ** argv)
 		if (pidInit == 0)
 		{
 			fprintf(stderr, "Darling container is not running\n");
-			return 1;
+			return rootless ? 0 : 1;
 		}
 
-		// TODO: when we have a working launchd,
-		// this is where we ask it to shut down nicely
-
-		char path_buf[128];
-		FILE* file;
-		pid_t launchd_pid;
-		snprintf(path_buf, sizeof(path_buf), "/proc/%d/task/%d/children", pidInit, pidInit);
-		file = fopen(path_buf, "r");
-		if (!file || fscanf(file, "%d", &launchd_pid) != 1) {
-			fprintf(stderr, "Failed to shutdown Darling container\n");
-			if (file) {
-				fclose(file);
-			}
-			return 1;
-		}
-		fclose(file);
 
 		if (rootless) {
-			int shutdown_result = shutdown_rootless_process_session(launchd_pid);
+			int shutdown_result = shutdown_rootless_process_tree(pidInit);
 			if (shutdown_result != 0) {
-				fprintf(stderr, "Failed to stop rootless Darling session: %s\n",
+				fprintf(stderr, "Failed to stop rootless Darling guest processes: %s\n",
 					strerror(-shutdown_result));
 				return 1;
 			}
 		} else {
+			// TODO: when we have a working launchd,
+			// this is where we ask it to shut down nicely
+
+			char path_buf[128];
+			FILE* file;
+			pid_t launchd_pid;
+			snprintf(path_buf, sizeof(path_buf), "/proc/%d/task/%d/children", pidInit, pidInit);
+			file = fopen(path_buf, "r");
+			if (!file || fscanf(file, "%d", &launchd_pid) != 1) {
+				fprintf(stderr, "Failed to shutdown Darling container\n");
+				if (file) {
+					fclose(file);
+				}
+				return 1;
+			}
+			fclose(file);
 			kill(launchd_pid, SIGKILL);
+			kill(pidInit, SIGKILL);
 		}
-		kill(pidInit, SIGKILL);
 		removeRuntimeStateFiles();
 		return 0;
 	}
@@ -363,6 +376,8 @@ int main(int argc, char ** argv)
 			}
 		}
 	}
+	if (runtime_lock_fd >= 0)
+		close(runtime_lock_fd);
 
 #if USE_LINUX_4_11_HACK
 	if (!rootless)

@@ -72,6 +72,33 @@ int fsync(int fd)
 	return (int)syscall(SYS_fsync, fd);
 }
 
+static const char* concurrent_unlink_leaf;
+
+int unlinkat(int directory_fd, const char* leaf, int flags)
+{
+	if (concurrent_unlink_leaf != NULL &&
+		strcmp(leaf, concurrent_unlink_leaf) == 0) {
+		concurrent_unlink_leaf = NULL;
+		/* Remove the inspected entry in another process before this caller's
+		 * unlink reaches the kernel. No fabricated errno or timing window. */
+		pid_t child = fork();
+		if (child < 0)
+			return -1;
+		if (child == 0)
+			_exit(syscall(SYS_unlinkat, directory_fd, leaf, flags) == 0 ? 0 : 1);
+		int status;
+		pid_t waited;
+		do {
+			waited = waitpid(child, &status, 0);
+		} while (waited < 0 && errno == EINTR);
+		if (waited != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+			errno = EIO;
+			return -1;
+		}
+	}
+	return (int)syscall(SYS_unlinkat, directory_fd, leaf, flags);
+}
+
 #ifdef DARLING_RUNTIME_PREFIX_LIFECYCLE_TESTING
 int darling_runtime_prefix_test_checkpoint(const char* phase)
 {
@@ -1106,6 +1133,44 @@ static void test_prefix_lifecycle(void)
 	require(result.recovery == DARLING_RUNTIME_PREFIX_NO_RECOVERY,
 		"fresh create unexpectedly reported recovery");
 	require_state(created, 1);
+	char lease_error[512] = {0};
+	int lease = darling_runtime_prefix_lock_runtime(created,
+		DARLING_RUNTIME_MODE_ROOTLESS_EUNION, getuid(), getgid(),
+		lease_error, sizeof(lease_error));
+	require(lease >= 0, lease_error);
+	int events[2];
+	require(pipe(events) == 0, "create runtime lease observer");
+	pid_t contender = fork();
+	require(contender >= 0, "fork runtime lease contender");
+	if (contender == 0) {
+		close(events[0]);
+		close(lease);
+		if (write(events[1], "R", 1) != 1)
+			_exit(1);
+		int acquired = darling_runtime_prefix_lock_runtime(created,
+			DARLING_RUNTIME_MODE_ROOTLESS_EUNION, getuid(), getgid(),
+			lease_error, sizeof(lease_error));
+		if (acquired < 0 || write(events[1], "A", 1) != 1)
+			_exit(1);
+		close(acquired);
+		_exit(0);
+	}
+	close(events[1]);
+	char event;
+	require(read(events[0], &event, 1) == 1 && event == 'R',
+		"runtime lease contender did not start");
+	struct pollfd observer = { .fd = events[0], .events = POLLIN };
+	require(poll(&observer, 1, 100) == 0,
+		"two runtime lifecycle owners entered concurrently");
+	close(lease);
+	require(poll(&observer, 1, 5000) == 1 &&
+		read(events[0], &event, 1) == 1 && event == 'A',
+		"runtime lifecycle ownership did not transfer");
+	close(events[0]);
+	int contender_status;
+	require(waitpid(contender, &contender_status, 0) == contender &&
+		WIFEXITED(contender_status) && WEXITSTATUS(contender_status) == 0,
+		"runtime lease contender failed");
 	struct stat generation_one;
 	require(fstat(created->directory_fd, &generation_one) == 0,
 		"stat generation one prefix");
@@ -1364,6 +1429,28 @@ static void test_prefix_marker(void)
 			".init.pid", 0, false,
 			error, sizeof(error)) == 0,
 		"fd-relative state cleanup failed");
+	require(darling_runtime_mode_write_relative_atomic(missing,
+			".init.pid", "123\n", 0600, error, sizeof(error)) == 0, error);
+	concurrent_unlink_leaf = ".init.pid";
+	int optional_removed = darling_runtime_mode_unlink_relative(missing,
+		".init.pid", 0, true, error, sizeof(error));
+	require(optional_removed == 0, "concurrent optional cleanup must succeed");
+	require(fstatat(missing->directory_fd, ".init.pid",
+			&state_status, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT,
+		"optional cleanup did not remove the state entry");
+	require(darling_runtime_mode_write_relative_atomic(missing,
+			".init.pid", "123\n", 0600, error, sizeof(error)) == 0, error);
+	concurrent_unlink_leaf = ".init.pid";
+	require(darling_runtime_mode_unlink_relative(missing,
+			".init.pid", 0, false, error, sizeof(error)) != 0 && errno == ENOENT,
+		"strict cleanup must still reject concurrent disappearance");
+	require(mkdirat(missing->directory_fd, "unlink-directory", 0700) == 0,
+		"create unlink error fixture");
+	require(darling_runtime_mode_unlink_relative(missing,
+			"unlink-directory", 0, true, error, sizeof(error)) != 0,
+		"optional cleanup must retain non-absence errors");
+	require(unlinkat(missing->directory_fd, "unlink-directory", AT_REMOVEDIR) == 0,
+		"remove unlink error fixture");
 	int descriptor_flags = fcntl(missing->directory_fd, F_GETFD);
 	require(descriptor_flags >= 0 &&
 			(descriptor_flags & FD_CLOEXEC) != 0,
