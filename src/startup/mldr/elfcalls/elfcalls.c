@@ -62,11 +62,28 @@ static const void* __dserver_socket_address(void) {
 	return &__dserver_socket_address_data;
 };
 
+extern void __mldr_postfork_child(void);
+extern void __mldr_prefork_prepare(void);
+extern void __mldr_postfork_parent(void);
+extern int __mldr_adopt_ring_fd(int fd);
+extern void __mldr_release_ring_fd(int fd);
+// perf#28: the process-wide Ring doorbell adopt (see mldr.c).
+extern bool __mldr_fd_is_internal(int fd);
 extern void __mldr_close_rpc_socket(int socket);
 
 extern int __mldr_create_process_lifetime_pipe(int* fds);
 extern void __mldr_close_process_lifetime_pipe(int fd);
 extern int __dserver_process_lifetime_pipe_fd;
+
+// perf#30 FD-COURIER: the loader owns the process-scoped descriptor channel's address, exactly as it
+// owns the lane directory -- process-level transport state belongs to the image that spans the whole
+// process. Exposed through the elfcalls table so no other image re-derives the prefix.
+extern const void* __mldr_fd_courier_address(void);
+extern uint64_t __mldr_process_generation(void);
+extern int __mldr_fd_courier_socket(void);
+extern void __mldr_fd_courier_reset(void);
+extern void* __mldr_process_control_page(void);
+
 
 static int __dserver_get_process_lifetime_pipe() {
 	return __dserver_process_lifetime_pipe_fd;
@@ -108,6 +125,8 @@ void elfcalls_make(struct elf_calls* calls)
 
 	calls->sysconf = sysconf;
 
+	calls->postfork_child = __mldr_postfork_child;
+
 	*((void**)&calls->sem_open) = sem_open;
 	*((void**)&calls->sem_wait) = sem_wait;
 	*((void**)&calls->sem_trywait) = sem_trywait;
@@ -119,11 +138,27 @@ void elfcalls_make(struct elf_calls* calls)
 	*((void**)&calls->shm_unlink) = shm_unlink;
 
 	calls->dserver_socket_address = __dserver_socket_address;
-	calls->dserver_per_thread_socket = __darling_thread_rpc_socket;
-	calls->dserver_per_thread_socket_refresh = __darling_thread_rpc_socket_refresh;
+	calls->dserver_process_socket = __darling_process_rpc_socket;
 	calls->dserver_close_socket = __mldr_close_rpc_socket;
 
 	calls->dserver_get_process_lifetime_pipe = __dserver_get_process_lifetime_pipe;
 	calls->dserver_process_lifetime_pipe_refresh = __dserver_process_lifetime_pipe_refresh;
 	calls->dserver_close_process_lifetime_pipe = __mldr_close_process_lifetime_pipe;
+	calls->dserver_adopt_ring_fd = __mldr_adopt_ring_fd;
+	calls->dserver_release_ring_fd = __mldr_release_ring_fd;
+	extern int __mldr_ring_doorbell(int fd);
+calls->dserver_ring_doorbell = __mldr_ring_doorbell;
+	extern void* __mldr_ring_lane_registry(void);
+	extern int __mldr_ring_lane_slots(void);
+	calls->dserver_ring_lane_registry = __mldr_ring_lane_registry;
+	calls->dserver_ring_lane_slots = __mldr_ring_lane_slots;
+	calls->dserver_fd_is_internal = __mldr_fd_is_internal;
+	// perf#30 FD-COURIER: APPENDED (see the struct comment).
+	calls->dserver_fd_courier_address = __mldr_fd_courier_address;
+	calls->dserver_process_generation = __mldr_process_generation;
+	calls->dserver_fd_courier_socket = __mldr_fd_courier_socket;
+	calls->dserver_fd_courier_reset = __mldr_fd_courier_reset;
+	calls->dserver_process_control_page = __mldr_process_control_page;
+	calls->prefork_prepare = __mldr_prefork_prepare;
+	calls->postfork_parent = __mldr_postfork_parent;
 }

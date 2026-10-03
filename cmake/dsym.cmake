@@ -31,7 +31,7 @@ function(dsym target)
 
 					execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
 						\"../files/${target}.dSYM\"
-						\$ENV{DESTDIR}/${CMAKE_INSTALL_PREFIX}/libexec/darling/System/Library/Caches/dsym/uuid/\${uuid}.dSYM)
+						\"\$ENV{DESTDIR}/${CMAKE_INSTALL_PREFIX}/libexec/darling/System/Library/Caches/dsym/uuid/\${uuid}.dSYM\")
 				endforeach (uuid)
 			endif()
 		" ${EXCLUDE_FROM_ALL_ARG})

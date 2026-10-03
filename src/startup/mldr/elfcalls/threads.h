@@ -19,6 +19,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef DYLD_THREADS_H
 #define DYLD_THREADS_H
+#include <stddef.h>
 #include <stdint.h>
 #include "elfcalls.h"
 
@@ -33,12 +34,15 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pthobj_siz
 int __darling_thread_terminate(void* stackaddr,
 				unsigned long freesize, unsigned long pthobj_size);
 void* __darling_thread_get_stack(void);
-int __darling_thread_rpc_socket(void);
-void __darling_thread_rpc_socket_refresh(void);
+/* perf#30 REMOVAL STEP 3b: there is no per-thread socket accessor any more. The kernel image needs the PROCESS
+ * socket descriptor for its fork-close guard; that is all this accessor is for. */
+int __darling_process_rpc_socket(void);
+void __darling_thread_rpc_socket_invalidate(void);
+int __darling_thread_initialize_main(void* stack_top, size_t stack_size,
+		uint32_t mach_thread_self);
 
 #ifdef __cplusplus
 }
 #endif
 
 #endif
-

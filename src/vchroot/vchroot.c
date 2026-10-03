@@ -7,6 +7,7 @@
 extern int lkm_call(int nr, ...);
 extern int __darling_vchroot(int dfd);
 
+
 int main(int argc, const char** argv)
 {
     if (argc < 3)
@@ -45,7 +46,18 @@ int main(int argc, const char** argv)
 
 	close(dfd);
 
-	// This is only needed for this binary and shouldn't be passed down
+	// The root is needed by the LOADER for the image this helper is about to exec: it is what prefixes the
+	// guest's own paths, including the dylinker image the loader opens for the new image. It must not reach the
+	// guest under this public name, so it is RENAMED to the loader's private form rather than removed.
+	// MEASURED: removing it left the second image of a process with no root at all (its deferred checkin reported
+	// status 0 and then the loader built the unprefixed guest path for /usr/lib/dyld and failed with ENOENT),
+	// while the first image -- started without this helper -- had the root and loaded its dylinker fine.
+	{
+		const char* dyld_root = getenv("DYLD_ROOT_PATH");
+		if (dyld_root != NULL && dyld_root[0] != '\0') {
+			setenv("__mldr_DYLD_ROOT_PATH", dyld_root, 1);
+		}
+	}
 	unsetenv("DYLD_ROOT_PATH");
 
 	// printf("Will execv %s\n", argv[2]);

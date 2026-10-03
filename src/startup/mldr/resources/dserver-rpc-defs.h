@@ -7,10 +7,12 @@
 #include <errno.h>
 #include <stdio.h>
 #include <signal.h>
+#include <sched.h>
+#include <stdatomic.h>
 
 #include <darlingserver/rpc-supplement.h>
 
-#include <rtsig.h>
+#include "../signal_atomic.h"
 
 #define dserver_rpc_hooks_msghdr_t struct msghdr
 #define dserver_rpc_hooks_iovec_t struct iovec
@@ -47,7 +49,94 @@ extern struct sockaddr_un __dserver_socket_address_data;
 
 #define dserver_rpc_hooks_memcpy memcpy
 
+// perf#29 (GENERATED-WRAPPER RING ROUTE, MLDR BINDING): mldr compiles the SAME generated rpc.c,
+// but it runs before any lane machinery exists (the lane table lives in the kernel image), and it
+// cannot include the emulation header tree. It therefore binds the shared routing hook to a stub
+// that always reports NOT_TAKEN -- so the generated policy table stays ONE table, the semantics of
+// "only NOT_TAKEN falls through to the datagram path" is unchanged, and the datagram path itself is
+// untouched. The stub COUNTS and names its callers, which is what identifies mldr as the sender of
+// the bootstrap UDS traffic the census reports.
+#include <stdint.h>
+// The generated public header owns these constants for every consumer; this -included header
+// is parsed before it, so the same guarded values are repeated here rather than depended on.
+#ifndef DSERVER_RING_TRY_NOT_TAKEN
+#define DSERVER_RING_TRY_NOT_TAKEN 0
+#define DSERVER_RING_TRY_COMPLETED 1
+#define DSERVER_RING_TRY_COMMITTED_FAILURE 2
+#endif
+// perf#30 STAGE 2: the loader is now a real Ring consumer. It owns the incarnation (see mldr.c) and
+// publishes ordinary policy calls over the shared lane with the SAME wire convention the runtime uses:
+// slot.payload = request body, reply = reply-hdr + body. The tri-state contract is preserved exactly:
+//   never published     -> NOT_TAKEN          (the generated wrapper may use the datagram path)
+//   published, no reply -> COMMITTED_FAILURE  (the wrapper must NOT retry: the call may have executed)
+//   reply code          -> COMPLETED          (the wrapper stores the code, skips the datagram path)
+int __mldr_ring_call(uint32_t callnum, const void* req, uint32_t reqlen, void* rep, uint32_t replen);
+int __mldr_ring_lane_ready(void);
+static int dserver_rpc_hooks_try_ring(uint32_t callnum, const char* name, const void* req, uint32_t reqlen,
+                                      void* rep, uint32_t replen, int32_t* code) {
+	if (__mldr_ring_lane_ready()) {
+		int rc = __mldr_ring_call(callnum, req, reqlen, rep, replen);
+		// perf#30: why a LOADER call did not take the lane. Bounded to a handful of lines, because this
+		// path runs in the bootstrap and the point is to name the refusing check, not to log traffic.
+		if (rc < 0) {
+			static int logged = 0;
+			if (logged < 12) {
+				++logged;
+				fprintf(stderr, "[mldr-ring] refused pid=%d callnum=%u rc=%d lane_ready=1\n",
+					(int)getpid(), (unsigned)callnum, rc);
+			}
+		}
+		if (rc == -2) {
+			return DSERVER_RING_TRY_COMMITTED_FAILURE;
+		}
+		if (rc >= 0) {
+			if (code) {
+				*code = rc;
+			}
+			return DSERVER_RING_TRY_COMPLETED;
+		}
+	}
+	return DSERVER_RING_TRY_NOT_TAKEN;
+}
+
+// perf#30 FD-COURIER: the loader does not carry descriptors for other consumers; a generated call in
+// this image keeps the legacy transport (the cached 0 makes that decision explicit and auditable).
+static uint64_t dserver_rpc_hooks_fd_courier_send(int fd, uint32_t kind) { (void)fd; (void)kind; return 0; }
+
+// perf#30 FD-COURIER (SERVER->GUEST): the loader issues no reply-bearing call whose descriptor arrives
+// on the courier, so this direction is a stub here. It exists so the generated wrappers compile with the
+// same shape in every consumer, and so the absence is explicit rather than a missing symbol.
+// perf#28d (round 49p): the loader receives descriptors too -- the process doorbell arrives on its own
+// courier connection. The previous `return -1` stub made every arriving doorbell unresolvable.
+int __mldr_fd_courier_receive(uint64_t token);
+#define dserver_rpc_hooks_fd_courier_receive(token) __mldr_fd_courier_receive((token))
+
 static long int dserver_rpc_hooks_send_message(int socket, const dserver_rpc_hooks_msghdr_t* message) {
+	// perf#30 R1 COURIER PURITY: every packet the LOADER image puts on AF_UNIX is recorded, because the requirement is
+	// not "no socket exists" but "no SEMANTIC packet rides it". A record carries the four facts that decide that:
+	// direction, whether the control buffer carries SCM_RIGHTS, the fd count, and the payload byte count. Bounded, and
+	// the token is the same `afunix-` family the acceptance greps for; a silent path here would be an instrument that
+	// cannot answer, which is the class this project keeps recording.
+	{
+		static unsigned g_afunix_send_n = 0;
+		unsigned n = __atomic_fetch_add(&g_afunix_send_n, 1, __ATOMIC_RELAXED) + 1;
+		if (n <= 4096) {
+			int fdcnt = 0; int scm = 0;
+			if (message->msg_control != NULL) {
+				for (struct cmsghdr* c = CMSG_FIRSTHDR(message); c != NULL; c = CMSG_NXTHDR(message, c)) {
+					if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+						scm = 1;
+						fdcnt += (int)((c->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+					}
+				}
+			}
+			size_t bytes = 0;
+			for (size_t i = 0; i < (size_t)message->msg_iovlen; ++i) { bytes += message->msg_iov[i].iov_len; }
+			fprintf(stderr, "[afunix-send] n=%u sock=%d scm=%d fdcnt=%d payload=%zu ra=0x%lx image=loader\n",
+				n, socket, scm, fdcnt, bytes, (unsigned long)__builtin_return_address(0));
+			fflush(stderr);
+		}
+	}
 	ssize_t ret = sendmsg(socket, message, 0);
 	if (ret < 0) {
 		return -errno;
@@ -55,12 +144,79 @@ static long int dserver_rpc_hooks_send_message(int socket, const dserver_rpc_hoo
 	return ret;
 };
 
+// perf #3 (dar-dar6x4-perf-5dq.3): adaptive recv. The synchronous checkin/RPC
+// round-trip is dominated NOT by server processing (server-side p50 ~8us after
+// perf #2b) nor by socket setup (~10us, ~5%), but by the ~200us scheduler
+// sleep/wakeup latency of blocking in recvmsg waiting for the reply datagram. When
+// the server replies quickly (the common case), a short bounded NON-BLOCKING recv
+// spin can grab the reply before the thread ever sleeps, saving the full wakeup
+// latency. On a slow reply it falls back to a normal BLOCKING recvmsg, so it never
+// busy-waits unboundedly (that is exactly the perf #1 starvation we already fixed
+// on the creator side -- this is the symmetric fix on the waiter side). The spin
+// budget is tiny and capped, and tunable via DARLING_PERF3_RECVSPIN:
+//   unset       -> default DARLING_PERF3_RECVSPIN_DEFAULT polls (ON, the win)
+//   0           -> disabled: legacy blocking recvmsg (escape hatch / A-B baseline)
+//   N (N>0)     -> spin up to N non-blocking polls, then block
+// Measured: per-checkin RPC latency 237us -> 183us (~23%) single-storm, fork/exec/
+// wait correctness unaffected. The default is deliberately modest: each poll is one
+// MSG_DONTWAIT recvmsg (~1us) + a pause, so the default window (~500us worst case)
+// comfortably covers the server's p99 reply yet exits in a few us on the common fast
+// reply; a genuinely slow reply falls through to a real blocking wait.
+#ifndef DARLING_PERF3_RECVSPIN_DEFAULT
+#define DARLING_PERF3_RECVSPIN_DEFAULT 512
+#endif
+static int __perf3_recvspin_iters(void) {
+	static _Atomic int cached = -1;
+	int v = atomic_load_explicit(&cached, memory_order_relaxed);
+	if (v == -1) {
+		const char* s = getenv("DARLING_PERF3_RECVSPIN");
+		v = (s && s[0]) ? atoi(s) : DARLING_PERF3_RECVSPIN_DEFAULT;
+		if (v < 0) v = 0;
+		if (v > 200000) v = 200000;
+		atomic_store_explicit(&cached, v, memory_order_relaxed);
+	}
+	return v;
+}
+
 static long int dserver_rpc_hooks_receive_message(int socket, dserver_rpc_hooks_msghdr_t* out_message) {
-	ssize_t ret = recvmsg(socket, out_message, 0);
+	ssize_t ret;
+
+	int spin = __perf3_recvspin_iters();
+	if (spin > 0) {
+		// Bounded non-blocking poll: catch a fast reply (server p50 ~8us) without
+		// paying the ~200us recvmsg sleep/wakeup. Between polls we issue a CPU
+		// PAUSE (relax) rather than sched_yield(): on a busy/oversubscribed host
+		// sched_yield donates the core to every other runnable task, which both
+		// lengthens the spin wall-time AND starves nobody usefully (the reply comes
+		// from the server on a DIFFERENT core); pause keeps us on-core for the few
+		// microseconds it takes the reply to land, so the poll is short and does not
+		// fight the rest of the system for the scheduler. The count is capped, so on
+		// a genuinely slow reply we fall through to a real blocking recvmsg quickly
+		// and never busy-wait unboundedly (the perf #1 starvation we already fixed).
+		for (int i = 0; i < spin; ++i) {
+			ret = recvmsg(socket, out_message, MSG_DONTWAIT);
+			if (ret >= 0) {
+				goto got_message;
+			}
+			if (errno != EAGAIN && errno != EWOULDBLOCK) {
+				return -errno;
+			}
+#if defined(__x86_64__) || defined(__i386__)
+			__builtin_ia32_pause();
+#elif defined(__aarch64__)
+			__asm__ __volatile__("yield");
+#else
+			sched_yield();
+#endif
+		}
+	}
+
+	ret = recvmsg(socket, out_message, 0);
 	if (ret < 0) {
 		return -errno;
 	}
 
+got_message:
 	if (ret >= sizeof(dserver_s2c_callhdr_t)) {
 		dserver_s2c_callhdr_t* callhdr = out_message->msg_iov->iov_base;
 		if (callhdr->call_number == 0x52cca11) {
@@ -85,22 +241,15 @@ static long int dserver_rpc_hooks_receive_message(int socket, dserver_rpc_hooks_
 extern int __dserver_main_thread_socket_fd;
 
 #define dserver_rpc_hooks_get_socket() __dserver_main_thread_socket_fd
+// perf#30: the loader has no per-thread socket, so the call marker is a no-op here.
+#define dserver_rpc_hooks_note_call(n) ((void)0)
 
 #define dserver_rpc_hooks_printf(...) fprintf(stderr, ## __VA_ARGS__)
 
 #define dserver_rpc_hooks_atomic_save_t sigset_t
 
-static void dserver_rpc_hooks_atomic_begin(dserver_rpc_hooks_atomic_save_t* atomic_save) {
-	sigset_t set;
-	sigfillset(&set);
-	sigdelset(&set, LINUX_SIGRTMIN);
-	sigdelset(&set, LINUX_SIGRTMIN + 1);
-	pthread_sigmask(SIG_BLOCK, &set, atomic_save);
-};
-
-static void dserver_rpc_hooks_atomic_end(dserver_rpc_hooks_atomic_save_t* atomic_save) {
-	pthread_sigmask(SIG_SETMASK, atomic_save, NULL);
-};
+#define dserver_rpc_hooks_atomic_begin mldr_block_async_signals
+#define dserver_rpc_hooks_atomic_end mldr_restore_signals
 
 #define dserver_rpc_hooks_get_interrupt_status() (-EINTR)
 

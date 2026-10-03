@@ -30,16 +30,17 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 #include <sys/poll.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <sys/event.h>
 #include <sys/ioctl.h>
 #include <signal.h>
 #include "shellspawn.h"
 #include "duct_signals.h"
+#include "../startup/runtime_mode.h"
 
 #define DBG 0
 
 int g_serverSocket = -1;
 struct sigaction sigchld_oldaction;
+static bool g_rootlessRuntime;
 
 void setupSocket(void);
 void listenForConnections(void);
@@ -48,14 +49,226 @@ void setupSigchild(void);
 void restoreSigchild(void);
 void reapAll(void);
 
+enum shell_wait_result
+{
+	SHELL_WAIT_EXITED,
+	SHELL_WAIT_CLIENT_CLOSED,
+	SHELL_WAIT_ERROR,
+};
+
+static void closeShellFds(int shellfd[3])
+{
+	for (int i = 0; i < 3; i++)
+	{
+		if (shellfd[i] != -1)
+		{
+			close(shellfd[i]);
+			shellfd[i] = -1;
+		}
+	}
+}
+
+static void closeFd(int* fd)
+{
+	if (*fd != -1)
+	{
+		close(*fd);
+		*fd = -1;
+	}
+}
+
+static int shellExitCode(int status)
+{
+	if (WIFEXITED(status))
+		return WEXITSTATUS(status);
+	if (WIFSIGNALED(status))
+		return 128 + WTERMSIG(status);
+	return EXIT_FAILURE;
+}
+
+static int reapShell(pid_t shell_pid, int* status)
+{
+	pid_t wait_result;
+	do
+	{
+		wait_result = waitpid(shell_pid, status, 0);
+	}
+	while (wait_result == -1 && errno == EINTR);
+
+	return wait_result == shell_pid ? 0 : -1;
+}
+
+static enum shell_wait_result waitForShell(pid_t shell_pid, int fd, const int shellfd[3], int* status)
+{
+	for (;;)
+	{
+		pid_t wait_result = waitpid(shell_pid, status, WNOHANG);
+		if (wait_result == shell_pid)
+			return SHELL_WAIT_EXITED;
+		if (wait_result == -1)
+		{
+			if (errno == EINTR)
+				continue;
+			return SHELL_WAIT_ERROR;
+		}
+
+		struct pollfd pollfd = {
+			.fd = fd,
+			.events = POLLIN,
+		};
+		// Polling bounds the quick-exit race when SIGCHLD does not interrupt poll.
+		int poll_result = poll(&pollfd, 1, 100);
+		if (poll_result == -1)
+		{
+			if (errno == EINTR)
+				continue;
+			return SHELL_WAIT_ERROR;
+		}
+		if (poll_result == 0)
+			continue;
+		if (pollfd.revents & (POLLERR | POLLHUP | POLLNVAL))
+			return SHELL_WAIT_CLIENT_CLOSED;
+		if (!(pollfd.revents & POLLIN))
+			continue;
+
+		struct shellspawn_cmd cmd;
+		if (read(fd, &cmd, sizeof(cmd)) != sizeof(cmd))
+			return SHELL_WAIT_CLIENT_CLOSED;
+
+		switch (cmd.cmd)
+		{
+			case SHELLSPAWN_SIGNAL:
+			{
+				int linux_signal;
+				if (cmd.data_length != sizeof(int))
+				{
+					errno = EPROTO;
+					return SHELL_WAIT_ERROR;
+				}
+				if (read(fd, &linux_signal, sizeof(int)) != sizeof(int))
+					return SHELL_WAIT_CLIENT_CLOSED;
+
+				int darwin_signal = signum_linux_to_bsd(linux_signal);
+				if (DBG) printf("rcvd signal %d -> %d\n", linux_signal, darwin_signal);
+				if (darwin_signal != 0)
+				{
+					int fg_pid = tcgetpgrp(shellfd[0]);
+					if (fg_pid != -1)
+						kill(fg_pid, darwin_signal);
+					else
+						kill(-shell_pid, darwin_signal);
+				}
+				break;
+			}
+			default:
+				errno = EPROTO;
+				return SHELL_WAIT_ERROR;
+		}
+	}
+}
+static void rootlessTestDelaySocketReady(void)
+{
+	const char* value = getenv("DARLING_TEST_SHELLSPAWN_READY_DELAY_MS");
+	if (!g_rootlessRuntime || value == NULL || *value == '\0')
+		return;
+
+	char* end = NULL;
+	errno = 0;
+	long delay = strtol(value, &end, 10);
+	if (errno != 0 || end == value || *end != '\0' || delay < 0 || delay > 30000)
+	{
+		fprintf(stderr, "Invalid DARLING_TEST_SHELLSPAWN_READY_DELAY_MS: %s\n", value);
+		exit(EXIT_FAILURE);
+	}
+
+	poll(NULL, 0, (int)delay);
+}
+
+static void rootlessTestMarkSocketPending(void)
+{
+	const char* delay = getenv("DARLING_TEST_SHELLSPAWN_READY_DELAY_MS");
+	const char* path = getenv("WEST_ROOTLESS_BOOTSTRAP_READY_FILE");
+	if (!g_rootlessRuntime || delay == NULL || *delay == '\0'
+		|| path == NULL || *path == '\0')
+		return;
+
+	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd == -1)
+	{
+		perror("Opening rootless shellspawn readiness marker");
+		exit(EXIT_FAILURE);
+	}
+	const char marker[] = "shellspawn-pending\n";
+	if (write(fd, marker, sizeof(marker) - 1) != (ssize_t)(sizeof(marker) - 1))
+	{
+		perror("Writing rootless shellspawn readiness marker");
+		close(fd);
+		exit(EXIT_FAILURE);
+	}
+	close(fd);
+}
 int main(int argc, const char** argv)
 {
+	{
+		// perf#30 (doc section 128): RAW SYSCALL, not libc write(). Ten instruments in this cycle were silent
+		// for the same reason -- the probe itself needed a runtime that was not up yet -- so this one is the
+		// shape that cannot lie: a direct syscall with a fixed length.
+		static const char e0[] = "[shellspawn-step] main-entry\n";
+		for (const char* c = e0; *c != 0; ++c) {
+			long rax = 1, rdi = 2;
+			__asm__ volatile("syscall" : "+a"(rax) : "D"(rdi), "S"(c), "d"(1L) : "rcx", "r11", "memory");
+		}
+	}
+	enum darling_runtime_mode runtime_mode = DARLING_RUNTIME_MODE_INVALID;
+	char runtime_mode_error[256] = {0};
+	if (darling_runtime_mode_require_canonical_process(
+			DARLING_RUNTIME_EUNION_CAPABLE != 0,
+			&runtime_mode,
+			runtime_mode_error,
+			sizeof(runtime_mode_error)
+		) != 0) {
+		fprintf(stderr, "shellspawn runtime mode rejected: %s\n",
+			runtime_mode_error);
+		return EXIT_FAILURE;
+	}
+	{
+		static const char e1[] = "[shellspawn-step] runtime-mode-ok\n";
+		(void)!write(2, e1, sizeof(e1) - 1);
+	}
+	g_rootlessRuntime = darling_runtime_mode_is_rootless(runtime_mode);
+
 	// shellspawn (daemon) --fork()--> shellspawn (child) --fork()--> exec /bin/bash
 	// in order to read the exit status of the shell process,
 	// we have to allow it to become a zombie, therefore we need to
 	// restore the sigaction of SIGCHLD of the child shellspawn
+	{
+		static const char e2[] = "[shellspawn-step] before-setupSigchild\n";
+		(void)!write(2, e2, sizeof(e2) - 1);
+	}
 	setupSigchild();
+	{
+		static const char e3[] = "[shellspawn-step] after-setupSigchild\n";
+		(void)!write(2, e3, sizeof(e3) - 1);
+	}
+	// perf#30 (doc section 95): name the readiness steps. MEASURED need: with the per-thread RPC socket
+	// denied the boot reaches the kqchan plane call (status 0, fd resolved) and then stops with no line at
+	// all, and the host reports shellspawn never became ready -- so the step between that call and the
+	// socket bind is the one that has to name itself.
+	{
+		static const char step1[] = "[shellspawn-step] before-test-socket-ready\n";
+		(void)!write(2, step1, sizeof(step1) - 1);
+	}
+	rootlessTestDelaySocketReady();
+	rootlessTestMarkSocketPending();
+	{
+		static const char step2[] = "[shellspawn-step] before-setup-socket\n";
+		(void)!write(2, step2, sizeof(step2) - 1);
+	}
 	setupSocket();
+	{
+		static const char step3[] = "[shellspawn-step] after-setup-socket (bind+listen done)\n";
+		(void)!write(2, step3, sizeof(step3) - 1);
+	}
 	listenForConnections();
 
 	if (g_serverSocket != -1)
@@ -125,15 +338,17 @@ void spawnShell(int fd)
 {
 	pid_t shell_pid = -1;
 	int shellfd[3] = { -1, -1, -1 };
-	int pipefd[2];
+	int pipefd[2] = { -1, -1 };
 	int rv;
-	struct pollfd pfd[2];
 	char** argv = NULL;
 	int argc = 2;
 	struct msghdr msg;
 	struct iovec iov;
 	char cmsgbuf[CMSG_SPACE(sizeof(int)) * 3];
-	int kq;
+	int wstatus;
+	int error;
+	struct shellspawn_result result;
+	struct shellspawn_result failure;
 
 	bool read_cmds = true;
 
@@ -303,111 +518,42 @@ void spawnShell(int fd)
 	}
 
 	// Check that exec succeeded
-	close(pipefd[1]); // close the write end
-	if (read(pipefd[0], &rv, sizeof(rv)) == sizeof(rv))
+	closeFd(&pipefd[1]); // close the write end
+	ssize_t exec_status;
+	do
+	{
+		exec_status = read(pipefd[0], &rv, sizeof(rv));
+	}
+	while (exec_status == -1 && errno == EINTR);
+	if (exec_status == sizeof(rv))
 	{
 		errno = rv;
 		goto err;
 	}
-	close(pipefd[0]);
-
-	// Now we start passing signals
-	// and check for child process exit
-
-	kq = kqueue();
-
+	if (exec_status != 0)
 	{
-		struct kevent changes[2];
-		EV_SET(&changes[0], fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
-		EV_SET(&changes[1], shell_pid, EVFILT_PROC, EV_ADD | EV_ENABLE, NOTE_EXIT, 0, NULL);
+		errno = exec_status == -1 ? errno : EPROTO;
+		goto err;
+	}
+	closeFd(&pipefd[0]);
 
-		if (kevent(kq, changes, 2, NULL, 0, NULL) == -1)
+	enum shell_wait_result wait_result = waitForShell(shell_pid, fd, shellfd, &wstatus);
+	if (wait_result == SHELL_WAIT_ERROR)
+		goto err;
+	if (wait_result == SHELL_WAIT_CLIENT_CLOSED)
+	{
+		kill(shell_pid, SIGKILL);
+		if (reapShell(shell_pid, &wstatus) == -1)
 			goto err;
 	}
 
-	while (true)
-	{
-		struct kevent ev;
-
-		if (kevent(kq, NULL, 0, &ev, 1, NULL) <= 0)
-		{
-			if (errno == EINTR) {
-				if (DBG) puts("kevent call interrupted; continuing...");
-				continue;
-			}
-			if (DBG) puts("kevent fail");
-			goto err;
-		}
-
-		if (ev.filter == EVFILT_PROC && (ev.fflags & NOTE_EXIT))
-		{
-			if (DBG) puts("subprocess exit");
-			break;
-		}
-		else if (ev.filter == EVFILT_READ)
-		{
-			struct shellspawn_cmd cmd;
-
-			if (read(fd, &cmd, sizeof(cmd)) != sizeof(cmd))
-			{
-				if (DBG) puts("Cannot read cmd");
-				break;
-			}
-
-			switch (cmd.cmd)
-			{
-				case SHELLSPAWN_SIGNAL:
-				{
-					int linux_signal, darwin_signal;
-
-					if (cmd.data_length != sizeof(int))
-						goto err;
-
-					if (read(fd, &linux_signal, sizeof(int)) != sizeof(int))
-						goto err;
-
-					// Convert Linux signal number to Darwin signal number
-					darwin_signal = signum_linux_to_bsd(linux_signal);
-					if (DBG) printf("rcvd signal %d -> %d\n", linux_signal, darwin_signal);
-
-					if (darwin_signal != 0)
-					{
-						int fg_pid = tcgetpgrp(shellfd[0]);
-						if (fg_pid != -1)
-						{
-							if (DBG) printf("fg_pid = %d\n", fg_pid);
-							kill(fg_pid, darwin_signal);
-						}
-						else
-							kill(-shell_pid, darwin_signal);
-					}
-
-					break;
-				}
-				default:
-					goto err;
-			}
-		}
-	}
-
-	// Kill the child process in case it's still running
-	kill(shell_pid, SIGKILL);
-
-	// Close shell fds
-	for (int i = 0; i < 3; i++)
-	{
-		if (shellfd[i] != -1)
-			close(shellfd[0]);
-	}
-
-	// Reap the child
-	int wstatus;
-	if (waitpid(shell_pid, &wstatus, 0) != shell_pid)
-		perror("waitpid");
-	wstatus = WEXITSTATUS(wstatus);
-	
-	// Report exit code back to the client
-	write(fd, &wstatus, sizeof(int));
+	closeShellFds(shellfd);
+	result = (struct shellspawn_result){
+		.kind = SHELLSPAWN_RESULT_EXIT,
+		.value = shellExitCode(wstatus),
+	};
+	if (wait_result == SHELL_WAIT_EXITED)
+		write(fd, &result, sizeof(result));
 
 	if (DBG) printf("Shell terminated with exit code %d\n", wstatus);
 	close(fd);
@@ -415,17 +561,21 @@ void spawnShell(int fd)
 	reapAll();
 	return;
 err:
+	error = errno;
 	if (DBG) fprintf(stderr, "Error spawning shell: %s\n", strerror(errno));
 
-	for (int i = 0; i < 3; i++)
-	{
-		if (shellfd[i] != -1)
-			close(shellfd[0]);
-	}
+	closeFd(&pipefd[0]);
+	closeFd(&pipefd[1]);
+	closeShellFds(shellfd);
 
 	if (shell_pid != -1)
 		kill(shell_pid, SIGKILL);
 
+	failure = (struct shellspawn_result){
+		.kind = SHELLSPAWN_RESULT_ERROR,
+		.value = error,
+	};
+	write(fd, &failure, sizeof(failure));
 	close(fd);
 	reapAll();
 }

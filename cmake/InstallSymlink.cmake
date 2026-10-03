@@ -42,15 +42,15 @@ macro(InstallSymlink _filepath _sympath)
         # for CMake 2.6.x and 2.8.x
         install(CODE "
             if (\"\$ENV{DESTDIR}\" STREQUAL \"\")
-                execute_process(COMMAND \"${CMAKE_COMMAND}\" -E make_directory ${_installdir})
+                execute_process(COMMAND \"${CMAKE_COMMAND}\" -E make_directory \"${_installdir}\")
                 execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
-                                ${_filepath}
-                                ${_installdir}/${_symname})
+                                \"${_filepath}\"
+                                \"${_installdir}/${_symname}\")
             else ()
-                execute_process(COMMAND \"${CMAKE_COMMAND}\" -E make_directory \$ENV{DESTDIR}/${_installdir})
+                execute_process(COMMAND \"${CMAKE_COMMAND}\" -E make_directory \"\$ENV{DESTDIR}/${_installdir}\")
                 execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
-                                ${_filepath}
-                                \$ENV{DESTDIR}/${_installdir}/${_symname})
+                                \"${_filepath}\"
+                                \"\$ENV{DESTDIR}/${_installdir}/${_symname}\")
             endif ()
         " ${EXCLUDE_FROM_ALL_ARG} ${COMPONENT_ARG})
     endif ()

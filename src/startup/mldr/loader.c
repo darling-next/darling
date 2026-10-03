@@ -267,7 +267,13 @@ no_slide:
 				}
 
 				struct dylinker_command* dy = (struct dylinker_command*) lc;
-				char* path;
+				// perf#30 (doc section 202): `path` was UNINITIALIZED here. When `lr->root_path` is NULL the
+				// first branch is skipped and this variable holds garbage, so the "if (path == NULL)" fallback
+				// below may be skipped as well and `load()` gets a wild pointer; and when it is not skipped, the
+				// fallback builds the linkers's GUEST path with no prefix -- so `open("/usr/lib/dyld")` fails with
+				// ENOENT on the host. MEASURED: exactly that message for the second incarnation, where the root
+				// is not set yet, while the first incarnation (whose root comes from the environment) loads fine.
+				char* path = NULL;
 				size_t length;
 				static char path_buffer[4096];
 
@@ -307,6 +313,12 @@ no_slide:
 					fprintf(stderr, "Failed to load dynamic linker for executable\n");
 					exit(1);
 				}
+
+				// perf#30 LOADER CHECKIN ORDERING (doc section 165): opening the guest's dyld resolves
+				// through the guest's vchroot, so the process must already be registered. This is the first
+				// point where that is possible (the outer image is mapped, and the plane can be established
+				// here), and it is the ordering the whole change exists to produce.
+				mldr_bootstrap_before_dylinker_load(lr);
 
 				load(path, header.cputype, true, NULL, lr);
 

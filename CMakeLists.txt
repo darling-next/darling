@@ -53,6 +53,9 @@ if (NOT DEFINED CMAKE_CXX_COMPILER)
 endif(NOT DEFINED CMAKE_CXX_COMPILER)
 
 option(DARLING_NO_CCACHE "Disable ccache usage" OFF)
+option(DARLING_EUNION
+	"Enable E-UNION union-in-vchroot prefix assembly (experimental)"
+	OFF)
 
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM AND NOT DARLING_NO_CCACHE)
@@ -195,7 +198,225 @@ cmake_policy(SET CMP0014 NEW)
 
 generate_architecture()
 
+# --- dar-gax: UNCONDITIONAL patchset-drift gate ------------------------------
+# TWICE a fix registered in patches.yml was missing from the committed
+# integration/homebrew tip the binary was built from, silently regressing it
+# (dar-gwn.6 xnu ulock, dar-gwn.1.9 darlingserver assert-wait). A gate that
+# relies on someone remembering to run `west patch status` is no gate. So wire
+# it into the build itself: it cannot be bypassed by a plain `ninja <target>`.
+#
+# Opt out only for packaging/CI that builds outside the patched workspace:
+#   -DDARLING_SKIP_DRIFT_GATE=ON
+option(DARLING_SKIP_DRIFT_GATE "Skip the patchset-drift gate (packaging/CI only)" OFF)
+set(DARLING_PATCH_PROFILE "" CACHE STRING
+	"Patch profile expected by the drift gate (empty: derive integration/<profile> or homebrew)")
+if(NOT DARLING_SKIP_DRIFT_GATE)
+	# Locate the workspace that owns patches.yml (manifest repo two levels up:
+	# <ws>/darling-dev/darling -> <ws>/darling-dev/darling-workspace).
+	find_program(WEST_PROGRAM west)
+	set(_drift_ws "${CMAKE_CURRENT_SOURCE_DIR}/../darling-workspace")
+	set(_drift_profile "${DARLING_PATCH_PROFILE}")
+	if(NOT _drift_profile)
+		execute_process(
+			COMMAND git branch --show-current
+			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+			RESULT_VARIABLE _drift_branch_rc
+			OUTPUT_VARIABLE _drift_branch
+			OUTPUT_STRIP_TRAILING_WHITESPACE
+			ERROR_QUIET)
+		if(_drift_branch_rc EQUAL 0 AND _drift_branch MATCHES "^integration/([A-Za-z0-9_.-]+)$")
+			set(_drift_profile "${CMAKE_MATCH_1}")
+		else()
+			set(_drift_profile "homebrew")
+		endif()
+	endif()
+	set(_drift_profile_manifest "${_drift_ws}/patches/${_drift_profile}/patches.yml")
+	if(WEST_PROGRAM AND EXISTS "${_drift_profile_manifest}")
+		# (1) configure-time check: fail `cmake`/reconfigure on drift.
+		execute_process(
+			COMMAND ${WEST_PROGRAM} patch status --profile ${_drift_profile} --strict
+			WORKING_DIRECTORY "${_drift_ws}"
+			RESULT_VARIABLE _drift_rc
+			OUTPUT_VARIABLE _drift_out
+			ERROR_VARIABLE  _drift_out)
+		if(NOT _drift_rc EQUAL 0)
+			message(FATAL_ERROR
+				"patchset DRIFT in profile ${_drift_profile}: a patch is MISSING from the build tree.\n"
+				"${_drift_out}\n"
+				"Regenerate first: cd ${_drift_ws} && west patch verify --profile ${_drift_profile} && west patch apply --profile ${_drift_profile} --roll-back\n"
+				"(stash manual worktree edits first). Override (packaging/CI): -DDARLING_SKIP_DRIFT_GATE=ON")
+		endif()
+		# (2) every-build check: an always-out-of-date target in ALL so a plain
+		#     `ninja` re-runs the gate even when CMake does not reconfigure.
+		add_custom_target(drift_gate ALL
+			COMMAND ${WEST_PROGRAM} patch status --profile ${_drift_profile} --strict
+			WORKING_DIRECTORY "${_drift_ws}"
+			COMMENT "dar-gax: verifying ${_drift_profile} patchset is not drifted"
+			VERBATIM)
+	else()
+		message(WARNING
+			"DARLING_SKIP_DRIFT_GATE is OFF but the drift gate could not run "
+			"(west=${WEST_PROGRAM}, profile=${_drift_profile}, ws=${_drift_ws}); proceeding WITHOUT drift protection.")
+	endif()
+endif()
+# --- end drift gate ----------------------------------------------------------
+
 add_subdirectory(src)
+
+# --- dar-gax: wire the drift gate to the deployable targets ------------------
+# Make the binaries we actually build+deploy DEPEND on the always-out-of-date
+# drift_gate, so a TARGETED `ninja darlingserver` / `ninja system_kernel` runs
+# the gate first and fails on drift -- not only a bare `ninja`. Placed after
+# add_subdirectory(src) so the targets exist; TARGET-guarded for component
+# selections that exclude them.
+if(TARGET drift_gate)
+	foreach(_dg_target darlingserver system_kernel)
+		if(TARGET ${_dg_target})
+			add_dependencies(${_dg_target} drift_gate)
+		endif()
+	endforeach()
+endif()
+
+# Rootless bootstrap is a source-owned component, not a list maintained by
+# external test runners. Keep each guest entrypoint paired with the CMake target
+# that produces it; the runtime runner consumes the generated manifest and
+# resolves its Mach-O library closure from the resulting build tree.
+set(DARLING_ROOTLESS_BOOTSTRAP_TARGETS
+	darling
+	mldr
+	launchd
+	launchctl
+	shellspawn
+	vchroot
+	system_loader
+	darlingserver
+	system_kernel
+	objc
+	resolv-darwin
+	CoreFoundation
+	bash
+)
+foreach(_bootstrap_target IN LISTS DARLING_ROOTLESS_BOOTSTRAP_TARGETS)
+	if(NOT TARGET ${_bootstrap_target})
+		message(FATAL_ERROR "rootless bootstrap target is unavailable: ${_bootstrap_target}")
+	endif()
+endforeach()
+add_custom_target(rootless_bootstrap DEPENDS ${DARLING_ROOTLESS_BOOTSTRAP_TARGETS})
+set(_rootless_bootstrap_resource_dir "${CMAKE_BINARY_DIR}/rootless-bootstrap-resources")
+file(MAKE_DIRECTORY
+	"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons"
+	"${_rootless_bootstrap_resource_dir}/private/etc"
+)
+configure_file(
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/shellspawn/org.darlinghq.shellspawn.plist"
+	"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist"
+	COPYONLY
+)
+configure_file(
+	"${CMAKE_CURRENT_SOURCE_DIR}/etc/hosts"
+	"${_rootless_bootstrap_resource_dir}/private/etc/hosts"
+	COPYONLY
+)
+# Schema 2 makes older consumers reject unsupported lower-default placement.
+file(GENERATE
+	OUTPUT "${CMAKE_BINARY_DIR}/darling-rootless-bootstrap.json"
+	CONTENT
+"{
+  \"schema\": 2,
+  \"entrypoints\": [
+    {\"target\": \"darling\", \"guest_path\": \"/bin/darling\", \"host_path\": \"$<TARGET_FILE:darling>\"},
+    {\"target\": \"mldr\", \"guest_path\": \"/usr/libexec/darling/mldr\", \"host_path\": \"$<TARGET_FILE:mldr>\"},
+    {\"target\": \"launchd\", \"guest_path\": \"/sbin/launchd\", \"host_path\": \"$<TARGET_FILE:launchd>\"},
+    {\"target\": \"launchctl\", \"guest_path\": \"/bin/launchctl\", \"host_path\": \"$<TARGET_FILE:launchctl>\"},
+    {\"target\": \"shellspawn\", \"guest_path\": \"/usr/libexec/shellspawn\", \"host_path\": \"$<TARGET_FILE:shellspawn>\"},
+    {\"target\": \"vchroot\", \"guest_path\": \"/usr/libexec/darling/vchroot\", \"host_path\": \"$<TARGET_FILE:vchroot>\"},
+    {\"target\": \"system_loader\", \"guest_path\": \"/usr/lib/dyld\", \"host_path\": \"$<TARGET_FILE:system_loader>\"},
+    {\"target\": \"darlingserver\", \"guest_path\": \"/bin/darlingserver\", \"host_path\": \"$<TARGET_FILE:darlingserver>\"},
+    {\"target\": \"bash\", \"guest_path\": \"/bin/bash\", \"host_path\": \"$<TARGET_FILE:bash>\"}
+  ],
+  \"resources\": [
+    {\"target\": \"shellspawn_launchd_plist\", \"guest_path\": \"/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist\", \"host_path\": \"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist\"},
+    {\"target\": \"hosts_default\", \"guest_path\": \"/private/etc/hosts\", \"host_path\": \"${_rootless_bootstrap_resource_dir}/private/etc/hosts\", \"placement\": \"lower\"}
+  ]
+}
+"
+)
+
+# Guest toolchain provisioning is deliberately a separate source-owned
+# component. It may be expensive, but it must not enlarge the ordinary
+# rootless regression provider. Keep binary entrypoints and non-Mach-O data in
+# this manifest so West never has to duplicate install rules by hand.
+option(DARLING_ROOTLESS_TOOLCHAIN
+	"Build the source-owned rootless guest-toolchain component" OFF)
+option(DARLING_ROOTLESS_HOMEBREW
+	"Include the Homebrew userland in the rootless guest-toolchain component" OFF)
+if(DARLING_ROOTLESS_HOMEBREW AND NOT DARLING_ROOTLESS_TOOLCHAIN)
+	message(FATAL_ERROR "DARLING_ROOTLESS_HOMEBREW requires DARLING_ROOTLESS_TOOLCHAIN")
+endif()
+set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
+	installer
+	perl
+	perl5.18
+	perl5.28
+	CFNetwork
+	CoreFoundation_x86_64
+	securitytool_macos
+	coretls_cfhelpers
+)
+if(DARLING_ROOTLESS_TOOLCHAIN)
+	set(_missing_toolchain_targets)
+	foreach(_toolchain_target IN LISTS DARLING_ROOTLESS_TOOLCHAIN_TARGETS)
+		if(NOT TARGET ${_toolchain_target})
+			list(APPEND _missing_toolchain_targets ${_toolchain_target})
+		endif()
+	endforeach()
+	if(_missing_toolchain_targets)
+		message(FATAL_ERROR
+			"rootless toolchain component requested but source targets are unavailable: "
+			"${_missing_toolchain_targets}")
+	endif()
+	add_custom_target(rootless_toolchain DEPENDS ${DARLING_ROOTLESS_TOOLCHAIN_TARGETS})
+	set(_rootless_toolchain_resource_dir "${CMAKE_BINARY_DIR}/rootless-toolchain-resources")
+	file(MAKE_DIRECTORY
+		"${_rootless_toolchain_resource_dir}/usr/share/man/man8"
+		"${_rootless_toolchain_resource_dir}/usr/bin"
+	)
+	configure_file(
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/external/installer/installer.8"
+		"${_rootless_toolchain_resource_dir}/usr/share/man/man8/installer.8"
+		COPYONLY
+	)
+	configure_file(
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/external/perl/fix/dummy.pl"
+		"${_rootless_toolchain_resource_dir}/usr/bin/c2ph"
+		COPYONLY
+	)
+	set(_rootless_toolchain_extra_entrypoints "")
+	set(_rootless_toolchain_extra_resources "")
+	set(_rootless_toolchain_manifest "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json")
+	if(DARLING_ROOTLESS_HOMEBREW)
+		include(cmake/RootlessHomebrew.cmake)
+	endif()
+	file(GENERATE
+		OUTPUT "${_rootless_toolchain_manifest}"
+		CONTENT
+"{
+  \"schema\": 1,
+  \"entrypoints\": [
+    {\"target\": \"installer\", \"guest_path\": \"/usr/bin/installer\", \"host_path\": \"$<TARGET_FILE:installer>\"},
+    {\"target\": \"perl\", \"guest_path\": \"/usr/bin/perl\", \"host_path\": \"$<TARGET_FILE:perl>\"},
+    {\"target\": \"perl5.18\", \"guest_path\": \"/usr/bin/perl5.18\", \"host_path\": \"$<TARGET_FILE:perl5.18>\"},
+    {\"target\": \"perl5.28\", \"guest_path\": \"/usr/bin/perl5.28\", \"host_path\": \"$<TARGET_FILE:perl5.28>\"},
+    {\"target\": \"security\", \"guest_path\": \"/usr/bin/security\", \"host_path\": \"$<TARGET_FILE:securitytool_macos>\"}${_rootless_toolchain_extra_entrypoints}
+  ],
+  \"resources\": [
+    {\"target\": \"installer_man\", \"guest_path\": \"/usr/share/man/man8/installer.8\", \"host_path\": \"${_rootless_toolchain_resource_dir}/usr/share/man/man8/installer.8\"},
+    {\"target\": \"perl_c2ph\", \"guest_path\": \"/usr/bin/c2ph\", \"host_path\": \"${_rootless_toolchain_resource_dir}/usr/bin/c2ph\"}${_rootless_toolchain_extra_resources}
+  ]
+}
+"
+	)
+endif()
 
 install(DIRECTORY DESTINATION libexec/darling/private)
 install(DIRECTORY DESTINATION libexec/darling/private/etc)
@@ -204,7 +425,7 @@ install(DIRECTORY DESTINATION libexec/darling/private/tmp)
 InstallSymlink(private/etc ${CMAKE_INSTALL_PREFIX}/libexec/darling/etc)
 InstallSymlink(private/var ${CMAKE_INSTALL_PREFIX}/libexec/darling/var)
 
-install(FILES etc/resolv.conf
+install(FILES etc/resolv.conf etc/hosts
 	DESTINATION libexec/darling/private/etc)
 InstallSymlink(/Volumes/SystemRoot/etc/machine-id ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/machine-id)
 InstallSymlink(/Volumes/SystemRoot/etc/nsswitch.conf ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/nsswitch.conf)

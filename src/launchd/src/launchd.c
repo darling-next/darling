@@ -81,6 +81,8 @@
 #include "runtime.h"
 #include "core.h"
 #include "ipc.h"
+#include "rootless_runtime.h"
+#include "runtime_mode.h"
 
 #define LAUNCHD_CONF ".launchd.conf"
 
@@ -114,12 +116,122 @@ bool network_up;
 uid_t launchd_uid;
 FILE *launchd_console = NULL;
 int32_t launchd_sync_frequency = 30;
+bool darling_rootless;
+
+/* perf#30: raw-syscall probe, in the shape scripts/guest-probe.h requires.
+ *
+ * launchd redirects its own stderr to /dev/null a few lines into main, so any failure message it prints is
+ * destroyed -- which is why "launchd exits silently" was not a measurement.
+ *
+ * TWO RULES, both learned the hard way this cycle, and both violated by the first version of this helper:
+ *
+ *   1. the tag must be a SINGLE string literal. The first version wrote "[" then "launchd-" then the tag then
+ *      "]\n", one byte per syscall, so `strings sbin/launchd | grep '\[launchd-MAIN\]'` found NOTHING and the
+ *      probe looked absent from the artifact -- the exact "tag assembled at runtime cannot be verified" trap.
+ *      LAUNCHD_PROBE concatenates at compile time and writes once, so presence in the built and deployed binary
+ *      is checkable without running anything.
+ *   2. the probe must not modify the state it measures. Two probes this cycle returned WRONG results (one
+ *      clobbered %rax so `jmp *%rax` jumped to 1; one clobbered %rdi so main saw argc 2 instead of 3), so the
+ *      writer saves and restores every register the surrounding contract can depend on, besides the %rcx/%r11
+ *      that `syscall` clobbers by definition.
+ */
+/* The identity must be the SAME KIND as the probes in libsystem_kernel use, or a launchd tag cannot be lined up
+ * with the dylib probes in the same run: the stack whose open-entry has no open-postcancel is the one that died,
+ * and without this there is no way to say whether that stack is launchd's. Free, portable, no syscall -- the
+ * address of a local buffer (see the same rule in scripts/guest-probe.h). */
+static unsigned long __launchd_identity(void) {
+	/* The SAME identity kind the libsystem_kernel probes use: the TCB self-pointer, per-thread and stable
+	 * across the call chain, so a launchd tag can be correlated with a dylib probe in the same run. */
+	unsigned long id = 0;
+#if defined(__x86_64__)
+	__asm__ volatile("movq %%fs:0, %0" : "=r"(id));
+#elif defined(__i386__)
+	__asm__ volatile("movl %%gs:0, %0" : "=r"(id));
+#else
+	char here;
+	id = (unsigned long)(void *)&here;
+#endif
+	return id;
+}
+
+static void __launchd_probe_raw(const char *tag, long len) {
+	long rax = 1, rdi = 2, rsi = (long)tag, rdx = len;
+	__asm__ volatile("syscall"
+	                 : "+a"(rax), "+D"(rdi), "+S"(rsi), "+d"(rdx)
+	                 : : "rcx", "r11", "memory");
+}
+
+/* Async-signal-safe reporter: prints [launchd-SIGNAL-<n>] with one raw syscall per segment, then exits with a
+ * distinctive status so the server-side view agrees. Deliberately does NOT return into the faulting code. */
+static void __launchd_signal_probe(int sig) {
+	static const char pre[] = "[launchd-SIGNAL-";
+	char digit[3];
+	int n = 0, v = sig;
+	__launchd_probe_raw(pre, sizeof(pre) - 1);
+	if (v >= 100) { digit[n++] = (char)('0' + (v / 100) % 10); }
+	if (v >= 10) { digit[n++] = (char)('0' + (v / 10) % 10); }
+	digit[n++] = (char)('0' + v % 10);
+	__launchd_probe_raw(digit, n);
+	__launchd_probe_raw("]\n", 2);
+	_exit(90);
+}
+
+/* One literal, one syscall, every ABI register preserved -- and the SAME identity form the dylib probes print,
+ * so their lines can be attributed to the same thread. */
+static void __launchd_probe_identified(const char *tag, long len) {
+	char buf[96];
+	int n = 0;
+	unsigned long id = __launchd_identity();
+	/* the tag arrives with its own closing bracket and newline; drop BOTH so the identity lands inside the
+	 * bracket the parser expects ("[launchd-X sp=...]"), not after it */
+	for (long i = 0; i < len && n < 60; ++i) buf[n++] = tag[i];
+	if (n > 0 && buf[n - 1] == '\n') { --n; }
+	if (n > 0 && buf[n - 1] == ']') { --n; }
+	{
+		/* The marker is a SINGLE LITERAL so its presence in the built binary is checkable with grep. Building
+		 * it character by character (as an earlier version did) puts no "sp=" string in the artifact at all,
+		 * so a legitimate check reports the feature missing and a whole round is spent on the wrong suspect. */
+		static const char marker[] = " sp=";
+		for (int i = 0; marker[i]; ++i) buf[n++] = marker[i];
+	}
+	{
+		static const char hex[] = "0123456789abcdef";
+		char tmp[16];
+		int k = 0, i;
+		unsigned long v = id & 0xfffff;
+		if (v == 0) tmp[k++] = '0';
+		while (v > 0 && k < 16) { tmp[k++] = hex[v & 0xf]; v >>= 4; }
+		for (i = 0; i < k && n < 90; ++i) buf[n++] = tmp[k - 1 - i];
+	}
+	buf[n++] = ']'; buf[n++] = '\n';
+	__launchd_probe_raw(buf, n);
+}
+
+#define LAUNCHD_PROBE(name)                                              \
+	do {                                                                 \
+		static const char __launchd_tag[] = "[launchd-" name "]\n";    \
+		__launchd_probe_identified(__launchd_tag, sizeof(__launchd_tag) - 1); \
+	} while (0)
 
 int
 main(int argc, char *const *argv)
 {
 	bool sflag = false;
 	int ch;
+	const char *runtime_mode_error = NULL;
+	LAUNCHD_PROBE("MAIN");
+	if (launchd_runtime_mode_preflight(&runtime_mode_error) != 0) {
+		LAUNCHD_PROBE("PREFLIGHT_FAIL");
+		fprintf(stderr, "launchd runtime mode rejected: %s\n",
+			runtime_mode_error);
+		return EXIT_FAILURE;
+	}
+	LAUNCHD_PROBE("PREFLIGHT_OK");
+	if (darling_rootless && rootless_runtime_prepare() != 0) {
+		LAUNCHD_PROBE("ROOTLESS_PREPARE_FAIL");
+		return EXIT_FAILURE;
+	}
+	LAUNCHD_PROBE("ROOTLESS_PREPARE_OK");
 
 	/* This needs to be cleaned up. Currently, we risk tripping assumes() macros
 	 * before we've properly set things like launchd's log database paths, the
@@ -131,6 +243,11 @@ main(int argc, char *const *argv)
 	testfd_or_openfd(STDIN_FILENO, _PATH_DEVNULL, O_RDONLY);
 	testfd_or_openfd(STDOUT_FILENO, _PATH_DEVNULL, O_WRONLY);
 	testfd_or_openfd(STDERR_FILENO, _PATH_DEVNULL, O_WRONLY);
+	/* DIAGNOSTIC (dar-4cp9, 2026-10-01): the boot flap aborts somewhere between ROOTLESS_PREPARE_OK and
+	 * RUNTIME_INIT_DONE -- the existing probes after that point never fire -- and this whole window was
+	 * uninstrumented, so a failure named no phase. Each probe here is a single literal write, so a silent
+	 * one is unambiguous: the last probe that fires names the step the guest died in. */
+	LAUNCHD_PROBE("STDIO_FDS_OK");
 
 	if (launchd_use_gmalloc) {
 		if (!getenv("DYLD_INSERT_LIBRARIES")) {
@@ -149,6 +266,7 @@ main(int argc, char *const *argv)
 			unsetenv("MallocStackLogging");
 		}
 	}
+	LAUNCHD_PROBE("MALLOC_BRANCH_DONE");
 
 	while ((ch = getopt(argc, argv, "s")) != -1) {
 		switch (ch) {
@@ -159,27 +277,59 @@ main(int argc, char *const *argv)
 			break;
 		}
 	}
+	LAUNCHD_PROBE("GETOPT_DONE");
 
-	if (getpid() != 1 && getppid() != 1) {
+	if (!darling_rootless && getpid() != 1 && getppid() != 1) {
 		fprintf(stderr, "%s: This program is not meant to be run directly.\n", getprogname());
 		exit(EXIT_FAILURE);
 	}
+	LAUNCHD_PROBE("PID_GUARD_DONE");
 
 	launchd_runtime_init();
+	LAUNCHD_PROBE("RUNTIME_INIT_DONE");
 
 	if (NULL == getenv("PATH")) {
 		setenv("PATH", _PATH_STDPATH, 1);
 	}
 
 	if (pid1_magic) {
+		LAUNCHD_PROBE("PID1_MAGIC_ENTER");
 		pid1_magic_init();
+		LAUNCHD_PROBE("PID1_MAGIC_INIT_DONE");
 
 		int cfd = -1;
+		/* The console open is where launchd dies: CONSOLE_OPEN_BEGIN prints and neither CONSOLE_OPENED nor
+		 * CONSOLE_OPEN_FAIL ever does. A plain open() that fails returns -1 and takes the else branch, so the
+		 * process is not returning from this call at all. A signal whose disposition is default terminates the
+		 * process WITHOUT unwinding -- SIGSYS (unimplemented syscall) is the prime suspect, because the guest
+		 * open("/dev/console") must resolve through a prefix whose dev is a dangling symlink.
+		 *
+		 * So catch the signal and report the NUMBER, which no amount of reading the source can produce. The
+		 * handler is async-signal-safe: one raw write syscall, no libc, no allocation, no errno.
+		 */
+		{
+			struct sigaction __sa;
+			memset(&__sa, 0, sizeof(__sa));
+			__sa.sa_handler = __launchd_signal_probe;
+			sigemptyset(&__sa.sa_mask);
+			sigaction(SIGSYS, &__sa, NULL);
+			sigaction(SIGSEGV, &__sa, NULL);
+			sigaction(SIGILL, &__sa, NULL);
+			sigaction(SIGBUS, &__sa, NULL);
+			sigaction(SIGABRT, &__sa, NULL);
+		}
+		LAUNCHD_PROBE("CONSOLE_OPEN_BEGIN");
 		if ((cfd = open(_PATH_CONSOLE, O_WRONLY | O_NOCTTY)) != -1) {
+			LAUNCHD_PROBE("CONSOLE_OPENED");
 			_fd(cfd);
 			if (!(launchd_console = fdopen(cfd, "w"))) {
+				LAUNCHD_PROBE("CONSOLE_FDOPEN_FAIL");
 				(void)close(cfd);
+			} else {
+				LAUNCHD_PROBE("CONSOLE_FDOPEN_OK");
 			}
+		} else {
+			LAUNCHD_PROBE("CONSOLE_OPEN_FAIL");
 		}
 
 		char *extra = "";
@@ -189,7 +339,9 @@ main(int argc, char *const *argv)
 			extra = " in single-user mode";
 		}
 
+		LAUNCHD_PROBE("SYSLOG_BEFORE");
 		launchd_syslog(LOG_NOTICE | LOG_CONSOLE, "*** launchd[1] has started up%s. ***", extra);
+		LAUNCHD_PROBE("SYSLOG_AFTER");
 		if (launchd_use_gmalloc) {
 			launchd_syslog(LOG_NOTICE | LOG_CONSOLE, "*** Using libgmalloc. ***");
 		}
@@ -270,10 +422,18 @@ main(int argc, char *const *argv)
 		launchd_syslog(LOG_DEBUG, "Per-user launchd started (UID/username): %u/%s.", launchd_uid, launchd_username);
 	}
 
+	LAUNCHD_PROBE("PID1_BLOCK_END");
+	LAUNCHD_PROBE("NETWORKING_DONE");
 	monitor_networking_state();
+	LAUNCHD_PROBE("NETWORKING_END");
 	jobmgr_init(sflag);
+	LAUNCHD_PROBE("JOBMGR_INIT_DONE");
 
 	launchd_runtime_init2();
+	LAUNCHD_PROBE("RUNTIME_INIT2_DONE");
+	jobmgr_schedule_rootless_bootstrapper();
+	LAUNCHD_PROBE("BOOTSTRAPPER_SCHEDULED");
+	LAUNCHD_PROBE("RUNTIME_ENTER");
 	launchd_runtime();
 }
 
