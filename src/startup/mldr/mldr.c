@@ -1479,8 +1479,19 @@ static uint64_t __mldr_fd_courier_next_token = 0;
 uint64_t __mldr_fd_courier_send_token(int fd, uint32_t kind) {
 	// perf#30 IDENTITY: same reasoning as the guest image's sender -- the pid is part of the token, because a
 	// token that only mixes generation and a per-process counter collides across processes.
+	//
+	// perf#30 IMAGE IDENTITY: it also collides across the two images OF ONE PROCESS. MEASURED on the
+	// recovered Ring candidate: this loader's lane-backing bundle (kind=1) and the guest image's execve
+	// checkout bundle (kind=2) were two copies of the formula with the same pid, the same generation and
+	// counters that both started at the same value, so they produced the SAME token
+	// 5189026761396706776. The server keys a pending descriptor by token, so the checkout envelope was
+	// dropped as a duplicate of the still-pending lane bundle, the checkout resolved as KindMismatch
+	// (want=2 got=1), sys_execve returned -EBADF, and boot stopped at `execv: Bad file descriptor` with
+	// shellspawn never ready. The per-image counter's address separates the images; the counter itself
+	// still separates sends within one image.
 	uint64_t token = (__mldr_process_generation() * 0x9E3779B97F4A7C15ull)
 		^ ((uint64_t)(unsigned)getpid() * 0xC2B2AE3D27D4EB4Full)
+		^ ((uint64_t)(uintptr_t)&__mldr_fd_courier_next_token * 0x94D049BB133111EBull)
 		^ (++__mldr_fd_courier_next_token);
 	if (__mldr_fd_courier_send_envelope(fd, token, kind) != 0) {
 		return 0;
