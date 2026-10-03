@@ -74,6 +74,12 @@ struct elf_calls
 	int (*dserver_get_process_lifetime_pipe)(void);
 	int (*dserver_process_lifetime_pipe_refresh)(void);
 	void (*dserver_close_process_lifetime_pipe)(int fd);
+
+	// Loader-owned ring descriptors, shared across guest images.
+	int (*dserver_adopt_ring_fd)(int fd);
+	bool (*dserver_fd_is_internal)(int fd);
+	void (*prefork_prepare)(void);
+	void (*postfork_parent)(void);
 };
 
 #endif
