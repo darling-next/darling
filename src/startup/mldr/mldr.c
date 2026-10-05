@@ -1919,9 +1919,9 @@ char wake = 0;
 			fflush(stderr);
 		}
 	} else {
-		uint32_t __mldr_expect_1 = DSERVER_PROCESS_CONTROL_PENDING;
-		(void)__atomic_compare_exchange_n(&(page)->request_state, &__mldr_expect_1,
-			DSERVER_PROCESS_CONTROL_IDLE, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+		// doc 195: the server's DONE store races this release, so clear whatever the completed slot holds
+		// (PENDING or DONE) instead of a CAS that can lose the race and leave the page wedged at DONE.
+		DSERVER_PROCESS_CONTROL_RELEASE(page);
 	}
 	if (seenSeq != mine) {
 		return -2; // a stale answer: never treated as success
@@ -2342,9 +2342,8 @@ char wake = 0;
 							fflush(stderr);
 						}
 					} else {
-						uint32_t __mldr_expect_2 = DSERVER_PROCESS_CONTROL_PENDING;
-						(void)__atomic_compare_exchange_n(&(page)->request_state, &__mldr_expect_2,
-							DSERVER_PROCESS_CONTROL_IDLE, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+						// doc 195: same as the attach read -- clear PENDING or DONE, never a losing CAS.
+						DSERVER_PROCESS_CONTROL_RELEASE(page);
 					}
 					if (seenState == DSERVER_PROCESS_CONTROL_DONE && seenSeq == mine) {
 						rc = page->reply_status;
