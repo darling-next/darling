@@ -30,6 +30,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 #include <stdbool.h>
 #include <sched.h>
 #include <sys/prctl.h>
+#include <sys/wait.h>
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -753,6 +754,23 @@ static bool rootlessInitIsRunning(pid_t pidInit)
 {
 	if (pidInit <= 0)
 		return false;
+
+	// The launcher is the parent of the server process, so an exited server stays a ZOMBIE until it is
+	// reaped -- and kill(pid, 0) succeeds for a zombie. MEASURED (perf-5dq.34): when the server refused to
+	// start because the inherited RLIMIT_NOFILE was too small, it printed its diagnostic and exited, and
+	// this loop still spun the full 30-second shellspawn timeout because the dead child looked alive. Reap
+	// with WNOHANG first, so an exit is conclusive and the refusal surfaces immediately.
+	int status = 0;
+	pid_t reaped = waitpid(pidInit, &status, WNOHANG);
+	if (reaped == pidInit) {
+		fprintf(stderr, "darlingserver (pid %d) exited before rootless shellspawn became ready", pidInit);
+		if (WIFSIGNALED(status))
+			fprintf(stderr, ": killed by signal %d", WTERMSIG(status));
+		else if (WIFEXITED(status))
+			fprintf(stderr, ": exit status %d", WEXITSTATUS(status));
+		fprintf(stderr, "\n");
+		return false;
+	}
 
 	if (kill(pidInit, 0) == 0)
 		return true;
