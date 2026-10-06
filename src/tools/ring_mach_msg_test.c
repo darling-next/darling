@@ -36,6 +36,10 @@
 //   delay    <ms> <iters>            sender delayed N ms (>=5000 exercises the >3s production wait)
 //   timeout  <ms> <iters>            receive with MACH_RCV_TIMEOUT and NO sender: must time out
 //   ool      <iters>                 out-of-line message: drives the caller-local mmap/munmap S2C
+//   lane_hold <threads>              L2: N simultaneously-live Ring lanes, SEQUENTIAL create, then 8s hold
+//   pthread_live <threads> [stack_kib] dar-dles: N simultaneously-live pthreads, each parked on one release
+//                                    barrier, sequential create, then release+join; NO Mach IPC (thread
+//                                    lifecycle alone -- the failing create and its live-thread count are printed)
 //   stress_pool  <receivers> <iters> S1: persistent receiver/sender PAIRS, high concurrency, no churn
 //   stress_churn <iters>             S2: persistent receiver, a NEW sender thread per operation
 //   bench_simple <iters>             P1: persistent threads/ports, per-op timing, setup outside the timer
@@ -625,6 +629,106 @@ static int run_lane_hold(unsigned n) {
 	(void)th; (void)ar; // the process exit tears the held lanes down; no join, no drop_port (see above)
 	__atomic_store_n(&g_monitor_stop, 1, __ATOMIC_RELEASE);
 	return failures ? 1 : 0;
+}
+
+// --- dar-dles: simultaneously-live pthread create/start barrier -------------------------------------
+// The defect (dar-dles): with ~50 or more SIMULTANEOUSLY LIVE guest threads, pthread_create stops
+// returning -- it neither completes nor fails, it simply never returns. This mode holds exactly N
+// threads alive, each parked on ONE explicit release barrier, and the creator records for every create
+// its attempt index, its return code, and the number of workers already live. It performs NO Mach IPC
+// at all, so the only thing it exercises is the pthread create/start handshake: a stall here is that
+// handshake's transition, not the transport.
+//
+// Creation is SEQUENTIAL (the creator waits for worker i to signal started before creating i+1), so
+// exactly one create is in flight at a time while N threads are simultaneously alive -- the shape the
+// defect is measured on.
+static volatile int g_pl_started; // workers that have signalled "started"
+static volatile int g_pl_release; // creator sets once every worker must exit
+
+static void* pl_worker(void* raw) {
+	unsigned idx = *(unsigned*)raw;
+	wset(idx, PH_RECEIVER_WAIT, 0);
+	__atomic_add_fetch(&g_pl_started, 1, __ATOMIC_RELEASE);
+	// park on the one explicit barrier until the creator releases us; parking is progress, so the
+	// watchdog slot is refreshed while we wait
+	while (!__atomic_load_n(&g_pl_release, __ATOMIC_ACQUIRE)) {
+		wset(idx, PH_RECEIVER_WAIT, 0);
+		usleep(20000);
+	}
+	wset(idx, PH_DONE, 0);
+	return NULL;
+}
+
+static int run_pthread_live(unsigned n, unsigned stack_kib) {
+	if (n == 0 || n > MAX_WORKERS) {
+		printf("PTHREAD_LIVE_BAD n=%u\n", n);
+		return 2;
+	}
+	start_monitor(NULL);
+	{
+		unsigned used[MAX_WORKERS];
+		for (unsigned i = 0; i < n; ++i) used[i] = i;
+		// Mark every slot PH_DONE; a slot becomes INIT only when its create is actually attempted, so the
+		// watchdog names the exact attempt that stopped instead of an untouched planned slot.
+		init_worker_slots(used, 0);
+	}
+	__atomic_store_n(&g_workers_live, n, __ATOMIC_RELEASE);
+	pthread_t*     th  = calloc(n, sizeof(*th));
+	unsigned*      ids = calloc(n, sizeof(*ids));
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, (size_t)(stack_kib ? stack_kib : 256u) * 1024u);
+
+	unsigned created = 0;
+	int first_rc = 0;
+	for (unsigned i = 0; i < n; ++i) {
+		unsigned live = (unsigned)__atomic_load_n(&g_pl_started, __ATOMIC_ACQUIRE);
+		wset(i, PH_INIT, 0);
+		printf("PTHREAD_LIVE_CREATE_BEGIN index=%u live=%u\n", i, live);
+		fflush(stdout);
+		ids[i] = i;
+		int rc = pthread_create(&th[i], &attr, pl_worker, &ids[i]);
+		printf("PTHREAD_LIVE_CREATE_DONE index=%u rc=%d live=%u created=%u\n", i, rc,
+		       (unsigned)__atomic_load_n(&g_pl_started, __ATOMIC_ACQUIRE), created);
+		fflush(stdout);
+		if (rc != 0) { first_rc = rc; break; }
+		++created;
+		// wait until THIS worker signalled started: one create in flight, N alive simultaneously
+		unsigned spins = 0;
+		while ((unsigned)__atomic_load_n(&g_pl_started, __ATOMIC_ACQUIRE) < i + 1) {
+			usleep(1000);
+			if (++spins > 120000) break; // 120s bound: the watchdog reports the real stall
+		}
+		if ((unsigned)__atomic_load_n(&g_pl_started, __ATOMIC_ACQUIRE) < i + 1) {
+			printf("PTHREAD_LIVE_START_TIMEOUT index=%u live=%u\n", i,
+			       (unsigned)__atomic_load_n(&g_pl_started, __ATOMIC_ACQUIRE));
+			fflush(stdout);
+			break;
+		}
+		if ((i + 1) % 8 == 0 || i + 1 == n) {
+			printf("PTHREAD_LIVE_PROGRESS created=%u live=%u of=%u\n", created,
+			       (unsigned)__atomic_load_n(&g_pl_started, __ATOMIC_ACQUIRE), n);
+			fflush(stdout);
+		}
+	}
+
+	unsigned started = (unsigned)__atomic_load_n(&g_pl_started, __ATOMIC_ACQUIRE);
+	printf("PTHREAD_LIVE_ALL n=%u created=%u started=%u\n", n, created, started);
+	fflush(stdout);
+
+	// release every worker and join them cleanly (join is part of the handshake the defect is in)
+	__atomic_store_n(&g_pl_release, 1, __ATOMIC_RELEASE);
+	unsigned joined = 0;
+	for (unsigned i = 0; i < created; ++i) {
+		pthread_join(th[i], NULL);
+		++joined;
+	}
+	int pass = (first_rc == 0 && created == n && started == n && joined == n) ? 1 : 0;
+	printf("RING_MACH_TEST mode=pthread_live n=%u stack_kib=%u created=%u started=%u joined=%u "
+	       "first_err=%d pass=%d\n", n, stack_kib, created, started, joined, first_rc, pass);
+	fflush(stdout);
+	__atomic_store_n(&g_monitor_stop, 1, __ATOMIC_RELEASE);
+	return pass ? 0 : 1;
 }
 
 static int run_pool(unsigned receivers, unsigned iters, unsigned ool_every, const char* label,
@@ -1455,6 +1559,12 @@ int main(int argc, char** argv) {
 	} else if (!strcmp(mode, "lane_hold")) {
 		unsigned n = (argc > 2) ? (unsigned)atoi(argv[2]) : 128;
 		return run_lane_hold(n);
+	} else if (!strcmp(mode, "pthread_live")) {
+		// dar-dles: hold N guest threads simultaneously alive (no Mach IPC), each parked on one explicit
+		// release barrier, so a create/start stall is attributable to the pthread lifecycle handshake.
+		unsigned n = (argc > 2) ? (unsigned)atoi(argv[2]) : 64;
+		unsigned stack_kib = (argc > 3) ? (unsigned)atoi(argv[3]) : 256;
+		return run_pthread_live(n, stack_kib);
 	} else if (!strcmp(mode, "bench_simple")) {
 		unsigned iters = (argc > 2) ? (unsigned)atoi(argv[2]) : 2000;
 		return run_pool(1, iters, 0, "bench_simple", 1, 0);
