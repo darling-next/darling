@@ -173,11 +173,20 @@ static void fw_witness(int sig, siginfo_t* info, void* uctx)
 	  while (k > 0) buf[n++] = tmp[--k]; }
 	for (const char* p = p5; *p && n < 400; ++p) buf[n++] = *p;
 	{ unsigned long v = info ? (unsigned long)info->si_addr : 0; for (int i = 60; i >= 0; i -= 4) buf[n++] = dig[(v >> i) & 0xf]; }
+	/* The fault-report tail is built for both loader builds, so take the instruction and stack pointer from the
+	 * arch-appropriate slot: the 32-bit build has no REG_RIP/REG_RSP and fails to compile without this. */
+#if defined(__x86_64__)
+#define FW_UCTX_REG_IP REG_RIP
+#define FW_UCTX_REG_SP REG_RSP
+#else
+#define FW_UCTX_REG_IP REG_EIP
+#define FW_UCTX_REG_SP REG_ESP
+#endif
 	for (const char* p = p6; *p && n < 400; ++p) buf[n++] = *p;
-	{ ucontext_t* uc = (ucontext_t*)uctx; unsigned long v = uc ? (unsigned long)uc->uc_mcontext.gregs[REG_RIP] : 0;
+	{ ucontext_t* uc = (ucontext_t*)uctx; unsigned long v = uc ? (unsigned long)uc->uc_mcontext.gregs[FW_UCTX_REG_IP] : 0;
 	  for (int i = 60; i >= 0; i -= 4) buf[n++] = dig[(v >> i) & 0xf]; }
 	for (const char* p = p7; *p && n < 400; ++p) buf[n++] = *p;
-	{ ucontext_t* uc = (ucontext_t*)uctx; unsigned long v = uc ? (unsigned long)uc->uc_mcontext.gregs[REG_RSP] : 0;
+	{ ucontext_t* uc = (ucontext_t*)uctx; unsigned long v = uc ? (unsigned long)uc->uc_mcontext.gregs[FW_UCTX_REG_SP] : 0;
 	  for (int i = 60; i >= 0; i -= 4) buf[n++] = dig[(v >> i) & 0xf]; }
 	/* TLS BASE. si_addr=0x8 is the shape of a load through a NULL thread pointer plus an 8-byte offset, so whether
 	 * the FAULTING thread has a thread pointer at all separates "this thread never had TLS" from "it had TLS and
