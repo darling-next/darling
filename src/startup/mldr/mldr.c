@@ -378,6 +378,21 @@ static void mldr_install_signal_probe(void) {
 int main(int argc, char** argv, char** envp)
 {
 	if (getenv("DARLING_TEST_FAULT_WITNESS") != NULL) { fw_arm(); }
+	/* ATTACH WINDOW (MLDR_STOP_AT_START=1). A competing sigaction cannot make a
+	 * fatal signal catchable: fw_rearm_loop reinstalls the witness every 20 ms while
+	 * Darling installs its own dispositions later, so at delivery time the runtime
+	 * handler swallows the signal (measured: SIGABRT, SIGSYS and SIGILL sent to a
+	 * guest process produced no witness line). Stopping the process BEFORE the guest
+	 * image runs gives a debugger time to attach and arm signal stops, so the fault
+	 * is caught with its registers and the original si_code. The process resumes on
+	 * SIGCONT. */
+	if (getenv("MLDR_STOP_AT_START") != NULL) {
+		static const char* m1 = "MLDR-STOP-AT-START\n";
+		(void)!write(2, m1, 20);
+		kill(getpid(), SIGSTOP);
+		static const char* m2 = "MLDR-STOP-AT-START-RESUMED\n";
+		(void)!write(2, m2, 28);
+	}
 	void** sp;
 	int pushCount = 0;
 	char *filename, *p = NULL;
