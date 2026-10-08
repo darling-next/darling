@@ -387,11 +387,21 @@ int main(int argc, char** argv, char** envp)
 	 * is caught with its registers and the original si_code. The process resumes on
 	 * SIGCONT. */
 	if (getenv("MLDR_STOP_AT_START") != NULL) {
-		static const char* m1 = "MLDR-STOP-AT-START\n";
-		(void)!write(2, m1, 20);
-		kill(getpid(), SIGSTOP);
-		static const char* m2 = "MLDR-STOP-AT-START-RESUMED\n";
-		(void)!write(2, m2, 28);
+		// SELECTIVE: the value is a substring that must appear in this process's argv. An
+		// unconditional stop halts the shell that would launch the interesting process, so the
+		// window never opens on the target at all -- measured. "*" keeps the old global behaviour.
+		const char* want = getenv("MLDR_STOP_AT_START");
+		int match = (want[0] == '*' && want[1] == '\0');
+		for (int i = 0; !match && i < argc; ++i) {
+			if (argv[i] != NULL && strstr(argv[i], want) != NULL) { match = 1; }
+		}
+		if (match) {
+			static const char* m1 = "MLDR-STOP-AT-START\n";
+			(void)!write(2, m1, 20);
+			kill(getpid(), SIGSTOP);
+			static const char* m2 = "MLDR-STOP-AT-START-RESUMED\n";
+			(void)!write(2, m2, 28);
+		}
 	}
 	void** sp;
 	int pushCount = 0;
