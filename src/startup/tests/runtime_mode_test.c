@@ -217,10 +217,37 @@ static void resolve_ok(
 {
 	enum darling_runtime_mode mode = DARLING_RUNTIME_MODE_INVALID;
 	char error[256] = {0};
+	/*
+	 * A privileged expectation must ASK for the retired mode, because that is the contract
+	 * now: rootless is the default and a privileged mode is refused without the force
+	 * variable. Passing force here keeps these cases about mode RESOLUTION rather than
+	 * about the retirement gate, which has its own case below.
+	 */
+	const bool force = expected != DARLING_RUNTIME_MODE_ROOTLESS_EUNION;
 	require(darling_runtime_mode_resolve(cli, canonical, rootless, nooverlay,
-			eunion, DARLING_RUNTIME_MODE_PRIVILEGED_OVERLAY, true,
+			eunion, DARLING_RUNTIME_MODE_PRIVILEGED_OVERLAY, true, force,
 			&mode, error, sizeof(error)) == 0, error);
 	require(mode == expected, "resolved runtime mode differs from expectation");
+}
+
+/*
+ * THE RETIREMENT GATE. Without the force variable, every privileged mode is refused with a
+ * message that names the variable, because an allowed privileged run fails later at setuid or
+ * at a mount -- which reads as a broken environment instead of a retired mode, and that is
+ * exactly the wrong turn this replaced.
+ */
+static void resolve_retired_is_refused(const char* canonical)
+{
+	enum darling_runtime_mode mode = DARLING_RUNTIME_MODE_INVALID;
+	char error[256] = {0};
+	require(darling_runtime_mode_resolve(false, canonical, NULL, NULL, NULL,
+			DARLING_RUNTIME_MODE_PRIVILEGED_OVERLAY, true, false,
+			&mode, error, sizeof(error)) != 0,
+		"a retired rootfull mode was accepted without the force variable");
+	require(mode == DARLING_RUNTIME_MODE_INVALID,
+		"a refused retired mode left a usable mode behind");
+	require(strstr(error, "retired rootfull mode") != NULL, error);
+	require(strstr(error, "DARLING_FORCE_ROOTFULL_MODE") != NULL, error);
 }
 
 static void resolve_fails(
@@ -234,8 +261,9 @@ static void resolve_fails(
 {
 	enum darling_runtime_mode mode = DARLING_RUNTIME_MODE_PRIVILEGED_OVERLAY;
 	char error[256] = {0};
+	/* force=true: these cases are about invalid selections, not about the retirement gate. */
 	require(darling_runtime_mode_resolve(cli, canonical, rootless, nooverlay,
-			eunion, DARLING_RUNTIME_MODE_PRIVILEGED_OVERLAY, capable,
+			eunion, DARLING_RUNTIME_MODE_PRIVILEGED_OVERLAY, capable, true,
 			&mode, error, sizeof(error)) != 0,
 		"invalid runtime mode selection unexpectedly succeeded");
 	require(mode == DARLING_RUNTIME_MODE_INVALID,
@@ -247,6 +275,10 @@ static void test_resolution(void)
 {
 	resolve_ok(false, NULL, NULL, NULL, NULL,
 		DARLING_RUNTIME_MODE_PRIVILEGED_OVERLAY);
+	resolve_retired_is_refused(NULL);
+	resolve_retired_is_refused("privileged-overlay");
+	resolve_retired_is_refused("privileged-copy");
+	resolve_retired_is_refused("privileged-eunion");
 	resolve_ok(false, "privileged-overlay", NULL, NULL, NULL,
 		DARLING_RUNTIME_MODE_PRIVILEGED_OVERLAY);
 	resolve_ok(false, "privileged-copy", NULL, NULL, NULL,

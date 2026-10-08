@@ -1077,8 +1077,20 @@ void missingSetuidRoot(void)
 	else
 		path[len] = '\0';
 
-	fprintf(stderr, "Sorry, the `%s' binary is not setuid root, which is mandatory.\n", path);
-	fprintf(stderr, "Darling needs this in order to create mount and PID namespaces and to perform mounts.\n");
+	/*
+	 * This path is now reachable ONLY when a privileged mode was asked for explicitly
+	 * (DARLING_FORCE_ROOTFULL_MODE=1 or an explicit privileged mode), because rootless is the
+	 * default and the mode selector refuses a privileged mode otherwise. Say BOTH facts: the
+	 * privileged launcher needs setuid root, and it is not required for the normal rootless
+	 * run -- the old message named only the obligation, which is what sent a reader chasing
+	 * sudo, chmod u+s and mount options for a mode they never wanted.
+	 */
+	fprintf(stderr, "Sorry, the `%s' binary is not setuid root, which the retired rootfull mode requires.\n", path);
+	fprintf(stderr, "The privileged launcher needs setuid root to create mount and PID namespaces and to perform mounts.\n");
+	fprintf(stderr, "You are in this mode because it was requested explicitly (%s=1 or an explicit privileged mode).\n",
+		DARLING_RUNTIME_FORCE_ROOTFULL_ENV);
+	fprintf(stderr, "Rootless Darling needs no setuid root: unset %s to run it.\n",
+		DARLING_RUNTIME_FORCE_ROOTFULL_ENV);
 }
 
 pid_t spawnInitProcess(void)

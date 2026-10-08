@@ -89,12 +89,22 @@ bool darling_runtime_mode_uses_eunion(enum darling_runtime_mode mode)
 enum darling_runtime_mode darling_runtime_mode_default_for_host(void)
 {
 	/*
-	 * Preserve the existing WSL1 no-overlay fallback, but select it once at
-	 * the launcher boundary so every downstream process sees the same mode.
+	 * ROOTLESS IS THE DEFAULT. It is the mode the product is bootstrapped, deployed and
+	 * measured in, and it needs neither setuid root nor a privileged mount, so a plain
+	 * `darling shell` works on a checkout with no install step.
+	 *
+	 * MEASURED reason this changed: with the privileged default, a normal smoke run answered
+	 * "the binary is not setuid root, which is mandatory" -- a message about an install
+	 * obligation, not about Darling -- and the investigation it triggered (sudo, chmod u+s,
+	 * nosuid mounts) was entirely about the wrong runtime mode. The privileged modes still
+	 * exist for the E-UNION/overlay work that needs them, but they must now be asked for
+	 * (DARLING_FORCE_ROOTFULL_MODE, or an explicit mode), so they can no longer be reached
+	 * by accident.
+	 *
+	 * The WSL1 no-overlay fallback is gone with the privileged default: it selected a
+	 * privileged mode, which is exactly what must no longer happen by default.
 	 */
-	if (getenv("WSLENV") != NULL && getenv("WSL_INTEROP") == NULL)
-		return DARLING_RUNTIME_MODE_PRIVILEGED_COPY;
-	return DARLING_RUNTIME_MODE_PRIVILEGED_OVERLAY;
+	return DARLING_RUNTIME_MODE_ROOTLESS_EUNION;
 }
 
 int darling_runtime_mode_parse_cli(
@@ -152,6 +162,7 @@ int darling_runtime_mode_resolve(
 	const char* legacy_eunion,
 	enum darling_runtime_mode default_mode,
 	bool eunion_capable,
+	bool force_rootfull,
 	enum darling_runtime_mode* mode,
 	char* error,
 	size_t error_size
@@ -228,6 +239,21 @@ int darling_runtime_mode_resolve(
 		*mode = legacy_present ? legacy_mode : default_mode;
 	}
 
+	/*
+	 * The privileged launcher is retired, and this is the gate that says so. It refuses the
+	 * mode rather than trying and failing later: a privileged run that is allowed to proceed
+	 * fails at "not setuid root" or at a mount, which reads as a broken environment instead of
+	 * as a retired mode. The refusal names the ONE variable that re-enables it, so a caller
+	 * that genuinely needs it is one step away and everybody else gets rootless.
+	 */
+	if (!darling_runtime_mode_is_rootless(*mode) && !force_rootfull) {
+		*mode = DARLING_RUNTIME_MODE_INVALID;
+		return mode_error(error, error_size,
+			"this is retired rootfull mode; set "
+			DARLING_RUNTIME_FORCE_ROOTFULL_ENV
+			"=1 to use it (rootless is the default)");
+	}
+
 	if (darling_runtime_mode_uses_eunion(*mode) && !eunion_capable) {
 		*mode = DARLING_RUNTIME_MODE_INVALID;
 		return mode_error(error, error_size,
@@ -246,6 +272,7 @@ int darling_runtime_mode_select_process(
 {
 	if (cli == NULL)
 		return mode_error(error, error_size, "parsed launcher CLI is missing");
+	const char* force = getenv(DARLING_RUNTIME_FORCE_ROOTFULL_ENV);
 	return darling_runtime_mode_resolve(
 		cli->rootless,
 		getenv(DARLING_RUNTIME_MODE_ENV),
@@ -254,6 +281,7 @@ int darling_runtime_mode_select_process(
 		getenv("DARLING_EUNION"),
 		darling_runtime_mode_default_for_host(),
 		eunion_capable,
+		force != NULL && strcmp(force, "1") == 0,
 		mode,
 		error,
 		error_size

@@ -5,6 +5,14 @@
 #include <stddef.h>
 
 #define DARLING_RUNTIME_MODE_ENV "DARLING_RUNTIME_MODE"
+/*
+ * The privileged launcher is RETIRED. It needed setuid root, which made a normal
+ * development run depend on an install step and on mount options, and it is not the
+ * mode the product is validated in. Rootless is the default; a privileged mode is
+ * refused unless this variable is set explicitly, so an accidental privileged run
+ * fails loudly instead of silently demanding setuid root.
+ */
+#define DARLING_RUNTIME_FORCE_ROOTFULL_ENV "DARLING_FORCE_ROOTFULL_MODE"
 #define DARLING_RUNTIME_MODE_MARKER_NAME ".darling-runtime-mode-v1"
 #define DARLING_RUNTIME_MODE_MARKER_VERSION 1
 
@@ -50,6 +58,7 @@ int darling_runtime_mode_resolve(
 	const char* legacy_eunion,
 	enum darling_runtime_mode default_mode,
 	bool eunion_capable,
+	bool force_rootfull,
 	enum darling_runtime_mode* mode,
 	char* error,
 	size_t error_size
