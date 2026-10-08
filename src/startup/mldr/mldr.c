@@ -206,6 +206,17 @@ static void fw_witness(int sig, siginfo_t* info, void* uctx)
 	}
 	buf[n++] = '\n';
 	(void)!write(2, buf, (size_t)n);
+	/* HOLD ON FAULT (MLDR_HOLD_ON_SIGNAL): the witness already reports sig, si_code,
+	 * si_addr, host pid/tid, rip and rsp, but it then restored SIG_DFL and the process
+	 * died -- so a faulting guest that lives for a few hundred milliseconds could never
+	 * be inspected. With the switch set the process STOPS here instead and stays
+	 * inspectable (the registers are already in uctx for the caller, and the stacks stay
+	 * mapped), which is what makes the trap half of the T4 failure catchable at all. */
+	if (getenv("MLDR_HOLD_ON_SIGNAL") != NULL) {
+		static const char* hold = "FAULT-WITNESS-HOLD\n";
+		(void)!write(2, hold, 19);
+		for (;;) { pause(); }
+	}
 	struct sigaction dfl;
 	memset(&dfl, 0, sizeof(dfl));
 	dfl.sa_handler = SIG_DFL;
@@ -214,6 +225,7 @@ static void fw_witness(int sig, siginfo_t* info, void* uctx)
 
 static void* fw_rearm_loop(void* arg)
 {
+	int hold_extra = (getenv("MLDR_HOLD_ON_SIGNAL") != NULL);
 	/* RE-ARMING: the loader installs the witness at process start, and Darling's own install happens later (the
 	 * guest image's sigaction/sigexc setup), which is why an armed witness that never fires is more likely to
 	 * have been REPLACED than to have missed the fault. Re-installing in a loop under the same environment makes
@@ -228,6 +240,15 @@ static void* fw_rearm_loop(void* arg)
 		sigemptyset(&sa.sa_mask);
 		sigaction(SIGSEGV, &sa, NULL);
 		sigaction(SIGBUS, &sa, NULL);
+		/* keep the hold-mode set armed too: Darling's own install lands later and would
+		 * otherwise replace the disposition before the fault */
+		if (hold_extra) {
+			sigaction(SIGABRT, &sa, NULL);
+			sigaction(SIGILL, &sa, NULL);
+			sigaction(SIGTRAP, &sa, NULL);
+			sigaction(SIGSYS, &sa, NULL);
+			sigaction(SIGFPE, &sa, NULL);
+		}
 		usleep(20000);
 	}
 	return NULL;
@@ -247,6 +268,16 @@ static void fw_arm(void)
 	sigaction(SIGSEGV, &sa, NULL);
 	sigaction(SIGBUS, &sa, NULL);
 	(void)!write(2, "FAULT-WITNESS armed via loader\n", 31);
+	/* A faulting guest need not die by SEGV/BUS: with the hold switch set, arm the other
+	 * fatal signals too, so a trap/abort/illegal-instruction death is caught as well. */
+	if (getenv("MLDR_HOLD_ON_SIGNAL") != NULL) {
+		sigaction(SIGABRT, &sa, NULL);
+		sigaction(SIGILL, &sa, NULL);
+		sigaction(SIGTRAP, &sa, NULL);
+		sigaction(SIGSYS, &sa, NULL);
+		sigaction(SIGFPE, &sa, NULL);
+		(void)!write(2, "FAULT-WITNESS armed for ABRT/ILL/TRAP/SYS/FPE\n", 45);
+	}
 }
 
 void* __mldr_main_stack_top = NULL;
