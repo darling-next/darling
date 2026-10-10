@@ -11,9 +11,15 @@ extern "C" {
 #define CRASHREPORTER_ANNOTATIONS_VERSION 5
 #define CRASH_REPORTER_CLIENT_HIDDEN __attribute__((visibility("hidden")))
 
-inline void CRSetCrashLogMessage(const char* text) {}
-inline void CRSetCrashLogMessage2(const char* path) {}
-inline const char* CRGetCrashLogMessage(void) { return 0; }
+/* These are conveniences for callers that cannot link the real shim: a bare `inline` in C emits an EXTERNAL
+ * definition in every translation unit that includes this header, which is how CRSetCrashLogMessage ended up
+ * exported as a weak definition from unrelated images (measured: libdyld.dylib and libc++abi.dylib), i.e. a
+ * public binding that could resolve to a no-op. `static inline` keeps them local to their caller, so the only
+ * external definition is the strong one in libsystem_duct (duct/src/CRGetCrashLogMessage.c), and ADR 0004's
+ * "one implementation per public name" holds. */
+static inline void CRSetCrashLogMessage(const char* text) { (void)text; }
+static inline void CRSetCrashLogMessage2(const char* path) { (void)path; }
+static inline const char* CRGetCrashLogMessage(void) { return 0; }
 
 struct crashreporter_annotations_t {
     uint64_t version;
