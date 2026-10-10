@@ -19,6 +19,9 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 
 #import <PackageKit/PackageKit.h>
 
+/* The domain string Apple's PackageKit reports; see PKInstallClient.h for why it must exist. */
+NSString * const PKInstallErrorDomain = @"PKInstallErrorDomain";
+
 @implementation PKInstallClient
 
 - (NSMethodSignature *)methodSignatureForSelector:(SEL)aSelector {

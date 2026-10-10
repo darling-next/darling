@@ -20,3 +20,12 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 @interface PKInstallClient : NSObject
 
 @end
+
+/*
+ * Measured, not decorative: Xcode 26.3's DVTSystemPrerequisites.framework references
+ * _PKInstallErrorDomain as an undefined DATA symbol, so a prefix whose PackageKit does not export it
+ * fails to load that framework with "Symbol not found: _PKInstallErrorDomain" -- which is how a real
+ * xcodebuild stops here. The value is the domain string Apple's own PackageKit reports in its errors,
+ * observed in real install failures: "Error Domain=PKInstallErrorDomain Code=...".
+ */
+extern NSString * const PKInstallErrorDomain;
