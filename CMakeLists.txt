@@ -404,23 +404,31 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_rootless_toolchain_manifest "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json")
 	# The Swift runtime is source-owned data (the project fetches it with git-lfs
 	# from swift.org), so it belongs in this manifest as resources rather than
-	# being left to an install rule the deploy never reads. Refuse a tree where
-	# the payload was never materialised: an empty glob would otherwise produce a
-	# manifest that silently lacks the runtime, which is the failure mode that
-	# sent a real xcodebuild looking for a library a prefix could never have.
-	file(GLOB _rootless_toolchain_swift_dylibs
-		"${CMAKE_CURRENT_SOURCE_DIR}/src/external/swift/*.dylib")
-	if(NOT _rootless_toolchain_swift_dylibs)
+	# being left to an install rule the deploy never reads. The deploy refuses a
+	# host path outside the build tree (measured: "resource 'swift_runtime'
+	# escapes build root"), so stage them into this component's resource
+	# directory first -- the same reason the Homebrew module stages Perl with
+	# configure_file COPYONLY before naming it in a manifest.
+	#
+	# Declare the MEASURED minimum and let the closure resolver pull the rest.
+	# Measured both ways: naming all 44 dylibs fails, because each one is a
+	# Mach-O dependency root and the resolver refuses a root whose dependencies
+	# have no built provider ("no built provider for Mach-O dependency
+	# /System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation
+	# required by /usr/lib/swift/libswiftAVFoundation.dylib"). libswiftCore is
+	# the first piece a real xcodebuild asked for, and every further piece is
+	# added only when the guest names it.
+	if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/external/swift/libswiftCore.dylib")
 		message(FATAL_ERROR
 			"the rootless toolchain component needs the Swift runtime, but "
-			"src/external/swift holds no .dylib: materialise the git-lfs payload first "
-			"(git lfs pull, or the project's build.sh)")
+			"src/external/swift/libswiftCore.dylib is absent: materialise the git-lfs "
+			"payload first (git lfs pull, or the project's build.sh)")
 	endif()
-	foreach(_swift_dylib IN LISTS _rootless_toolchain_swift_dylibs)
-		get_filename_component(_swift_name "${_swift_dylib}" NAME)
-		string(APPEND _rootless_toolchain_extra_resources
-			",\n    {\"target\": \"swift_runtime\", \"guest_path\": \"/usr/lib/swift/${_swift_name}\", \"host_path\": \"${_swift_dylib}\"}")
-	endforeach()
+	file(MAKE_DIRECTORY "${_rootless_toolchain_resource_dir}/usr/lib/swift")
+	configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/external/swift/libswiftCore.dylib"
+		"${_rootless_toolchain_resource_dir}/usr/lib/swift/libswiftCore.dylib" COPYONLY)
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"swift_core\", \"guest_path\": \"/usr/lib/swift/libswiftCore.dylib\", \"host_path\": \"${_rootless_toolchain_resource_dir}/usr/lib/swift/libswiftCore.dylib\"}")
 	# Both are built by this component now, and both are install-name/path shapes a
 	# build tool loads at run time: libarchive.2.dylib at /usr/lib, and the
 	# framework binary at the private-framework path dyld reports.
