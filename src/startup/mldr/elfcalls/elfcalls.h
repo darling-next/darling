@@ -132,6 +132,15 @@ struct elf_calls
 	// owner. APPENDED.
 	void* (*dserver_process_control_page)(void);
 
+	// perf#30 OPERATION LEDGER: the ledger's PROCESS-WIDE limit, decided by the LOADER from the exec-time
+	// environment before the guest image starts (0 = off). The guest cannot read its own environment at
+	// the points the ledger logs -- MEASURED 2026-10-10, a scan of /proc/self/environ from the first ring
+	// publish dereferenced NULL in the guest loader and killed the process, which the boot smoke could
+	// only report as an unbootable chain -- and every image in a process must agree, so the loader owns
+	// the decision exactly as it owns the lane directory above. Pure accessor: no allocation, no
+	// environment scan, no RPC, no printing. APPENDED (see the note at the top of this struct).
+	uint32_t (*dserver_op_ledger_limit)(void);
+
 };
 
 #endif

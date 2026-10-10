@@ -159,6 +159,9 @@ calls->dserver_ring_doorbell = __mldr_ring_doorbell;
 	calls->dserver_fd_courier_socket = __mldr_fd_courier_socket;
 	calls->dserver_fd_courier_reset = __mldr_fd_courier_reset;
 	calls->dserver_process_control_page = __mldr_process_control_page;
+	// perf#30 OPERATION LEDGER: APPENDED (see the struct comment).
+	extern uint32_t __mldr_op_ledger_limit(void);
+	calls->dserver_op_ledger_limit = __mldr_op_ledger_limit;
 	calls->prefork_prepare = __mldr_prefork_prepare;
 	calls->postfork_parent = __mldr_postfork_parent;
 }

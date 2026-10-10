@@ -375,6 +375,10 @@ static void mldr_install_signal_probe(void) {
 	sigaction(SIGFPE, &sa, NULL);
 }
 
+// perf#30 OPERATION LEDGER: snapshot the ledger switch from the exec-time environment. Defined with the
+// lane directory below, whose include of rpc-supplement.h has to stay where it is.
+static void mldr_op_ledger_snapshot(char** envp);
+
 int main(int argc, char** argv, char** envp)
 {
 	if (getenv("DARLING_TEST_FAULT_WITNESS") != NULL) { fw_arm(); }
@@ -422,6 +426,10 @@ int main(int argc, char** argv, char** envp)
 		++mldr_load_results.envc;
 	}
 	mldr_load_results.envp = envp;
+
+	// perf#30 OPERATION LEDGER: decide the ledger switch HERE, from the exec-time environment, before the
+	// loader rewrites selected entries below and before any guest image runs.
+	mldr_op_ledger_snapshot(envp);
 
 	// sys_execve() passes the original file path appended to the mldr path in argv[0].
 	if (argc > 0)
@@ -1253,6 +1261,52 @@ void* __mldr_ring_lane_registry(void) {
 
 int __mldr_ring_lane_slots(void) {
 	return MLDR_RING_LANE_SLOTS;
+}
+
+// perf#30 OPERATION LEDGER: the ledger's process-wide limit, decided by the LOADER from the exec-time
+// environment and handed to every image through one appended elfcall. 0 means the ledger is off.
+//
+// WHY THE LOADER OWNS IT. The guest used to read its own environment lazily at the first ring publish.
+// MEASURED 2026-10-10: that read dereferenced NULL inside the guest loader and killed the process
+// (SIGSEGV at addr 0x0), and warming it earlier -- before the publish, or at the top of the adopt path --
+// did not help. The exec-time envp is available here without any of that machinery, every image in the
+// process then agrees on ONE value, and the accessor stays a pure load, which is what the transport path
+// needs.
+static uint32_t mldr_op_ledger_limit = 0;
+
+uint32_t __mldr_op_ledger_limit(void) {
+	return mldr_op_ledger_limit;
+}
+
+// EXACT match on purpose. The removed guest parser searched /proc/self/environ for a SUBSTRING, so an
+// entry like "X_DARLING_OP_LEDGER=1x" could have armed it; the documented contract
+// (DSERVER_LEDGER_ENABLE_ENV == "DARLING_OP_LEDGER=1") is an exact value, and an exact parse is also the
+// one that behaves the same on every host. The cap takes one positive decimal number; malformed or absent
+// falls back to DSERVER_LEDGER_DEFAULT_MAX.
+static void mldr_op_ledger_snapshot(char** envp) {
+	int enabled = 0;
+	unsigned long cap = 0;
+	const size_t max_prefix = sizeof(DSERVER_LEDGER_MAX_ENV) - 1;
+	for (char** entry = envp; entry != NULL && *entry != NULL; ++entry) {
+		if (strcmp(*entry, DSERVER_LEDGER_ENABLE_ENV) == 0) {
+			enabled = 1;
+			continue;
+		}
+		if (strncmp(*entry, DSERVER_LEDGER_MAX_ENV, max_prefix) == 0) {
+			const char* digits = *entry + max_prefix;
+			unsigned long value = 0;
+			int valid = (*digits != '\0');
+			for (const char* d = digits; *d != '\0'; ++d) {
+				if (*d < '0' || *d > '9') { valid = 0; break; }
+				if (value <= 0xfffffffful / 10ul) {
+					value = value * 10ul + (unsigned long)(*d - '0');
+				}
+				if (value > 0xfffffffful) { value = 0xfffffffful; }
+			}
+			if (valid && value > 0) { cap = value; }
+		}
+	}
+	mldr_op_ledger_limit = enabled ? (uint32_t)(cap > 0 ? cap : DSERVER_LEDGER_DEFAULT_MAX) : 0u;
 }
 
 static int* ring_fds;
