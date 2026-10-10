@@ -8,6 +8,8 @@
 static const char* dir_suffix = NULL;
 static pthread_mutex_t dir_suffix_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* Empty on purpose: dir_suffix_lock is re-initialised by the sibling hook below, so there is nothing left for
+ * this one to do. Kept because the fork path calls hooks by name -- a missing one fails rather than no-ops. */
 void _dirhelper_fork_child(void)
 {
 }
