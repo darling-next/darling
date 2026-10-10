@@ -362,6 +362,14 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	CoreFoundation_x86_64
 	securitytool_macos
 	coretls_cfhelpers
+	# Runtime pieces the build tooling itself loads. Measured by running the real
+	# Xcode's xcodebuild in a guest: it dies on the first one that is absent, in
+	# this order -- /usr/lib/swift/libswiftCore.dylib, then PackageKit.framework,
+	# then /usr/lib/libarchive.2.dylib. Each was buildable and installable all
+	# along; they were only missing from this component, which is why a prefix
+	# filled through the ordinary path did not carry them.
+	archive
+	PackageKit
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -394,6 +402,32 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_rootless_toolchain_extra_entrypoints "")
 	set(_rootless_toolchain_extra_resources "")
 	set(_rootless_toolchain_manifest "${CMAKE_BINARY_DIR}/darling-rootless-toolchain.json")
+	# The Swift runtime is source-owned data (the project fetches it with git-lfs
+	# from swift.org), so it belongs in this manifest as resources rather than
+	# being left to an install rule the deploy never reads. Refuse a tree where
+	# the payload was never materialised: an empty glob would otherwise produce a
+	# manifest that silently lacks the runtime, which is the failure mode that
+	# sent a real xcodebuild looking for a library a prefix could never have.
+	file(GLOB _rootless_toolchain_swift_dylibs
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/external/swift/*.dylib")
+	if(NOT _rootless_toolchain_swift_dylibs)
+		message(FATAL_ERROR
+			"the rootless toolchain component needs the Swift runtime, but "
+			"src/external/swift holds no .dylib: materialise the git-lfs payload first "
+			"(git lfs pull, or the project's build.sh)")
+	endif()
+	foreach(_swift_dylib IN LISTS _rootless_toolchain_swift_dylibs)
+		get_filename_component(_swift_name "${_swift_dylib}" NAME)
+		string(APPEND _rootless_toolchain_extra_resources
+			",\n    {\"target\": \"swift_runtime\", \"guest_path\": \"/usr/lib/swift/${_swift_name}\", \"host_path\": \"${_swift_dylib}\"}")
+	endforeach()
+	# Both are built by this component now, and both are install-name/path shapes a
+	# build tool loads at run time: libarchive.2.dylib at /usr/lib, and the
+	# framework binary at the private-framework path dyld reports.
+	string(APPEND _rootless_toolchain_extra_entrypoints
+		",\n    {\"target\": \"archive\", \"guest_path\": \"/usr/lib/libarchive.2.dylib\", \"host_path\": \"$<TARGET_FILE:archive>\"}")
+	string(APPEND _rootless_toolchain_extra_entrypoints
+		",\n    {\"target\": \"PackageKit\", \"guest_path\": \"/System/Library/PrivateFrameworks/PackageKit.framework/Versions/A/PackageKit\", \"host_path\": \"$<TARGET_FILE:PackageKit>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
