@@ -140,6 +140,26 @@ module Darwin [system] {
 
   extern module machine "Darwin_machine.modulemap"
 
+  // mach-o/dyld.h, one header of the mach-o set, claimed by Darwin so that
+  // `import Darwin` gives Swift _dyld_image_count (mach-o/dyld.h:53) - the
+  // Foundation overlay's AttributeScope.swift needs it, and measured before
+  // this: "cannot find '_dyld_image_count' in scope".
+  //
+  // Not the whole MachO module: Apple's DarwinBasic.modulemap maps all of
+  // mach-o/*, and in this tree that closes a cycle Clang rejects - the mach-o
+  // headers reach Darwin through <mach/machine.h> (MachO -> Darwin) while
+  // Darwin's own os/trace_base.h reaches <mach-o/loader.h> (Darwin -> MachO).
+  // This submodule is safe because it is the narrow case: mach-o/dyld.h
+  // includes only <mach-o/loader.h>, <stddef.h>, <stdint.h>, <stdbool.h> and
+  // <Availability.h>.  mach-o/loader.h and the rest of mach-o/ stay unmapped,
+  // so their text joins this submodule instead of forming a module that Darwin
+  // would depend on, and the mach/machine.h they reach is already inside
+  // Darwin_machine.modulemap - a dependency within Darwin, not between modules.
+  module dyld {
+    header "mach-o/dyld.h"
+    export *
+  }
+
   explicit module aliasdb {
     header "aliasdb.h"
     export *

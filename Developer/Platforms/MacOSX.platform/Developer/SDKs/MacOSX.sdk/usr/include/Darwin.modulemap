@@ -86,6 +86,10 @@ module Darwin [system] {
     export *
   }
   extern module machine "Darwin_machine.modulemap"
+  module dyld {
+    header "mach-o/dyld.h"
+    export *
+  }
   explicit module aliasdb {
     header "aliasdb.h"
     export *
