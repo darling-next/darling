@@ -1,0 +1,56 @@
+// Template for the SDK's usr/include/os.modulemap, filtered by
+// tools/generate-sdk-modulemap.py against the headers this tree has.
+//
+// Apple's os.modulemap is the same shape, with two differences this tree needs:
+//
+//  * The submodules Apple declares for os/base.h, os/clock.h, os/lock.h and
+//    os/proc.h are NOT repeated here.  Apple's Darwin.modulemap already
+//    declares those four as Darwin.os submodules, so declaring them again under
+//    a top-level `os` would put one header in two modules, and carrying the
+//    whole of Apple's map as a top-level module was measured to close a cycle
+//    Clang rejects: Darwin -> os -> XPC -> Dispatch -> Darwin.
+//  * Apple's deprecated `lock`, `object` and `workgroup` submodules point at the
+//    _modules/_*.h wrappers, which this tree does not ship.  os/object.h is
+//    reachable as the os_object module below instead.
+
+module os [system] {
+  module atomic {
+    header "os/atomic.h"
+    export *
+  }
+
+  module overflow {
+    header "os/overflow.h"
+    export *
+  }
+
+  module trace_base {
+    header "os/trace_base.h"
+    export *
+  }
+
+  explicit module activity {
+    header "os/activity.h"
+    export *
+  }
+
+  explicit module log {
+    header "os/log.h"
+    export *
+  }
+
+  explicit module signpost {
+    header "os/signpost.h"
+    export *
+  }
+
+  explicit module trace {
+    header "os/trace.h"
+    export *
+  }
+}
+
+module os_object [system] {
+  header "os/object.h"
+  export *
+}
