@@ -410,25 +410,33 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 	# directory first -- the same reason the Homebrew module stages Perl with
 	# configure_file COPYONLY before naming it in a manifest.
 	#
-	# Declare the MEASURED minimum and let the closure resolver pull the rest.
-	# Measured both ways: naming all 44 dylibs fails, because each one is a
-	# Mach-O dependency root and the resolver refuses a root whose dependencies
-	# have no built provider ("no built provider for Mach-O dependency
-	# /System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation
-	# required by /usr/lib/swift/libswiftAVFoundation.dylib"). libswiftCore is
-	# the first piece a real xcodebuild asked for, and every further piece is
-	# added only when the guest names it.
-	if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/external/swift/libswiftCore.dylib")
+	# Declare the whole runtime the project carries, discovered rather than listed. What used to be a
+	# MEASURED MINIMUM was a property of the 5.2.2 payload, not of this design: its 44 dylibs were
+	# per-framework OVERLAYS (libswiftAVFoundation, libswiftAppKit, ...), each a dependency root on a
+	# system framework this tree does not build, so naming them all failed. Swift 6.2.4 ships 15
+	# dylibs instead -- the overlays moved into the frameworks themselves -- and those 15 depend only
+	# on each other and libSystem. The guest names them one at a time as it loads a toolchain (measured:
+	# swift-driver asked for libswift_Concurrency after libswiftCore), and every declared root must
+	# resolve, so a runtime that is present but undeclared is a load-time failure waiting for the next
+	# guest command. Declaring what the payload holds keeps that in step with version.txt.
+	file(GLOB _rootless_swift_runtime CONFIGURE_DEPENDS
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/external/swift/libswift*.dylib")
+	if(NOT _rootless_swift_runtime)
 		message(FATAL_ERROR
-			"the rootless toolchain component needs the Swift runtime, but "
-			"src/external/swift/libswiftCore.dylib is absent: materialise the git-lfs "
+			"the rootless toolchain component needs the Swift runtime, but no "
+			"src/external/swift/libswift*.dylib is present: materialise the git-lfs "
 			"payload first (git lfs pull, or the project's build.sh)")
 	endif()
+	list(SORT _rootless_swift_runtime)
 	file(MAKE_DIRECTORY "${_rootless_toolchain_resource_dir}/usr/lib/swift")
-	configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/external/swift/libswiftCore.dylib"
-		"${_rootless_toolchain_resource_dir}/usr/lib/swift/libswiftCore.dylib" COPYONLY)
-	string(APPEND _rootless_toolchain_extra_resources
-		",\n    {\"target\": \"swift_core\", \"guest_path\": \"/usr/lib/swift/libswiftCore.dylib\", \"host_path\": \"${_rootless_toolchain_resource_dir}/usr/lib/swift/libswiftCore.dylib\"}")
+	foreach(_swift_dylib IN LISTS _rootless_swift_runtime)
+		get_filename_component(_swift_name "${_swift_dylib}" NAME)
+		configure_file("${_swift_dylib}"
+			"${_rootless_toolchain_resource_dir}/usr/lib/swift/${_swift_name}" COPYONLY)
+		string(REPLACE "." "_" _swift_target "${_swift_name}")
+		string(APPEND _rootless_toolchain_extra_resources
+			",\n    {\"target\": \"swift_${_swift_target}\", \"guest_path\": \"/usr/lib/swift/${_swift_name}\", \"host_path\": \"${_rootless_toolchain_resource_dir}/usr/lib/swift/${_swift_name}\"}")
+	endforeach()
 	# Both are built by this component now, and both are install-name/path shapes a
 	# build tool loads at run time: libarchive.2.dylib at /usr/lib, and the
 	# framework binary at the private-framework path dyld reports.
