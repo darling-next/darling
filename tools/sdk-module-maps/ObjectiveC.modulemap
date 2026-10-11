@@ -9,11 +9,20 @@ module ObjectiveC [system] {
 //    // <objc/objc.h>, <objc/runtime.h>
 //    OBJC_TYPES_DEFINED,
 
-  umbrella "objc"
+  // Darling: Apple's map states `umbrella "objc"` with `module *`, which is
+  // right for Apple's objc/ directory because that holds only the public
+  // Objective-C interface.  Darling's objc/ is objc4's runtime directory: the
+  // umbrella sweeps in the runtime's internal headers beside the public ones,
+  // and those cannot be module members here.  objc/DenseMapExtras.h and
+  // objc/llvm-*.h need the C++ standard library (<cstddef>), and
+  // objc/objc-os.h includes <libkern/...>, whose build reaches
+  // <dispatch/dispatch.h>, which imports <objc/NSObject.h> back: the cycle
+  // ObjectiveC -> libkern -> Dispatch -> ObjectiveC that Clang rejects.  The
+  // public set is therefore named one header at a time, which is also what
+  // Apple's own objc4 Module/module.modulemap does for the headers it declares.
+  // A header that leaves the tree is dropped by the generator against the
+  // header set; one that joins the public set is added here.
   export *
-  module * {
-    export *
-  }
 
   module NSObject {
     requires objc
@@ -30,6 +39,77 @@ module ObjectiveC [system] {
   module Protocol {
     requires objc
     header "objc/Protocol.h"
+    export *
+  }
+
+  module List {
+    requires objc
+    header "objc/List.h"
+    export *
+  }
+
+  module NSObjCRuntime {
+    header "objc/NSObjCRuntime.h"
+    export *
+  }
+
+  module hashtable {
+    header "objc/hashtable.h"
+    export *
+  }
+
+  module hashtable2 {
+    header "objc/hashtable2.h"
+    export *
+  }
+
+  module message {
+    header "objc/message.h"
+    export *
+  }
+
+  module objc {
+    header "objc/objc.h"
+    export *
+  }
+
+  module objc_api {
+    header "objc/objc-api.h"
+    export *
+  }
+
+  module objc_auto {
+    header "objc/objc-auto.h"
+    export *
+  }
+
+  module objc_class {
+    header "objc/objc-class.h"
+    export *
+  }
+
+  module objc_exception {
+    header "objc/objc-exception.h"
+    export *
+  }
+
+  module objc_load {
+    header "objc/objc-load.h"
+    export *
+  }
+
+  module objc_runtime {
+    header "objc/objc-runtime.h"
+    export *
+  }
+
+  module objc_sync {
+    header "objc/objc-sync.h"
+    export *
+  }
+
+  module runtime {
+    header "objc/runtime.h"
     export *
   }
 }

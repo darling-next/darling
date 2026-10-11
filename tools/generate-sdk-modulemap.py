@@ -122,6 +122,11 @@ NON_MODULAR_HEADERS = frozenset(
         "libkern/machine/OSByteOrder.h",
         # Includes bsm/audit_internal.h, which this tree does not have.
         "bsm/audit_filter.h",
+        # This tree's libkern/OSKextLib.h is XNU's, which includes
+        # <CoreFoundation/CoreFoundation.h>; CoreFoundation's own CFBase.h
+        # includes <libkern/OSTypes.h>, so an owning module closes the cycle
+        # CoreFoundation -> libkern -> CoreFoundation, which Clang rejects.
+        "libkern/OSKextLib.h",
     ]
 )
 # Module features a language mode or a normal build defines. A module that
@@ -264,6 +269,9 @@ class Module:
     explicit: bool = False
     attrs: List[str] = field(default_factory=list)
     members: List[object] = field(default_factory=list)
+    # A framework module map declares its module with `framework module`, and
+    # Clang resolves the header paths in it against the framework's Headers.
+    framework: bool = False
 
 
 @dataclass
@@ -413,8 +421,12 @@ class Parser:
             return ExternModule(name, self.expect_string("a module map file"))
         if keyword == "module":
             self.next()
-            explicit = False
-            return self.parse_module_body(explicit)
+            return self.parse_module_body(False)
+        if keyword == "framework":
+            self.next()
+            if self.expect_word("'module'") != "module":
+                raise self.error("expected 'module' after 'framework'")
+            return self.parse_module_body(False, framework=True)
         if keyword == "explicit":
             self.next()
             if self.expect_word("'module'") != "module":
@@ -434,7 +446,7 @@ class Parser:
             return None
         raise self.error("unsupported declaration %r" % keyword)
 
-    def parse_module_body(self, explicit: bool) -> Module:
+    def parse_module_body(self, explicit: bool, framework: bool = False) -> Module:
         name_token = self.next()
         if name_token.kind == "punct" and name_token.value == "*":
             name = "*"
@@ -449,7 +461,7 @@ class Parser:
         if not self.accept_punct("}"):
             raise self.error("expected '}' at the end of module %s" % name)
         members = [m for m in members if m is not None]
-        return Module(name, explicit=explicit, attrs=attrs, members=members)
+        return Module(name, explicit=explicit, attrs=attrs, members=members, framework=framework)
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +519,21 @@ class Filter:
                 headers.append(os.path.relpath(os.path.join(base, name), self.include_dir))
         return sorted(headers)
 
+    def umbrella_survives(self, umbrella: Umbrella) -> bool:
+        """True when this umbrella still has something to cover here.
+
+        A directory umbrella needs at least one header this tree can make a
+        module header; Clang rejects an umbrella module that ends up with no
+        headers, and an inferred-submodule module needs a surviving umbrella.
+        """
+        if umbrella.header is not None:
+            return self.has_header(umbrella.header)
+        if umbrella.directory is None or not self.has_directory(umbrella.directory):
+            return False
+        return any(
+            self.has_header(path) for path in self.umbrella_headers(umbrella.directory)
+        )
+
     def filter_members(self, members: Sequence[object], umbrella: bool) -> List[object]:
         kept: List[object] = []
         for member in members:
@@ -517,35 +544,38 @@ class Filter:
                 if self.has_header(member.path):
                     kept.append(member)
             elif isinstance(member, Umbrella):
-                if member.header is not None:
-                    if self.has_header(member.header):
-                        kept.append(member)
-                elif self.has_directory(member.directory):
+                if not self.umbrella_survives(member):
+                    continue
+                kept.append(member)
+                if member.directory:
                     # Clang infers a submodule for every header the umbrella
                     # directory holds. Name the ones this tree cannot make module
                     # headers (objc4's C++ helpers need <cstddef>) or the template
-                    # already excludes in an `exclude header` so no inferred
-                    # submodule can sweep them in; if nothing usable is left, the
-                    # umbrella is dropped, and the `module *` that needs it with it.
-                    named = {
-                        m.path for m in members if isinstance(m, ExcludeHeader)
-                    }
-                    candidates = [
-                        path
-                        for path in self.umbrella_headers(member.directory)
-                        if path not in named
-                    ]
-                    usable = [path for path in candidates if self.has_header(path)]
-                    if not usable:
-                        continue
-                    kept.append(member)
+                    # already excludes in an `exclude header`, so no inferred
+                    # submodule can sweep them in.
+                    named = {m.path for m in members if isinstance(m, ExcludeHeader)}
                     kept.extend(
-                        ExcludeHeader(path) for path in candidates if not self.has_header(path)
+                        ExcludeHeader(path)
+                        for path in self.umbrella_headers(member.directory)
+                        if path not in named and not self.has_header(path)
                     )
             elif isinstance(member, ExternModule):
                 if member.file in self.emitted_files:
                     kept.append(member)
             elif isinstance(member, Module):
+                if member.name == "*":
+                    # Clang infers a submodule per header from the enclosing
+                    # module's umbrella and rejects `module *` without one
+                    # ("inferred submodules require a module with an umbrella").
+                    # Its own member list is empty by construction, so it is kept
+                    # as declared rather than judged for emptiness.
+                    if not umbrella:
+                        continue
+                    kept.append(
+                        Module(member.name, member.explicit, list(member.attrs),
+                               self.filter_members(member.members, True), member.framework)
+                    )
+                    continue
                 child = self.filter_module(member)
                 if child is not None:
                     kept.append(child)
@@ -561,8 +591,11 @@ class Filter:
         # An inferred-submodule module (`module *`) requires an umbrella: Clang
         # rejects it otherwise ("inferred submodules require a module with an
         # umbrella"). The umbrella is a sibling in the same module, so check it
-        # before filtering the children, and drop `module *` when it is absent.
-        has_umbrella = any(isinstance(m, Umbrella) for m in module.members)
+        # before filtering the children, and drop `module *` when the sibling is
+        # not there or does not survive this tree's headers.
+        has_umbrella = any(
+            isinstance(m, Umbrella) and self.umbrella_survives(m) for m in module.members
+        )
         children = self.filter_members(module.members, has_umbrella)
         kept: List[object] = []
         for child in children:
@@ -574,7 +607,7 @@ class Filter:
         has_extern = any(isinstance(m, ExternModule) for m in kept)
         if not (has_header or has_module or has_extern):
             return None
-        return Module(module.name, module.explicit, list(module.attrs), kept)
+        return Module(module.name, module.explicit, list(module.attrs), kept, module.framework)
 
 
 def referenced_files(members: Sequence[object]) -> List[str]:
@@ -645,7 +678,12 @@ def render(members: Sequence[object], indent: int = 0) -> str:
         elif isinstance(member, ExternModule):
             lines.append('%sextern module %s "%s"' % (pad, member.name, member.file))
         elif isinstance(member, Module):
-            head = "explicit module" if member.explicit else "module"
+            if member.explicit:
+                head = "explicit module"
+            elif member.framework:
+                head = "framework module"
+            else:
+                head = "module"
             if member.name == "*":
                 head += " *"
             else:

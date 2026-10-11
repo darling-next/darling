@@ -20,8 +20,4 @@ module libkern [system] {
     header "libkern/OSTypes.h"
     export *
   }
-  module OSKextLib {
-    header "libkern/OSKextLib.h"
-    export *
-  }
 }
