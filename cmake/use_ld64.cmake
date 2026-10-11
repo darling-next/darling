@@ -57,16 +57,6 @@ FUNCTION(use_ld64 target)
 -Wl,-dylib_file,/usr/lib/libSystem.B.dylib:${CMAKE_BINARY_DIR}/src/external/libsystem/libSystem.B.dylib \
 -Wl,-dylib_file,/System/Library/Frameworks/Python.framework/Versions/2.7/Python:${CMAKE_BINARY_DIR}/src/external/python/2.7/Python-2.7.16/Python \
 -Wl,-dylib_file,/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation:${CMAKE_BINARY_DIR}/src/external/corefoundation/CoreFoundation \
--Wl,-dylib_file,/usr/lib/swift/libswiftFoundation.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftFoundation.dylib \
--Wl,-dylib_file,/usr/lib/swift/libswiftCore.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftCore.dylib \
--Wl,-dylib_file,/usr/lib/swift/libswiftDarwin.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftDarwin.dylib \
--Wl,-dylib_file,/usr/lib/swift/libswiftObjectiveC.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftObjectiveC.dylib \
--Wl,-dylib_file,/usr/lib/swift/libswiftCoreFoundation.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftCoreFoundation.dylib \
--Wl,-dylib_file,/usr/lib/swift/libswiftDispatch.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftDispatch.dylib \
--Wl,-dylib_file,/usr/lib/swift/libswiftXPC.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftXPC.dylib \
--Wl,-dylib_file,/usr/lib/swift/libswiftos.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftos.dylib \
--Wl,-dylib_file,/usr/lib/swift/libswift_Concurrency.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswift_Concurrency.dylib \
--Wl,-dylib_file,/usr/lib/swift/libswift_StringProcessing.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswift_StringProcessing.dylib \
 -Wl,-dylib_file,/System/Library/Frameworks/Combine.framework/Versions/A/Combine:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/System/Library/Frameworks/Combine.framework/Versions/A/Combine \
 -Wl,-dylib_file,/System/Library/Frameworks/Ruby.framework/Versions/2.0/Ruby:${CMAKE_BINARY_DIR}/src/external/ruby/Ruby \
 -Wl,-dylib_file,/usr/lib/libiconv.2.dylib:${CMAKE_BINARY_DIR}/src/libiconv/libiconv.2.dylib \
@@ -186,6 +176,26 @@ FUNCTION(use_ld64 target)
 -Wl,-dylib_file,/usr/lib/native/libXext.dylib:${CMAKE_BINARY_DIR}/src/native/libXext.dylib \
 -Wl,-dylib_file,/usr/lib/native/libxkbfile.dylib:${CMAKE_BINARY_DIR}/src/native/libxkbfile.dylib \
 -Wl,-dylib_file,/usr/lib/native/libXRandR.dylib:${CMAKE_BINARY_DIR}/src/native/libXRandR.dylib")
+
+	# The Swift payload's dylibs, by install name.  The Foundation framework
+	# re-exports /usr/lib/swift/libswiftFoundation.dylib, so every client that
+	# links Foundation makes ld open that path in the sysroot, where it does not
+	# exist ("ld: file not found: /usr/lib/swift/libswiftFoundation.dylib for
+	# architecture x86_64", seen for libMobileGestalt, FSEvents,
+	# LocalAuthentication, FMDB, SecurityFoundation and installer).  Mapping only
+	# that file is not enough: a client that resolves a Swift symbol through the
+	# re-export walks the chain, and the next measurement was
+	# "file not found: /usr/lib/swift/libswift_RegexParser.dylib" for the ruby
+	# bundles.  The build stages the whole payload set in
+	# rootless-toolchain-resources, so map whatever is there rather than a
+	# hand-kept list.
+	set(_darling_swift_maps " ")
+	file(GLOB _darling_swift_payload "${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/*.dylib")
+	foreach(_darling_swift_dylib IN LISTS _darling_swift_payload)
+		get_filename_component(_darling_swift_name "${_darling_swift_dylib}" NAME)
+		string(APPEND _darling_swift_maps "-Wl,-dylib_file,/usr/lib/swift/${_darling_swift_name}:${_darling_swift_dylib} ")
+	endforeach()
+	set_property(TARGET ${target} APPEND_STRING PROPERTY LINK_FLAGS "${_darling_swift_maps}")
 
 	add_dependencies(${target} ${APPLE_TARGET_TRIPLET_PRIMARY}-ld)
 
