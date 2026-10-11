@@ -1,98 +1,329 @@
+# VibeDarling/darling-foundation include/Foundation/Foundation.apinotes (their tree,
+# pushed 2026-10-09), carried as the template and emitted into the SDK as
+# Foundation.framework/Versions/Current/Headers/Foundation.apinotes.  It is their
+# curated subset of Apple's notes: the member-level names Apple's own file
+# leaves to its headers (NSRoundPlain, NSComparisonResult's members,
+# NSAttributedStringKey, NSPropertyListFormat), which our headers need and
+# Apple's file does not carry.  Measured: see the task report.
 ---
-# API notes for the Foundation framework module.  Emitted by
-# tools/generate-sdk-modulemap.py into
-# Foundation.framework/Versions/Current/Headers/Foundation.apinotes, which is
-# where Apple's own Foundation.apinotes sits and where Clang reads it from.
-#
-# Every entry below is Apple's, from the 26.3 SDK's
-# Foundation.framework/Versions/C/Headers/Foundation.apinotes: the Classes
-# section at its line 3 and the Typedefs entries at its line 1340.  They map the
-# C and Objective-C declarations Darling's Foundation headers carry to the Swift
-# names the Foundation overlay and the swift-foundation modules use.
-#
-# The SwiftBridge entries are the ones that matter most: without them nothing
-# bridges, so every String/NSString, Array/NSArray and Dictionary/NSDictionary
-# interaction in the overlay needs an explicit conversion.  Measured before:
-# 1154 errors, of which 193 "cannot convert value of type 'String' to expected
-# argument type 'NSString'", 54 "'NSString' is not implicitly convertible to
-# 'String'", plus 'string' used as a property, "NSCalendar has no member 'Unit'"
-# and similar; and, on the names alone, "cannot find type 'Decimal' in scope"
-# 116 times.
-#
-# Only names are ported: this file declares nothing itself, and it renames
-# nothing this tree does not declare.  NSPersonNameComponents is deliberately
-# absent - Apple bridges it to PersonNameComponents, but this SDK's Foundation
-# headers do not declare the class at all (no NSPersonNameComponents.h, and
-# Foundation.h does not import one), so the name has nothing to attach to.
+# Swift API notes for Darling's Foundation (private Swift-overlay build SDK).
+# SwiftBridge tells the Clang importer which Swift value types the Objective-C classes bridge to, so
+# APIs taking or returning them import with the Swift types (NSString * -> String).
 Name: Foundation
 Classes:
-- Name: NSAffineTransform
-  SwiftBridge: AffineTransform
-- Name: NSArray
-  SwiftBridge: Swift.Array
-  SwiftImportAsNonGeneric: true
-- Name: NSBundle
-  SwiftName: Bundle
-- Name: NSCharacterSet
-  SwiftBridge: CharacterSet
-- Name: NSData
-  SwiftBridge: Data
-- Name: NSDate
-  SwiftBridge: Date
-- Name: NSDateComponents
-  SwiftBridge: DateComponents
-- Name: NSDateFormatter
-  SwiftName: DateFormatter
-- Name: NSDateInterval
-  SwiftBridge: DateInterval
-- Name: NSDecimalNumber
-  SwiftBridge: Decimal
-- Name: NSDictionary
-  SwiftBridge: Swift.Dictionary
-  SwiftImportAsNonGeneric: true
-- Name: NSError
-  SwiftBridge: Swift.Error
-- Name: NSFileManager
-  SwiftName: FileManager
-- Name: NSIndexPath
-  SwiftBridge: IndexPath
-- Name: NSIndexSet
-  SwiftBridge: IndexSet
-- Name: NSLocale
-  SwiftBridge: Locale
-- Name: NSMeasurement
-  SwiftBridge: Measurement
-  SwiftImportAsNonGeneric: true
-- Name: NSNotification
-  SwiftBridge: Notification
-- Name: NSNotificationCenter
-  SwiftName: NotificationCenter
-- Name: NSOrderedCollectionDifference
-  SwiftBridge: Swift.CollectionDifference
-  SwiftImportAsNonGeneric: true
-- Name: NSPropertyListSerialization
-  SwiftName: PropertyListSerialization
-- Name: NSScanner
-  SwiftName: NSScanner
-- Name: NSSet
-  SwiftBridge: Swift.Set
-  SwiftImportAsNonGeneric: true
 - Name: NSString
   SwiftBridge: Swift.String
+- Name: NSArray
+  SwiftBridge: Swift.Array
+- Name: NSDictionary
+  SwiftBridge: Swift.Dictionary
+- Name: NSSet
+  SwiftBridge: Swift.Set
+- Name: NSNotification
+  SwiftBridge: Foundation.Notification
+# As on macOS, the -initWith<Type>: initializers are all NSNumber(value:). -initWithLong: and
+# -initWithUnsignedLong: are hidden: they would duplicate init(value: Int) and init(value: UInt).
+- Name: NSNumber
+  Methods:
+  - Selector: 'initWithChar:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithUnsignedChar:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithShort:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithUnsignedShort:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithInt:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithUnsignedInt:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithLongLong:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithUnsignedLongLong:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithFloat:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithDouble:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithBool:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithInteger:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithUnsignedInteger:'
+    MethodKind: Instance
+    SwiftName: 'init(value:)'
+  - Selector: 'initWithLong:'
+    MethodKind: Instance
+    Availability: nonswift
+  - Selector: 'initWithUnsignedLong:'
+    MethodKind: Instance
+    Availability: nonswift
+# NSData bridges to the Data value type, so `NSData *` in an Objective-C signature imports as
+# Data. Without it JSONSerialization.data(withJSONObject:) returns NSData and nothing downstream
+# that expects Data accepts it.
+- Name: NSData
+  SwiftBridge: Foundation.Data
+# The overlay's value types, as in the macOS SDK. Without these, `NSDate *`, `NSURL *`, ... in an
+# Objective-C signature import as the classes and Swift callers passing Date, URL, ... fail to type-check.
+- Name: NSDate
+  SwiftBridge: Foundation.Date
+- Name: NSDateInterval
+  SwiftBridge: Foundation.DateInterval
+- Name: NSLocale
+  SwiftBridge: Foundation.Locale
 - Name: NSTimeZone
-  SwiftBridge: TimeZone
+  SwiftBridge: Foundation.TimeZone
+- Name: NSCalendar
+  SwiftBridge: Foundation.Calendar
 - Name: NSURL
-  SwiftBridge: URL
-- Name: NSURLComponents
-  SwiftBridge: URLComponents
-- Name: NSURLQueryItem
-  SwiftBridge: URLQueryItem
+  SwiftBridge: Foundation.URL
+- Name: NSCharacterSet
+  SwiftBridge: Foundation.CharacterSet
+# Pass the Swift URLRequest value type to NSURLRequest-taking APIs such as
+# URLSession.dataTask(with:completionHandler:) through its Objective-C bridge.
 - Name: NSURLRequest
-  SwiftBridge: URLRequest
-- Name: NSUUID
-  SwiftBridge: UUID
+  SwiftBridge: Foundation.URLRequest
+# SwiftName renames an Objective-C class to the name Swift code written against a recent macOS SDK
+# spells it. The class is unchanged; only the Swift-facing name is added. Without these the Swift
+# spelling does not resolve at all, and the diagnostic ("cannot find type 'RunLoop' in scope")
+# points at the caller rather than at the missing rename.
+- Name: NSRunLoop
+  SwiftName: RunLoop
+- Name: NSBundle
+  SwiftName: Bundle
+- Name: NSUserDefaults
+  SwiftName: UserDefaults
+- Name: NSThread
+  SwiftName: Thread
+- Name: NSScanner
+  SwiftName: Scanner
+- Name: NSURLSession
+  SwiftName: URLSession
+- Name: NSNotificationCenter
+  SwiftName: NotificationCenter
+  Methods:
+  - Selector: 'postNotificationName:object:'
+    MethodKind: Instance
+    SwiftName: 'post(name:object:)'
+  - Selector: 'postNotificationName:object:userInfo:'
+    MethodKind: Instance
+    SwiftName: 'post(name:object:userInfo:)'
+- Name: NSOperationQueue
+  SwiftName: OperationQueue
+- Name: NSOperation
+  SwiftName: Operation
+- Name: NSBlockOperation
+  SwiftName: BlockOperation
+- Name: NSURLResponse
+  SwiftName: URLResponse
+- Name: NSHTTPURLResponse
+  SwiftName: HTTPURLResponse
+- Name: NSURLSessionDataTask
+  SwiftName: URLSessionDataTask
+- Name: NSFileManager
+  SwiftName: FileManager
+- Name: NSProcessInfo
+  SwiftName: ProcessInfo
+- Name: NSTimer
+  SwiftName: Timer
+- Name: NSFormatter
+  SwiftName: Formatter
+- Name: NSNumberFormatter
+  SwiftName: NumberFormatter
+- Name: NSDateFormatter
+  SwiftName: DateFormatter
+  Methods:
+  # Keeps macOS's timeStyle: label; the importer would prune it to time: because the parameter's
+  # type name also ends in Style.
+  - Selector: "localizedStringFromDate:dateStyle:timeStyle:"
+    MethodKind: Class
+    SwiftName: "localizedString(from:dateStyle:timeStyle:)"
+- Name: NSDateComponentsFormatter
+  SwiftName: DateComponentsFormatter
+  Methods:
+  # macOS's string(from:); NSTimeInterval does not import as TimeInterval, so the importer keeps fromTimeInterval.
+  - Selector: "stringFromTimeInterval:"
+    MethodKind: Instance
+    SwiftName: "string(from:)"
+- Name: NSDateIntervalFormatter
+  SwiftName: DateIntervalFormatter
+- Name: NSISO8601DateFormatter
+  SwiftName: ISO8601DateFormatter
+- Name: NSMeasurementFormatter
+  SwiftName: MeasurementFormatter
+- Name: NSLengthFormatter
+  SwiftName: LengthFormatter
+- Name: NSMassFormatter
+  SwiftName: MassFormatter
+- Name: NSEnergyFormatter
+  SwiftName: EnergyFormatter
+- Name: NSJSONSerialization
+  SwiftName: JSONSerialization
+- Name: NSPropertyListSerialization
+  SwiftName: PropertyListSerialization
+  Methods:
+  - Selector: "dataWithPropertyList:format:options:error:"
+    MethodKind: Class
+    SwiftName: "data(fromPropertyList:format:options:)"
+  - Selector: "propertyListWithData:options:format:error:"
+    MethodKind: Class
+    SwiftName: "propertyList(from:options:format:)"
+  - Selector: "propertyList:isValidForFormat:"
+    MethodKind: Class
+    SwiftName: "propertyList(_:isValidFor:)"
+- Name: NSProgress
+  SwiftName: Progress
+  Methods:
+  - Selector: 'discreteProgressWithTotalUnitCount:'
+    MethodKind: Class
+    SwiftName: 'discreteProgress(totalUnitCount:)'
 Typedefs:
+# Like the macOS SDK (NS_TYPED_EXTENSIBLE_ENUM): NSURLResourceKey imports as the struct URLResourceKey, which Swift
+# mangles as `So16NSURLResourceKeya`.
+- Name: NSURLResourceKey
+  SwiftWrapper: struct
+  SwiftName: URLResourceKey
+# The importer does not infer nesting from NS_TYPED_EXTENSIBLE_ENUM or NS_ENUM, so without the
+# four entries below the macOS spellings NSAttributedString.Key, NSCalendar.Unit,
+# NumberFormatter.Style and RunLoop.Mode do not resolve at all.
+- Name: NSAttributedStringKey
+  SwiftName: NSAttributedString.Key
+- Name: NSRunLoopMode
+  SwiftName: RunLoop.Mode
+# As on macOS: Swift spells NSDecimal as Decimal but still mangles it as `So9NSDecimala`.
 - Name: NSDecimal
   SwiftName: Decimal
-- Name: NSURLResourceKey
-  SwiftName: URLResourceKey
+- Name: NSPropertyListReadOptions
+  SwiftName: PropertyListSerialization.ReadOptions
+- Name: NSPropertyListWriteOptions
+  SwiftName: PropertyListSerialization.WriteOptions
+- Name: NSProgressKind
+  SwiftName: ProgressKind
+- Name: NSProgressUserInfoKey
+  SwiftName: ProgressUserInfoKey
+- Name: NSProgressFileOperationKind
+  SwiftName: Progress.FileOperationKind
+Tags:
+- Name: NSRoundingMode
+  SwiftName: NSDecimalNumber.RoundingMode
+- Name: NSCalculationError
+  SwiftName: NSDecimalNumber.CalculationError
+- Name: NSFormattingUnitStyle
+  SwiftName: Formatter.UnitStyle
+- Name: NSLengthFormatterUnit
+  SwiftName: LengthFormatter.Unit
+- Name: NSMassFormatterUnit
+  SwiftName: MassFormatter.Unit
+- Name: NSEnergyFormatterUnit
+  SwiftName: EnergyFormatter.Unit
+- Name: NSMeasurementFormatterUnitOptions
+  SwiftName: MeasurementFormatter.UnitOptions
+- Name: NSCalendarUnit
+  SwiftName: NSCalendar.Unit
+- Name: NSNumberFormatterStyle
+  SwiftName: NumberFormatter.Style
+- Name: NSDateFormatterStyle
+  SwiftName: DateFormatter.Style
+- Name: NSDateFormatterBehavior
+  SwiftName: DateFormatter.Behavior
+- Name: NSDateComponentsFormatterUnitsStyle
+  SwiftName: DateComponentsFormatter.UnitsStyle
+- Name: NSDateComponentsFormatterZeroFormattingBehavior
+  SwiftName: DateComponentsFormatter.ZeroFormattingBehavior
+- Name: NSPropertyListFormat
+  SwiftName: PropertyListSerialization.PropertyListFormat
+- Name: NSPropertyListMutabilityOptions
+  SwiftName: PropertyListSerialization.MutabilityOptions
+- Name: NSISO8601DateFormatOptions
+  SwiftName: ISO8601DateFormatter.Options
+Enumerators:
+# Nesting an enum does not re-derive its cases: the importer strips the common NSNumberFormatter
+# prefix but not the trailing Style, leaving .decimalStyle rather than macOS's .decimal.
+- Name: NSNumberFormatterNoStyle
+  SwiftName: none
+- Name: NSNumberFormatterDecimalStyle
+  SwiftName: decimal
+- Name: NSNumberFormatterCurrencyStyle
+  SwiftName: currency
+- Name: NSNumberFormatterPercentStyle
+  SwiftName: percent
+- Name: NSNumberFormatterScientificStyle
+  SwiftName: scientific
+- Name: NSNumberFormatterSpellOutStyle
+  SwiftName: spellOut
+# The importer strips only NS from these, leaving .RoundPlain and .CalculationNoError.
+- Name: NSRoundPlain
+  SwiftName: plain
+- Name: NSRoundDown
+  SwiftName: down
+- Name: NSRoundUp
+  SwiftName: up
+- Name: NSRoundBankers
+  SwiftName: bankers
+- Name: NSCalculationNoError
+  SwiftName: noError
+- Name: NSCalculationLossOfPrecision
+  SwiftName: lossOfPrecision
+- Name: NSCalculationUnderflow
+  SwiftName: underflow
+- Name: NSCalculationOverflow
+  SwiftName: overflow
+- Name: NSCalculationDivideByZero
+  SwiftName: divideByZero
+- Name: NSDateFormatterNoStyle
+  SwiftName: none
+- Name: NSDateFormatterShortStyle
+  SwiftName: short
+- Name: NSDateFormatterMediumStyle
+  SwiftName: medium
+- Name: NSDateFormatterLongStyle
+  SwiftName: long
+- Name: NSDateFormatterFullStyle
+  SwiftName: full
+- Name: NSDateFormatterBehaviorDefault
+  SwiftName: default
+- Name: NSDateFormatterBehavior10_4
+  SwiftName: behavior10_4
+- Name: NSPropertyListOpenStepFormat
+  SwiftName: openStep
+- Name: NSPropertyListXMLFormat_v1_0
+  SwiftName: xml
+- Name: NSPropertyListBinaryFormat_v1_0
+  SwiftName: binary
+# The importer keeps the trailing Search of each NSStringCompareOptions member (.caseInsensitiveSearch);
+# macOS spells them without it.
+- Name: NSCaseInsensitiveSearch
+  SwiftName: caseInsensitive
+- Name: NSLiteralSearch
+  SwiftName: literal
+- Name: NSBackwardsSearch
+  SwiftName: backwards
+- Name: NSAnchoredSearch
+  SwiftName: anchored
+- Name: NSNumericSearch
+  SwiftName: numeric
+- Name: NSDiacriticInsensitiveSearch
+  SwiftName: diacriticInsensitive
+- Name: NSWidthInsensitiveSearch
+  SwiftName: widthInsensitive
+- Name: NSForcedOrderingSearch
+  SwiftName: forcedOrdering
+- Name: NSRegularExpressionSearch
+  SwiftName: regularExpression
+Globals:
+- Name: NSDefaultRunLoopMode
+  SwiftName: RunLoop.Mode.default
+- Name: NSRunLoopCommonModes
+  SwiftName: RunLoop.Mode.common
