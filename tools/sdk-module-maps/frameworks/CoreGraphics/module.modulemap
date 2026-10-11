@@ -1,0 +1,61 @@
+// Template for the SDK's
+// System/Library/Frameworks/CoreGraphics.framework/Modules/module.modulemap,
+// emitted by tools/generate-sdk-modulemap.py (frameworks/<Name>/ goes to the
+// framework's Versions/Current/Modules, with the Modules symlink).
+//
+// Darling's CoreGraphics ships its headers and no module map at all, so the
+// Swift CoreGraphics overlay - and AppKit and SceneKit behind it - stop with
+// "cannot find type 'CGAffineTransform'" and "'CGColor' in scope": the
+// declarations exist, they are just in no Clang module.
+//
+// No umbrella header: the umbrella (CoreGraphics.h) reaches the headers that
+// import <Foundation/...>, and Clang rejects the result - measured "cyclic
+// dependency in module 'Foundation': Foundation -> CoreGraphics -> Foundation"
+// via CGSubWindow.h - while `exclude header` does not stop an umbrella header's
+// own imports.
+//
+// The excluded set is computed from this tree, not hand-picked: the headers that
+// import <Foundation/...> (the Apportable-era window-server glue, which Apple's
+// CoreGraphics does not have), the headers that import a header this framework
+// does not ship, and everything importing one of those.  The overlay needs the
+// drawing API, not that glue.
+//
+// Apple's own CoreGraphics map adds submodules over the same headers; the flat
+// list here is what the overlay needs.
+
+framework module CoreGraphics [system] {
+    header "CGAffineTransform.h"
+    header "CGBase.h"
+    header "CGBitmapContext.h"
+    header "CGColor.h"
+    header "CGColorSpace.h"
+    header "CGContext.h"
+    header "CGDataConsumer.h"
+    header "CGDataProvider.h"
+    header "CGDirectDisplay.h"
+    header "CGDisplayConfiguration.h"
+    header "CGDisplayFade.h"
+    header "CGDisplayStream.h"
+    header "CGError.h"
+    header "CGEventSource.h"
+    header "CGEventTypes.h"
+    header "CGFont.h"
+    header "CGFunction.h"
+    header "CGGeometry.h"
+    header "CGGradient.h"
+    header "CGImage.h"
+    header "CGLayer.h"
+    header "CGPDFContext.h"
+    header "CGPDFDictionary.h"
+    header "CGPDFDocument.h"
+    header "CGPDFObject.h"
+    header "CGPDFPage.h"
+    header "CGPSConverter.h"
+    header "CGPath.h"
+    header "CGPattern.h"
+    header "CGRemoteOperation.h"
+    header "CGShading.h"
+    header "CGWindowLevel.h"
+    header "CoreGraphicsExport.h"
+    export *
+}
