@@ -437,6 +437,27 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		string(APPEND _rootless_toolchain_extra_resources
 			",\n    {\"target\": \"swift_${_swift_target}\", \"guest_path\": \"/usr/lib/swift/${_swift_name}\", \"host_path\": \"${_rootless_toolchain_resource_dir}/usr/lib/swift/${_swift_name}\"}")
 	endforeach()
+	# The same payload also carries framework binaries, which are not /usr/lib/swift dylibs and cannot ride the
+	# loop above: their guest path is the framework's own install name. Declared the same way -- discovered, not
+	# listed -- because the set grows as the overlay work reaches each framework (measured: the closure resolver
+	# refused the deploy with "no built provider for /System/Library/Frameworks/Combine.framework/Versions/A/Combine
+	# required by /usr/lib/swift/libswiftFoundation.dylib" the moment libswiftFoundation joined the payload, and
+	# Combine was built and staged but undeclared).
+	file(GLOB _rootless_swift_frameworks CONFIGURE_DEPENDS
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/external/swift/*.framework")
+	foreach(_swift_framework IN LISTS _rootless_swift_frameworks)
+		get_filename_component(_swift_framework_name "${_swift_framework}" NAME_WE)
+		set(_swift_framework_binary "${_swift_framework}/Versions/A/${_swift_framework_name}")
+		if(NOT EXISTS "${_swift_framework_binary}")
+			continue()
+		endif()
+		file(MAKE_DIRECTORY "${_rootless_toolchain_resource_dir}/System/Library/Frameworks/${_swift_framework_name}.framework/Versions/A")
+		configure_file("${_swift_framework_binary}"
+			"${_rootless_toolchain_resource_dir}/System/Library/Frameworks/${_swift_framework_name}.framework/Versions/A/${_swift_framework_name}" COPYONLY)
+		string(REPLACE "." "_" _swift_framework_target "${_swift_framework_name}")
+		string(APPEND _rootless_toolchain_extra_resources
+			",\n    {\"target\": \"swift_framework_${_swift_framework_target}\", \"guest_path\": \"/System/Library/Frameworks/${_swift_framework_name}.framework/Versions/A/${_swift_framework_name}\", \"host_path\": \"${_rootless_toolchain_resource_dir}/System/Library/Frameworks/${_swift_framework_name}.framework/Versions/A/${_swift_framework_name}\"}")
+	endforeach()
 	# Both are built by this component now, and both are install-name/path shapes a
 	# build tool loads at run time: libarchive.2.dylib at /usr/lib, and the
 	# framework binary at the private-framework path dyld reports.
