@@ -126,6 +126,12 @@ include(darling_bundle)
 
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include)
 
+# The SDK's Clang module maps belong with the headers they describe, so they are
+# generated (with REGENERATE_SDK) against the same tree the overlays compile
+# against. See tools/generate-sdk-modulemap.py.
+include(darling_open_source_sdk)
+generate_sdk_module_maps("${CMAKE_SOURCE_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include")
+
 include_directories(
 	${CMAKE_SOURCE_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include
 	${CMAKE_BINARY_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include

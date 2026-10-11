@@ -208,3 +208,25 @@ function(generate_sdk_subframework name)
         )
     endif (REGENERATE_SDK)
 endfunction(generate_sdk_subframework)
+
+# Generate the Clang module maps for an SDK include tree from the headers that
+# tree actually has. The maps are curated sources (tools/sdk-module-maps/) that
+# name headers; a header that moves or disappears leaves a map naming it behind,
+# which Clang rejects, so the maps are regenerated with the headers.
+function(generate_sdk_module_maps sdk_include)
+    if (REGENERATE_SDK)
+        find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}" -B
+                "${DARLING_TOP_DIRECTORY}/tools/generate-sdk-modulemap.py"
+                --sdk-include "${sdk_include}"
+            RESULT_VARIABLE sdk_module_map_result
+            OUTPUT_VARIABLE sdk_module_map_output
+            ERROR_VARIABLE sdk_module_map_error
+        )
+        if (NOT sdk_module_map_result EQUAL 0)
+            message(FATAL_ERROR "Generating the SDK module maps failed: ${sdk_module_map_error}")
+        endif (NOT sdk_module_map_result EQUAL 0)
+        message("${sdk_module_map_output}")
+    endif (REGENERATE_SDK)
+endfunction(generate_sdk_module_maps)
