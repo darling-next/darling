@@ -57,6 +57,17 @@ FUNCTION(use_ld64 target)
 -Wl,-dylib_file,/usr/lib/libSystem.B.dylib:${CMAKE_BINARY_DIR}/src/external/libsystem/libSystem.B.dylib \
 -Wl,-dylib_file,/System/Library/Frameworks/Python.framework/Versions/2.7/Python:${CMAKE_BINARY_DIR}/src/external/python/2.7/Python-2.7.16/Python \
 -Wl,-dylib_file,/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation:${CMAKE_BINARY_DIR}/src/external/corefoundation/CoreFoundation \
+-Wl,-dylib_file,/usr/lib/swift/libswiftFoundation.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftFoundation.dylib \
+-Wl,-dylib_file,/usr/lib/swift/libswiftCore.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftCore.dylib \
+-Wl,-dylib_file,/usr/lib/swift/libswiftDarwin.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftDarwin.dylib \
+-Wl,-dylib_file,/usr/lib/swift/libswiftObjectiveC.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftObjectiveC.dylib \
+-Wl,-dylib_file,/usr/lib/swift/libswiftCoreFoundation.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftCoreFoundation.dylib \
+-Wl,-dylib_file,/usr/lib/swift/libswiftDispatch.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftDispatch.dylib \
+-Wl,-dylib_file,/usr/lib/swift/libswiftXPC.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftXPC.dylib \
+-Wl,-dylib_file,/usr/lib/swift/libswiftos.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswiftos.dylib \
+-Wl,-dylib_file,/usr/lib/swift/libswift_Concurrency.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswift_Concurrency.dylib \
+-Wl,-dylib_file,/usr/lib/swift/libswift_StringProcessing.dylib:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/libswift_StringProcessing.dylib \
+-Wl,-dylib_file,/System/Library/Frameworks/Combine.framework/Versions/A/Combine:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/System/Library/Frameworks/Combine.framework/Versions/A/Combine \
 -Wl,-dylib_file,/System/Library/Frameworks/Ruby.framework/Versions/2.0/Ruby:${CMAKE_BINARY_DIR}/src/external/ruby/Ruby \
 -Wl,-dylib_file,/usr/lib/libiconv.2.dylib:${CMAKE_BINARY_DIR}/src/libiconv/libiconv.2.dylib \
 -Wl,-dylib_file,/usr/lib/libcharset.1.dylib:${CMAKE_BINARY_DIR}/src/external/libiconv/libcharset.1.dylib \
