@@ -1,0 +1,26 @@
+# API notes for the os module, emitted into the SDK as usr/include/os.apinotes.
+#
+# The os overlay (os/os.swift) extends OSLog, OSLogType and OSSignpostType.
+# Darling's os/ headers (src/external/libtrace) declare the C spellings of those
+# types and nothing that names them in Swift, so without this file the overlay
+# has "cannot find type 'OSLog' in scope".
+#
+# The Swift names are Apple's, taken from the 26.3 SDK's usr/include/os.apinotes
+# (lines 3-13): os_log_type_t -> OSLogType, os_signpost_type_t -> OSSignpostType,
+# the class OS_os_log -> OSLog.  Only the names are ported; this file does not
+# add, hide or rename anything the tree does not already declare.
+
+Name: os
+Typedefs:
+- Name: os_log_type_t
+  SwiftName: OSLogType
+- Name: os_signpost_type_t
+  SwiftName: OSSignpostType
+Classes:
+- Name: OS_os_log
+  SwiftName: OSLog
+Functions:
+- Name: os_log_create
+  SwiftName: 'OSLog.init(__subsystem:category:)'
+- Name: os_log_type_enabled
+  SwiftName: 'OSLog.isEnabled(self:type:)'

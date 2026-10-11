@@ -26,6 +26,20 @@
  * what it asked for.  Darling's own build defines PLATFORM_MacOSX globally and
  * is unaffected.
  *
+ * The same is true of DARLING.  Darling's own build passes -DDARLING (it is in
+ * the toolchain's compile_commands.json), and fifteen headers this SDK ships
+ * branch on it - os/assumes.h, os/trace.h, os/tsd.h, os/thread_self_restrict.h,
+ * _libkernel_init.h, pthread/tsd_private.h, pthread/pthread.h,
+ * objc/objc-private.h and others - so a consumer that defines nothing sees a
+ * different tree than the product's own build does.  os/trace.h makes that
+ * visible: without DARLING it declares `void *__dso_handle`, which collides with
+ * the `struct mach_header __dso_handle` that os/trace_base.h declares and uses
+ * ("redeclaration of __dso_handle with a different type"), and the os Clang
+ * module cannot be built at all.  Editing those headers would change them for
+ * the kernel build as well, which is why the consumer side is fixed here.  A
+ * kernel build, or a client that defines DARLING itself, keeps what it asked
+ * for.
+ *
  * The include below is written for the file's place in the SDK
  * (<sdk>/usr/include/sys/), which is where this file is emitted; it is the same
  * relative-path convention every header symlink in that tree uses.
@@ -42,6 +56,11 @@
     !defined(PLATFORM_WatchOS) && !defined(PLATFORM_WatchSimulator) && \
     !defined(PLATFORM_BridgeOS) && !defined(PLATFORM_DriverKit)
 #define PLATFORM_MacOSX 1
+#endif
+
+/* Darling's build defines this; the SDK's consumers get it here instead. */
+#if !defined(KERNEL) && !defined(DARLING)
+#define DARLING 1
 #endif
 
 #include "../../../../../../../../../src/external/xnu/bsd/sys/cdefs.h"
