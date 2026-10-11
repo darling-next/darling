@@ -1,0 +1,38 @@
+---
+# API notes for the Foundation framework module.  Emitted by
+# tools/generate-sdk-modulemap.py into
+# Foundation.framework/Versions/Current/Headers/Foundation.apinotes, which is
+# where Apple's own Foundation.apinotes sits and where Clang reads it from.
+#
+# The entries below are Apple's, from the 26.3 SDK's
+# Foundation.framework/Versions/C/Headers/Foundation.apinotes: the Classes
+# section from its line 3, the Typedefs entries from its line 1340.  They map
+# the C and Objective-C declarations Darling's Foundation headers carry to the
+# Swift names the Foundation overlay and the swift-foundation modules use.
+#
+# Measured without them: "cannot find type 'Decimal' in scope" (116 in the
+# Foundation overlay and more inside swift-foundation's
+# FoundationInternationalization), and "cannot find type 'FileManager' /
+# 'Bundle' / 'DateFormatter' / 'Scanner' / 'NotificationCenter' /
+# 'PropertyListSerialization' / 'URLResourceKey' / 'NSPersonNameComponents' in
+# scope".  Only the names are ported: this file adds no declaration of its own,
+# and nothing here is renamed that this tree does not declare.
+Name: Foundation
+Classes:
+- Name: NSBundle
+  SwiftName: Bundle
+- Name: NSDateFormatter
+  SwiftName: DateFormatter
+- Name: NSFileManager
+  SwiftName: FileManager
+- Name: NSNotificationCenter
+  SwiftName: NotificationCenter
+- Name: NSPropertyListSerialization
+  SwiftName: PropertyListSerialization
+- Name: NSScanner
+  SwiftName: Scanner
+Typedefs:
+- Name: NSDecimal
+  SwiftName: Decimal
+- Name: NSURLResourceKey
+  SwiftName: URLResourceKey
