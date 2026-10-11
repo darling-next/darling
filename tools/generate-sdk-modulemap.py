@@ -731,6 +731,42 @@ def load_templates(template_dir: str) -> Dict[str, List[object]]:
     return templates
 
 
+def emit_include_overlay(template_dir: str, output_dir: str) -> int:
+    """Copy <template-dir>/include/** into the SDK's include tree.
+
+    Some SDK headers cannot be a component's file: sys/cdefs.h needs the
+    platform selection Apple's SDK resolves when it processes the header, and a
+    module map cannot carry that.  Those live in the template tree under
+    include/ with their SDK-relative path and are emitted here, so SDK
+    generation rebuilds them from tracked sources like the maps themselves
+    rather than leaving them only in generated state.  A template directory with
+    no include/ (a framework's, for instance) has nothing to emit.
+    """
+    source = os.path.join(template_dir, "include")
+    if not os.path.isdir(source):
+        return 0
+    written = 0
+    for base, _dirs, files in os.walk(source):
+        for name in sorted(files):
+            full = os.path.join(base, name)
+            relative = os.path.relpath(full, source)
+            destination = os.path.join(output_dir, relative)
+            parent = os.path.dirname(destination)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(full, "r", encoding="utf-8") as handle:
+                text = handle.read()
+            stale = True
+            if os.path.exists(destination):
+                with open(destination, "r", encoding="utf-8") as handle:
+                    stale = handle.read() != text
+            if stale:
+                with open(destination, "w", encoding="utf-8") as handle:
+                    handle.write(text)
+            written += 1
+    return written
+
+
 def run(
     template_dir: str,
     include_dir: str,
@@ -743,6 +779,8 @@ def run(
         raise ModuleMapError("module map template directory not found: %s" % template_dir)
     if not os.path.isdir(include_dir):
         raise ModuleMapError("SDK header tree not found: %s" % include_dir)
+
+    include_files = emit_include_overlay(template_dir, output_dir)
 
     templates = load_templates(template_dir)
     if not templates:
@@ -809,6 +847,9 @@ def run(
             "sdk module maps: %d template(s), %d emitted, %d written to %s"
             % (len(templates), len(reachable), written, output_dir)
         )
+        if include_files:
+            print("sdk include overlay: %d header(s) emitted to %s"
+                  % (include_files, output_dir))
     return written
 
 

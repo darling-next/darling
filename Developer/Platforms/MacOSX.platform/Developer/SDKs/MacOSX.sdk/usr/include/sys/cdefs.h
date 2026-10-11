@@ -2,8 +2,13 @@
  * Copyright (c) 2026 Darling project.  All rights reserved.
  *
  * The SDK's sys/cdefs.h: the platform selection xnu's sys/cdefs.h leaves to its
- * client, made once for the one platform this SDK is.  The header below is
- * xnu's, included from a path relative to this file's place in the SDK.
+ * client, made once for the one platform this SDK is.
+ *
+ * This file is the tracked source of the SDK's usr/include/sys/cdefs.h.  SDK
+ * generation emits it there verbatim (tools/generate-sdk-modulemap.py copies
+ * tools/sdk-module-maps/include/ into the SDK include tree, the way it emits the
+ * module maps), so the header is rebuilt from the tree rather than living only
+ * in generated state.
  *
  * xnu chooses a product's symbol-suffix rules (__DARWIN_ONLY_UNIX_CONFORMANCE,
  * __DARWIN_ONLY_64_BIT_INO_T, __DARWIN_ONLY_VERS_1050) only for a defined
@@ -20,6 +25,10 @@
  * line.  A client that names its own platform, or a kernel build (KERNEL), keeps
  * what it asked for.  Darling's own build defines PLATFORM_MacOSX globally and
  * is unaffected.
+ *
+ * The include below is written for the file's place in the SDK
+ * (<sdk>/usr/include/sys/), which is where this file is emitted; it is the same
+ * relative-path convention every header symlink in that tree uses.
  */
 
 #ifndef __DARLING_SYS_CDEFS_H_
