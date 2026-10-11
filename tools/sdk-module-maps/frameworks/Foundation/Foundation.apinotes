@@ -4,33 +4,93 @@
 # Foundation.framework/Versions/Current/Headers/Foundation.apinotes, which is
 # where Apple's own Foundation.apinotes sits and where Clang reads it from.
 #
-# The entries below are Apple's, from the 26.3 SDK's
+# Every entry below is Apple's, from the 26.3 SDK's
 # Foundation.framework/Versions/C/Headers/Foundation.apinotes: the Classes
-# section from its line 3, the Typedefs entries from its line 1340.  They map
-# the C and Objective-C declarations Darling's Foundation headers carry to the
-# Swift names the Foundation overlay and the swift-foundation modules use.
+# section at its line 3 and the Typedefs entries at its line 1340.  They map the
+# C and Objective-C declarations Darling's Foundation headers carry to the Swift
+# names the Foundation overlay and the swift-foundation modules use.
 #
-# Measured without them: "cannot find type 'Decimal' in scope" (116 in the
-# Foundation overlay and more inside swift-foundation's
-# FoundationInternationalization), and "cannot find type 'FileManager' /
-# 'Bundle' / 'DateFormatter' / 'Scanner' / 'NotificationCenter' /
-# 'PropertyListSerialization' / 'URLResourceKey' / 'NSPersonNameComponents' in
-# scope".  Only the names are ported: this file adds no declaration of its own,
-# and nothing here is renamed that this tree does not declare.
+# The SwiftBridge entries are the ones that matter most: without them nothing
+# bridges, so every String/NSString, Array/NSArray and Dictionary/NSDictionary
+# interaction in the overlay needs an explicit conversion.  Measured before:
+# 1154 errors, of which 193 "cannot convert value of type 'String' to expected
+# argument type 'NSString'", 54 "'NSString' is not implicitly convertible to
+# 'String'", plus 'string' used as a property, "NSCalendar has no member 'Unit'"
+# and similar; and, on the names alone, "cannot find type 'Decimal' in scope"
+# 116 times.
+#
+# Only names are ported: this file declares nothing itself, and it renames
+# nothing this tree does not declare.  NSPersonNameComponents is deliberately
+# absent - Apple bridges it to PersonNameComponents, but this SDK's Foundation
+# headers do not declare the class at all (no NSPersonNameComponents.h, and
+# Foundation.h does not import one), so the name has nothing to attach to.
 Name: Foundation
 Classes:
+- Name: NSAffineTransform
+  SwiftBridge: AffineTransform
+- Name: NSArray
+  SwiftBridge: Swift.Array
+  SwiftImportAsNonGeneric: true
 - Name: NSBundle
   SwiftName: Bundle
+- Name: NSCharacterSet
+  SwiftBridge: CharacterSet
+- Name: NSData
+  SwiftBridge: Data
+- Name: NSDate
+  SwiftBridge: Date
+- Name: NSDateComponents
+  SwiftBridge: DateComponents
 - Name: NSDateFormatter
   SwiftName: DateFormatter
+- Name: NSDateInterval
+  SwiftBridge: DateInterval
+- Name: NSDecimalNumber
+  SwiftBridge: Decimal
+- Name: NSDictionary
+  SwiftBridge: Swift.Dictionary
+  SwiftImportAsNonGeneric: true
+- Name: NSError
+  SwiftBridge: Swift.Error
 - Name: NSFileManager
   SwiftName: FileManager
+- Name: NSIndexPath
+  SwiftBridge: IndexPath
+- Name: NSIndexSet
+  SwiftBridge: IndexSet
+- Name: NSLocale
+  SwiftBridge: Locale
+- Name: NSMeasurement
+  SwiftBridge: Measurement
+  SwiftImportAsNonGeneric: true
+- Name: NSNotification
+  SwiftBridge: Notification
 - Name: NSNotificationCenter
   SwiftName: NotificationCenter
+- Name: NSOrderedCollectionDifference
+  SwiftBridge: Swift.CollectionDifference
+  SwiftImportAsNonGeneric: true
 - Name: NSPropertyListSerialization
   SwiftName: PropertyListSerialization
 - Name: NSScanner
-  SwiftName: Scanner
+  SwiftName: NSScanner
+- Name: NSSet
+  SwiftBridge: Swift.Set
+  SwiftImportAsNonGeneric: true
+- Name: NSString
+  SwiftBridge: Swift.String
+- Name: NSTimeZone
+  SwiftBridge: TimeZone
+- Name: NSURL
+  SwiftBridge: URL
+- Name: NSURLComponents
+  SwiftBridge: URLComponents
+- Name: NSURLQueryItem
+  SwiftBridge: URLQueryItem
+- Name: NSURLRequest
+  SwiftBridge: URLRequest
+- Name: NSUUID
+  SwiftBridge: UUID
 Typedefs:
 - Name: NSDecimal
   SwiftName: Decimal
