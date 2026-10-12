@@ -21,6 +21,7 @@
 #include <MobileAsset/MobileAsset.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 static int verbose = 0;
 
@@ -77,10 +78,130 @@ void* MACleanV1Repository(void)
     return NULL;
 }
 
-void* MAGetPallasAudience(void)
+/* --------------------------------------------------------------------------------------------
+ * THE PALLAS CONFIGURATION REGISTER, AND WHY IT IS NOT A STUB.
+ *
+ * MEASURED NEED, 2026-10-12. Xcode 26.3's SharedFrameworks/DVTFoundation.framework links this
+ * framework strongly and binds five Pallas symbols through __DATA_CONST __got, so all five must be
+ * exported for the client to load. Four of them were absent from this file entirely --
+ * MAGetPallasEnabled, MASetPallasEnabled, MASetPallasAudienceForType, MASetPallasUrlForType -- and
+ * the fifth, MAGetPallasAudience, was a printed "STUB: MAGetPallasAudience called" that returned
+ * NULL. The NULL is not survivable for the client that demands it: DVTFoundation bridges the result
+ * with Swift's unconditionallyBridgeFromObjectiveC, so a NULL audience traps.
+ *
+ * THE ABIs BELOW COME FROM THE CALL SITES, not from a guess (disassembly of DVTFoundation's
+ * DVTDirectMobileAssetDownloader.PallasConfiguration):
+ *   MAGetPallasEnabled(assetType, bool *out)        the caller zeroes a byte, passes its address in
+ *                                                   %rsi and reads it back; the return register is
+ *                                                   not consulted, so the answer is the out byte.
+ *   MASetPallasEnabled(assetType, bool enabled)     NSString in %rdi, movzbl of the flag in %esi.
+ *   MASetPallasAudienceForType(audience, assetType) value first, asset type second; the audience is
+ *   MASetPallasUrlForType(url, assetType)           an NSString, the URL an NSURL, the asset type an
+ *                                                   NSString, each bridged just before the call.
+ *   MAGetPallasAudience(assetType) -> NSString *    one NSString argument; the autoreleased result
+ *                                                   is retained by the caller.
+ * Pallas is Apple's asset-delivery backend, so these are the toggles a client sets on its downloader
+ * configuration: enabled, audience and URL.
+ *
+ * WHAT IS HONEST HERE. This is a REGISTER with no asset service behind it. It stores what a caller
+ * set, keyed by asset type, and gives it back unchanged: set-then-get returns what was set, and an
+ * asset type nobody configured reads false for the flag and an empty string for the audience. What
+ * does not exist is the service the register would be a front for: nothing is transmitted, no
+ * download is affected, and there is no other MobileAsset state to consult -- which is why there is
+ * nothing else to do with a value that was never set. This is the same reading already accepted for
+ * QuartzCore's CARenderServer debug-option register (commit 83085aca): honouring the caller's write
+ * is strictly more honest than dropping it, and the unset default is an honest empty rather than a
+ * made-up value.
+ *
+ * THE REGISTER IS A PROCESS-LOCAL DICTIONARY, guarded by @synchronized on one class object so that
+ * the lazy creation of the register itself is race-free without a constructor.
+ */
+
+static NSMutableDictionary *pallasConfigurations = nil;   /* asset type -> mutable configuration */
+
+static NSMutableDictionary *pallasConfigurationForType(NSString *assetType, BOOL create)
 {
-    if (verbose) puts("STUB: MAGetPallasAudience called");
-    return NULL;
+    /* Callers hold the register lock. */
+    if (assetType == nil)
+        return nil;
+
+    if (pallasConfigurations == nil)
+        pallasConfigurations = [NSMutableDictionary new];
+
+    NSMutableDictionary *configuration = [pallasConfigurations objectForKey: assetType];
+    if (configuration == nil && create) {
+        configuration = [NSMutableDictionary new];
+        NSString *key = [assetType copy];
+        [pallasConfigurations setObject: configuration forKey: key];
+        [key release];
+        [configuration release];
+    }
+    return configuration;
+}
+
+void MAGetPallasEnabled(NSString *assetType, bool *enabled)
+{
+    if (enabled == NULL)
+        return;
+
+    @synchronized ([MAAsset class]) {
+        NSMutableDictionary *configuration = pallasConfigurationForType(assetType, NO);
+        *enabled = [[configuration objectForKey: @"enabled"] boolValue];
+    }
+}
+
+void MASetPallasEnabled(NSString *assetType, bool enabled)
+{
+    @synchronized ([MAAsset class]) {
+        NSMutableDictionary *configuration = pallasConfigurationForType(assetType, YES);
+        if (configuration != nil)
+            [configuration setObject: [NSNumber numberWithBool: enabled] forKey: @"enabled"];
+    }
+}
+
+NSString *MAGetPallasAudience(NSString *assetType)
+{
+    @synchronized ([MAAsset class]) {
+        NSMutableDictionary *configuration = pallasConfigurationForType(assetType, NO);
+        NSString *audience = [configuration objectForKey: @"audience"];
+        /* No audience configured for this asset type is an empty audience, not a NULL one: the
+         * client that demands this symbol traps on NULL. */
+        return audience != nil ? audience : @"";
+    }
+}
+
+void MASetPallasAudienceForType(NSString *audience, NSString *assetType)
+{
+    @synchronized ([MAAsset class]) {
+        NSMutableDictionary *configuration = pallasConfigurationForType(assetType, YES);
+        if (configuration == nil)
+            return;
+
+        if (audience != nil) {
+            NSString *stored = [audience copy];
+            [configuration setObject: stored forKey: @"audience"];
+            [stored release];
+        } else {
+            [configuration removeObjectForKey: @"audience"];
+        }
+    }
+}
+
+void MASetPallasUrlForType(NSURL *url, NSString *assetType)
+{
+    @synchronized ([MAAsset class]) {
+        NSMutableDictionary *configuration = pallasConfigurationForType(assetType, YES);
+        if (configuration == nil)
+            return;
+
+        if (url != nil) {
+            NSURL *stored = [url copy];
+            [configuration setObject: stored forKey: @"url"];
+            [stored release];
+        } else {
+            [configuration removeObjectForKey: @"url"];
+        }
+    }
 }
 
 void* MAMigrateAssets(void)

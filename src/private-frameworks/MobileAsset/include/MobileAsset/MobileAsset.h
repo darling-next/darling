@@ -22,6 +22,7 @@
 #define _MobileAsset_H_
 
 #import <Foundation/Foundation.h>
+#include <stdbool.h>
 
 #import <MobileAsset/MAProgressHandler.h>
 #import <MobileAsset/MAAsset.h>
@@ -44,12 +45,16 @@ void* ASSetAssetServerURLForAssetType(void);
 void* ASSetDefaultAssetServerURLForAssetType(void);
 void* ASSetLogLevel(void);
 void* MACleanV1Repository(void);
-void* MAGetPallasAudience(void);
+NSString *MAGetPallasAudience(NSString *assetType);
+void MAGetPallasEnabled(NSString *assetType, bool *enabled);
 void* MAMigrateAssets(void);
 void* MAPurgeAll(void);
 void* MASendRepairState(void);
 void* MASetPallasAudience(void);
+void MASetPallasAudienceForType(NSString *audience, NSString *assetType);
+void MASetPallasEnabled(NSString *assetType, bool enabled);
 void* MASetPallasUrl(void);
+void MASetPallasUrlForType(NSURL *url, NSString *assetType);
 void* MASetServerUrlOverride(void);
 void* MobileAssetQueryCreate(void);
 void* MobileAssetQueryCreateArrayOfKnownAssets(void);

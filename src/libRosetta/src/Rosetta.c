@@ -41,8 +41,12 @@
  * is x86_64 code running natively on an x86_64 host, so this process is not being translated, and
  * "not translated" is the honest answer rather than a value chosen to make a caller take one path.
  * If Darling ever runs a translated guest, this function has to report that truthfully instead.
+ *
+ * NAME: the C identifier carries no leading underscore, so the Mach-O linker symbol is exactly the
+ * caller's _rosetta_is_current_process_translated. Writing the identifier with a leading underscore
+ * produced __rosetta_is_current_process_translated, which satisfied nobody.
  */
-bool _rosetta_is_current_process_translated(void)
+bool rosetta_is_current_process_translated(void)
 {
 	return false;
 }
