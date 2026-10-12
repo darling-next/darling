@@ -125,6 +125,62 @@ char *sandbox_extension_issue_file_to_process(const char *extension_class, const
 	return NULL;
 }
 
+/*
+ * The rest of libsystem_sandbox's extension SPI (the SDK's libsystem_sandbox.tbd names all three in
+ * one group: _sandbox_extension_consume, _sandbox_extension_issue_file, ..., _sandbox_extension_release).
+ *
+ * An extension token is a grant the kernel's policy engine made and recorded; CONSUMING the token is
+ * what turns the grant into a handle the process may use, and RELEASING the handle gives it back.
+ * Darling has no policy engine and no extension table: nothing here can issue a token (see the sibling
+ * above), nothing can validate one, and no handle can name anything. All three therefore answer with
+ * Apple's documented failure, and the failure is load bearing rather than decoration: a fabricated
+ * handle would tell the client it holds a grant this guest cannot enforce.
+ *
+ * Measured clients (Xcode 26.3, this platform's XCTDaemonControl/XCTestCore/IDEFoundation slice):
+ *   consume    XCTDaemonControl's +[XCTDaemonControlSession requestSessionWithDTXConnectionProvider:
+ *              logDelegate:requestDaemonDataContainerSandboxExtension:completion:] _block_invoke_3 calls
+ *              sandbox_extension_consume([token UTF8String]) and stores the result UNCHECKED with
+ *              -setDaemonSandboxExtensionToken: (it is released in -dealloc, return ignored), so -1
+ *              simply becomes the session's handle value. XCTestCore's -[XCTMetricDiagnosticHelper
+ *              attachTraceFileCollectedForInstrument:] compares the result with -1 and, on equality,
+ *              calls [[NSAssertionHandler currentHandler] handleFailureInMethod:object:
+ *              file:@"XCTMetricDiagnosticHelper.m" lineNumber:203 description:@"Failed to access
+ *              performance trace file on target device. Unable to attach trace to test report."] --
+ *              a failed consume is an unrecoverable condition there, which is why the answer below is
+ *              the documented failure and not a value that would let the client attach an attachment
+ *              for a grant that does not exist.
+ *   release    -[XCTDaemonControlSession dealloc] and the XCTMetricDiagnosticHelper path above; both
+ *              ignore the result. Since no consume can succeed, no handle is ever valid, and -1 says
+ *              that; 0 would report a release that never happened.
+ *   issue_file IDEFoundation's _IDEExtensionIssueSandboxExtensionForPath reads errno through __error()
+ *              on NULL and hands it to the caller as an NSPOSIXErrorDomain error; on non-NULL it wraps
+ *              the C string in an NSString and frees it. The tree's own caller,
+ *              src/external/security/OSX/libsecurity_keychain/xpc/main.c (line 223), also treats NULL as
+ *              "can't get sandbox fs extension". ENOTSUP therefore reaches those callers honestly.
+ */
+int64_t sandbox_extension_consume(const char *extension_token)
+{
+	(void) extension_token;
+	errno = ENOTSUP;
+	return -1;
+}
+
+int sandbox_extension_release(int64_t extension_handle)
+{
+	(void) extension_handle;
+	errno = ENOTSUP;
+	return -1;
+}
+
+char *sandbox_extension_issue_file(const char *extension_class, const char *path, uint32_t flags)
+{
+	(void) extension_class;
+	(void) path;
+	(void) flags;
+	errno = ENOTSUP;
+	return NULL;
+}
+
 int sandbox_consume_extension(const char *path, const char *ext_token)
 {
 	return -1;

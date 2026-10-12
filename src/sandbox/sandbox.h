@@ -171,6 +171,14 @@ int sandbox_issue_mach_extension(const char *name, char **ext_token);
  * Xcode clients that demand it bind, and always fails with NULL + errno. */
 char *sandbox_extension_issue_file_to_process(const char *extension_class, const char *path, uint32_t flags, audit_token_t token);
 
+/* The same SPI's issue_file, consume and release, declared here with the signatures Apple's own SPI
+ * header states (src/external/WTF/wtf/spi/darwin/SandboxSPI.h) and the SDK's Swift interfaces confirm.
+ * All three fail with errno = ENOTSUP for the reason in sandbox.c: there is no policy engine to issue,
+ * validate or record an extension, and no handle can name anything. */
+char *sandbox_extension_issue_file(const char *extension_class, const char *path, uint32_t flags);
+int64_t sandbox_extension_consume(const char *extension_token);
+int sandbox_extension_release(int64_t extension_handle);
+
 int sandbox_consume_extension(const char *path, const char *ext_token);
 int sandbox_consume_fs_extension(const char *ext_token, char **path);
 int sandbox_consume_mach_extension(const char *ext_token, char **name);
