@@ -577,6 +577,49 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# Version: the load command demands current 1.0.0 against compatibility 1.0.0 and the tree declares
 	# exactly that, so no version claim of either kind was needed.
 	compression
+	# MEASURED 2026-10-12, the rung after compression, and the first one that is NOT a declaration gap
+	# and NOT an existing implementation:
+	#   "Library not loaded: /usr/lib/libAppleArchive.dylib
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DebugSymbolsDT.framework/Versions/A/DebugSymbolsDT
+	#    Reason: image not found"
+	# The tree had no libAppleArchive at all, so a new component was needed. It is a LOUD PLACEHOLDER,
+	# deliberately with no symbol surface: DebugSymbolsDT (the ONE referrer -- see the source comment for
+	# the substring error that once said DVTFoundation) has a non-weak load command and binds ZERO
+	# symbols, so an image with the right install name satisfies it, while any future client that binds a
+	# real AA* symbol fails at LOAD rather than calling something that answers wrongly. The real Apple
+	# Archive format API (AAArchiveStream and the extraction/compression operations) is unimplemented and
+	# filed as separate work. Both versions are identical to the demand (1.0.0/1.0.0), so no version
+	# claim of either kind was made.
+	AppleArchive
+	# MEASURED 2026-10-12, the rung after libAppleArchive, and it is a plain declaration gap again --
+	# the FIFTH distinct referrer is what is new:
+	#   "Library not loaded: /System/Library/PrivateFrameworks/PlugInKit.framework/Versions/A/PlugInKit
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
+	#    Reason: image not found"
+	# The tree builds it (src/private-frameworks/PlugInKit, a real framework with PKBundle/PKHost/
+	# PKManager/PKDaemonClient implementations, not stubs) and this component never named it.
+	# DVTInstrumentsFoundation binds three things, _PKIdentifierAttribute through __DATA_CONST __got and
+	# the classrefs _OBJC_CLASS_$_PKManager and _OBJC_CLASS_$_PKHost -- the classref mechanism again,
+	# after AssertionServices and AssetCacheServices. All three exist in the tree (globals.c defines the
+	# first; PKManager.m and PKHost.m implement the classes).
+	# Plain declaration, no version claim of either kind: the demand is current 1.0.0 against
+	# compatibility 1.0.0 and the tree declares exactly that.
+	PlugInKit
+	# MEASURED 2026-10-12, the rung after PlugInKit, from the same new referrer:
+	#   "Library not loaded: /usr/lib/libdtrace.dylib
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
+	#    Reason: image not found"
+	# DECLARATION gap, and this one is comfortable: the tree ALREADY builds a real libdtrace
+	# (src/external/dtrace, the Apple dtrace source, target `libdtrace`, DYLIB_INSTALL_NAME already
+	# /usr/lib/libdtrace.dylib with its own install rule) and this component never named it, so it
+	# landed nowhere in the prefix. DVTInstrumentsFoundation has a load command for it and binds ZERO
+	# symbols from it -- the same symbol-free shape as libAppleArchive, except that here the
+	# implementation genuinely exists, so nothing needs to be written.
+	# Plain declaration, and the version needs stating precisely rather than as "declares exactly that":
+	# MEASURED from the deployed guest image, the COMPATIBILITY version is 1.0.0 and matches the demand
+	# exactly -- that is the value dyld compares -- while the CURRENT version is 130.0.0, the tree's own
+	# value, which EXCEEDS the 1.0.0 the client asks for. Nothing was raised to meet a demand here.
+	libdtrace
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -719,6 +762,12 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"CrashReporterSupport\", \"guest_path\": \"/System/Library/PrivateFrameworks/CrashReporterSupport.framework/Versions/A/CrashReporterSupport\", \"host_path\": \"$<TARGET_FILE:CrashReporterSupport>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"compression\", \"guest_path\": \"/usr/lib/libcompression.dylib\", \"host_path\": \"$<TARGET_FILE:compression>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"AppleArchive\", \"guest_path\": \"/usr/lib/libAppleArchive.dylib\", \"host_path\": \"$<TARGET_FILE:AppleArchive>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"PlugInKit\", \"guest_path\": \"/System/Library/PrivateFrameworks/PlugInKit.framework/Versions/A/PlugInKit\", \"host_path\": \"$<TARGET_FILE:PlugInKit>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"libdtrace\", \"guest_path\": \"/usr/lib/libdtrace.dylib\", \"host_path\": \"$<TARGET_FILE:libdtrace>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
