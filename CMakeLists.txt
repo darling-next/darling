@@ -752,7 +752,8 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# non-lazily, and that symbol is in neither the artifact nor the cocotron source. The rung advanced with it
 	# absent (see the loader-leniency finding dar-q50c); the symbol is being added under dar-8twt. Nothing here
 	# is retracted -- the point is that "this rung is real" describes the four symbols it was declared for, not
-	# every symbol any client may bind from the same image.
+	# every symbol any client may bind from the same image. FIXED: the symbol was added as a truthfully headless
+	# answer (cocotron, committed and pinned), and the analyzer now reports MISS 0 for this component.
 	# VERSION: compatibility 1.2.0 already MATCHES the client's demand -- the enforced value, so no
 	# version work and no claim -- while the current version (1.11.0 against a demand of 1193.38.0) is
 	# deliberately left alone under the CoreData proof, the same decision as the four version reverts.
