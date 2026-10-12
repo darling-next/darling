@@ -370,6 +370,56 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# filled through the ordinary path did not carry them.
 	archive
 	PackageKit
+	# MEASURED 2026-10-11, same discipline as the three above: a minimal xcodebuild
+	# project in a guest died with
+	#   "Error loading required libraries ... dlopen(@rpath/libxcodebuildLoader.dylib, 1):
+	#    Library not loaded: /System/Library/Frameworks/UniformTypeIdentifiers.framework/
+	#    Versions/A/UniformTypeIdentifiers  Referenced from: .../Xcode3Core.framework/...
+	#    Reason: image not found"
+	# (and then with SIGILL at __abort+0x15f, because the abort that reports it never
+	# becomes a fatal signal -- see the abort-gap note). The framework was buildable and
+	# installable all along -- its install rule had already put it under
+	# libexec/darling -- and was only missing from this component, which is exactly why
+	# a prefix filled through the ordinary path did not carry it. Xcode3Core hard-links
+	# it at current version 709.0.0, the version this tree builds.
+	UniformTypeIdentifiers
+	# MEASURED 2026-10-12, same discipline as the four above: with the framework in place, the
+	# minimal xcodebuild project moved to the next missing load-time dependency --
+	#   "Library not loaded: /usr/lib/libRosetta.dylib  Referenced from:
+	#    .../Xcode.app/Contents/SharedFrameworks/DVTFoundation.framework/Versions/A/DVTFoundation
+	#    Reason: image not found"
+	# It was not a declaration gap like the framework: libRosetta existed NOWHERE in the tree. The
+	# tree now builds it (src/libRosetta, one symbol, see its header for the measured caller), and
+	# three Xcode images reference it (SharedFrameworks/DVTFoundation,
+	# SharedFrameworks/AssetRuntime/DVTFoundation, SharedFrameworks/CoreSymbolicationDT).
+	Rosetta
+	# MEASURED 2026-10-12, one rung further: with libRosetta in place DVTFoundation's next missing
+	# load-time dependency is
+	#   "Library not loaded: /System/Library/PrivateFrameworks/MobileAsset.framework/Versions/A/MobileAsset
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTFoundation.framework/Versions/A/DVTFoundation"
+	# The tree builds it (src/private-frameworks/MobileAsset) and it was simply never declared here, so
+	# it landed nowhere in the prefix -- the same declaration gap as the framework above.
+	MobileAsset
+	# MEASURED 2026-10-12, the two rungs after MobileAsset, by probing a minimal xcodebuild project
+	# one missing load-time dependency at a time and then building the target each error named:
+	#   "Library not loaded: /System/Library/Frameworks/CoreData.framework/Versions/A/CoreData"
+	#   "Library not loaded: /System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO"
+	# both "Referenced from: .../SharedFrameworks/DVTFoundation.framework/Versions/A/DVTFoundation".
+	# Each time the tree already linked the file (src/external/cocotron/CoreData,
+	# src/frameworks/ImageIO, both C_SHARED_LIBRARY_LINKER outputs) and the only fault was that this
+	# component never named it, so a prefix built through the ordinary path carried no copy -- the
+	# same declaration gap as PackageKit and UniformTypeIdentifiers above. The rung after these two
+	# is CryptoKit.framework, which NO target in this tree produces at all: it is the overlay build's
+	# product (the ported recipe's own prebuilt CryptoKit.framework), i.e. a different class of work,
+	# not another declaration here.
+	CoreData
+	ImageIO
+	# Same declaration gap again, and the same fix: Xcode's DVTFoundation hard-depends on
+	# /System/Library/PrivateFrameworks/CoreAnalytics.framework/Versions/A/CoreAnalytics, and the tree
+	# builds it (src/private-frameworks/CoreAnalytics) but this component never named it. Measured after
+	# CryptoKit was supplied: "Library not loaded: .../CoreAnalytics.framework/Versions/A/CoreAnalytics
+	# Referenced from .../DVTFoundation.framework/Versions/A/DVTFoundation".
+	CoreAnalytics
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -458,13 +508,40 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		string(APPEND _rootless_toolchain_extra_resources
 			",\n    {\"target\": \"swift_framework_${_swift_framework_target}\", \"guest_path\": \"/System/Library/Frameworks/${_swift_framework_name}.framework/Versions/A/${_swift_framework_name}\", \"host_path\": \"${_rootless_toolchain_resource_dir}/System/Library/Frameworks/${_swift_framework_name}.framework/Versions/A/${_swift_framework_name}\"}")
 	endforeach()
+	# A framework this TREE BUILDS, so unlike the Swift payload above it does not exist at configure time and cannot
+	# be staged with configure_file: the manifest names the build product directly with a generator expression, the
+	# same way the entrypoints below name theirs. MEASURED 2026-10-11: a minimal xcodebuild project in a guest died
+	# because the guest-visible tree had no /System/Library/Frameworks/UniformTypeIdentifiers.framework while the
+	# install rule had already placed it under libexec/darling -- installed, but undeclared here, and this manifest is
+	# the only thing that makes a component guest-visible (the same reason Combine.framework, which the skeleton does
+	# not contain, is reachable in a filled prefix). Xcode3Core.framework hard-links this path at current version
+	# 709.0.0, which is what src/frameworks/UniformTypeIdentifiers builds.
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"framework_UniformTypeIdentifiers\", \"guest_path\": \"/System/Library/Frameworks/UniformTypeIdentifiers.framework/Versions/A/UniformTypeIdentifiers\", \"host_path\": \"$<TARGET_FILE:UniformTypeIdentifiers>\"}")
 	# Both are built by this component now, and both are install-name/path shapes a
 	# build tool loads at run time: libarchive.2.dylib at /usr/lib, and the
 	# framework binary at the private-framework path dyld reports.
 	string(APPEND _rootless_toolchain_extra_entrypoints
 		",\n    {\"target\": \"archive\", \"guest_path\": \"/usr/lib/libarchive.2.dylib\", \"host_path\": \"$<TARGET_FILE:archive>\"}")
+	# Loaded by an Xcode image at load time, exactly like libarchive.2.dylib above: DVTFoundation
+	# hard-links /usr/lib/libRosetta.dylib (measured; it imports one symbol from it), so it has to be
+	# guest-visible and not merely installed under libexec/darling.
+	string(APPEND _rootless_toolchain_extra_entrypoints
+		",\n    {\"target\": \"Rosetta\", \"guest_path\": \"/usr/lib/libRosetta.dylib\", \"host_path\": \"$<TARGET_FILE:Rosetta>\"}")
 	string(APPEND _rootless_toolchain_extra_entrypoints
 		",\n    {\"target\": \"PackageKit\", \"guest_path\": \"/System/Library/PrivateFrameworks/PackageKit.framework/Versions/A/PackageKit\", \"host_path\": \"$<TARGET_FILE:PackageKit>\"}")
+	# Same shape as PackageKit immediately above and for the same measured reason: DVTFoundation
+	# hard-links this private-framework path at load time.
+	string(APPEND _rootless_toolchain_extra_entrypoints
+		",\n    {\"target\": \"MobileAsset\", \"guest_path\": \"/System/Library/PrivateFrameworks/MobileAsset.framework/Versions/A/MobileAsset\", \"host_path\": \"$<TARGET_FILE:MobileAsset>\"}")
+	# The next two load-time dependencies the same probing run named, at the exact paths DVTFoundation
+	# names in its load commands.
+	string(APPEND _rootless_toolchain_extra_entrypoints
+		",\n    {\"target\": \"CoreData\", \"guest_path\": \"/System/Library/Frameworks/CoreData.framework/Versions/A/CoreData\", \"host_path\": \"$<TARGET_FILE:CoreData>\"}")
+	string(APPEND _rootless_toolchain_extra_entrypoints
+		",\n    {\"target\": \"ImageIO\", \"guest_path\": \"/System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO\", \"host_path\": \"$<TARGET_FILE:ImageIO>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"CoreAnalytics\", \"guest_path\": \"/System/Library/PrivateFrameworks/CoreAnalytics.framework/Versions/A/CoreAnalytics\", \"host_path\": \"$<TARGET_FILE:CoreAnalytics>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
