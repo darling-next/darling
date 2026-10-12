@@ -1,4 +1,5 @@
 #include "sandbox.h"
+#include <errno.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
@@ -100,6 +101,28 @@ int sandbox_issue_fs_rw_extension(const char *path, char **ext_token)
 int sandbox_issue_mach_extension(const char *name, char **ext_token)
 {
 	return -1;
+}
+
+/*
+ * Apple exports this from libsystem_sandbox.dylib (see the SDK's
+ * libsystem_sandbox.tbd). The demanding client is DVTInstrumentsFoundation, which
+ * calls it as sandbox_extension_issue_file_to_process(APP_SANDBOX_READ, path,
+ * SANDBOX_EXTENSION_DEFAULT, audit_token) and treats a NULL result as failure,
+ * naming the path in an NSError; on success it owns the returned C string and
+ * frees it. Darling has no sandbox policy engine, so no extension token can be
+ * issued for any path or any process: a fabricated token would claim a sandbox
+ * grant this guest cannot back. NULL with errno set is Apple's documented
+ * failure contract and the truthful answer here. The caller does not read errno,
+ * so ENOTSUP is for humans, not for it.
+ */
+char *sandbox_extension_issue_file_to_process(const char *extension_class, const char *path, uint32_t flags, audit_token_t token)
+{
+	(void) extension_class;
+	(void) path;
+	(void) flags;
+	(void) token;
+	errno = ENOTSUP;
+	return NULL;
 }
 
 int sandbox_consume_extension(const char *path, const char *ext_token)

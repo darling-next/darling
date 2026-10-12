@@ -166,6 +166,11 @@ int sandbox_issue_fs_extension(const char *path, uint64_t flags, char **ext_toke
 int sandbox_issue_fs_rw_extension(const char *path, char **ext_token);
 int sandbox_issue_mach_extension(const char *name, char **ext_token);
 
+/* Apple's newer extension SPI (libsystem_sandbox.dylib / <sandbox/private.h>).
+ * This tree cannot issue extensions (no policy engine); the symbol exists so the
+ * Xcode clients that demand it bind, and always fails with NULL + errno. */
+char *sandbox_extension_issue_file_to_process(const char *extension_class, const char *path, uint32_t flags, audit_token_t token);
+
 int sandbox_consume_extension(const char *path, const char *ext_token);
 int sandbox_consume_fs_extension(const char *ext_token, char **path);
 int sandbox_consume_mach_extension(const char *ext_token, char **name);

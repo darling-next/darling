@@ -17,7 +17,9 @@
  */
 
 #include "quarantine.h"
+#include <errno.h>
 #include <limits.h>
+#include <spawn.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -156,3 +158,34 @@ int qtn_file_init_with_mount_point(qtn_file_t a, char b[1024])
 int qtn_proc_init_with_data(qtn_proc_t proc, void* data, size_t data_len) {
 	return 0;
 };
+
+/*
+ * Apple exports responsibility_spawnattrs_setdisclaim() from libquarantine.dylib
+ * (see the SDK's libquarantine.tbd, which also carries the rest of the
+ * responsibility_* family) and declares it in <responsibility.h>. The demanding
+ * client is DVTInstrumentsFoundation, which calls it as
+ * responsibility_spawnattrs_setdisclaim(&attr, 1) on a freshly initialised
+ * posix_spawnattr_t, immediately before posix_spawn_file_actions_init, and
+ * DISCARDS the result.
+ *
+ * Darling has no responsibility subsystem: no process is attributed to a
+ * responsible parent, and there is no spawn-attribute bit or kernel plumbing
+ * that could record the request. Apple's contract is 0 on success, -1 with errno
+ * on failure, so the honest answer for a disclaim this guest cannot record is a
+ * failure -- never a fabricated success. Clearing a disclaim that was never set
+ * is genuinely a no-op, so disclaim == 0 succeeds.
+ */
+int responsibility_spawnattrs_setdisclaim(posix_spawnattr_t *attrs, int disclaim)
+{
+	if (attrs == NULL || *attrs == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (disclaim) {
+		errno = ENOTSUP;
+		return -1;
+	}
+
+	return 0;
+}
