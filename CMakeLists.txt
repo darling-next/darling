@@ -655,6 +655,94 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# Plain declaration, no version claim: measured from the deployed image, current 1.0.0 and
 	# compatibility 1.0.0, identical to the demand.
 	kperf
+	# MEASURED 2026-10-12, the rung after kperf, from the same referrer:
+	#   "Library not loaded: /System/Library/PrivateFrameworks/StreamingZip.framework/Versions/A/StreamingZip
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
+	#    Reason: image not found"
+	# DECLARATION gap: the tree builds it (src/private-frameworks/StreamingZip) and this component never
+	# named it. DVTInstrumentsFoundation binds three symbols, counted by the dependency field rather
+	# than by substring: _kSZArchiverOptionNoCentralDirectory and _kSZArchiverOptionNoSeekOutput (globals,
+	# globals.c) and _SZArchiverCreateStreamableZip (a LOUD STUB, functions.c:29 -- 7 stub sites in the
+	# component, the usual style). All three present, so this is a declaration and not an
+	# implementation task; the archive work behind it stays under the stub filing policy.
+	# Plain declaration, no version claim: measured from the deployed image, current 1.0.0 and
+	# compatibility 1.0.0, identical to the demand.
+	StreamingZip
+	# MEASURED 2026-10-12, the rung after StreamingZip, and the first of the decision points rather
+	# than a declaration gap:
+	#   "Library not loaded: /System/Library/Frameworks/Metal.framework/Versions/A/Metal
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
+	#    Reason: image not found"
+	# The tree HAS a real Metal (src/external/metal, Vulkan-backed) but it is gated behind
+	# COMPONENT_dev_gui_common and nothing is built, so the guest cannot load it. Enabling that
+	# component would pull a GPU stack into this bootstrap; instead this is MetalNoGPU, a
+	# TRUE-ANSWER implementation: this guest has no GPU, so "no device exists" is a fact rather than
+	# a placeholder. THE THIRD SHAPE (libRosetta and this; libAppleArchive's empty surface is the
+	# second, the loud stubs the first). DVTInstrumentsFoundation binds seven symbols, all eager:
+	# four calls it makes (_MTLCreateSystemDefaultDevice 2 sites, _MTLCopyAllDevices 4,
+	# _MTLCopyAllDevicesWithObserver 1, _MTLRemoveDeviceObserver 2) and three notification NAMES it
+	# only reads. Neither call site of _MTLCreateSystemDefaultDevice tests for NULL -- one messages
+	# the result, the other sends it -[%rdi _removeGPU:] -- and messaging nil is a no-op, so the
+	# client tolerates the empty answer. See the source for the full measurement, the no-op
+	# reasoning for _MTLRemoveDeviceObserver, and why the three notification values are arbitrary
+	# but consistent (nothing posts them; the symbol is the single source clients agree through).
+	# NOTE: it does NOT print a "STUB:" line -- the answers are the truth, not a stand-in.
+	MetalNoGPU
+	# MEASURED 2026-10-12, the rung after Metal, from the same referrer:
+	#   "Library not loaded: /System/Library/PrivateFrameworks/LoggingSupport.framework/Versions/A/LoggingSupport
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
+	#    Reason: image not found"
+	# DECLARATION gap, with ONE class added so the declaration can hold: the tree builds this component
+	# (src/private-frameworks/LoggingSupport, 58 .m files, no stub markers) and this component never
+	# named it. DVTInstrumentsFoundation binds SEVEN classrefs from it, all eager in __DATA
+	# __objc_classrefs. SIX are full pre-existing implementations -- OSLogEventLiveStore, OSLogEventLiveStream,
+	# OSLogEventStore, OSLogEventStream, OSLogPreferencesCategory, OSLogPreferencesSubsystem -- and the
+	# SEVENTH, OSLogDeserializedEventStream, was the only class the tree did not have. Because the
+	# classref is eager, declaring without it would have turned a clear image-not-found into a
+	# symbol-not-found (the kperf lesson), so it was added: a DOCUMENTED METHOD-FREE class, the fourth
+	# shape this walk has produced, whose absence of behaviour is deliberate and named in its source
+	# (the client binds the classref and sends it zero selectors anywhere in the image).
+	# VERSION: measured from the deployed image, compatibility 1.0.0 matching the demand, current
+	# 906.220.1 against a demand of 1815.60.2 -- a current shortfall deliberately NOT raised, since
+	# dyld does not enforce the current version (the CoreData proof). Same decision as the four reverts.
+	LoggingSupport
+	# MEASURED 2026-10-12, the rung after LoggingSupport, from the same referrer -- and the first of the
+	# two gaps that were known ahead of time and deliberately classified only when the ladder arrived:
+	#   "Library not loaded: /System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
+	#    Reason: image not found"
+	# DECLARATION gap plus FOUR small additions, and the additions are two of the shapes this walk has
+	# settled on, not new ones. The component is real and substantial (src/external/cocotron/QuartzCore,
+	# 39 .m files of CA* classes) and was never named here. DVTInstrumentsFoundation binds four symbols
+	# eagerly, none of which existed anywhere in the component:
+	#   three FACT-ANSWER functions (Metal's shape) -- _CARenderServerGetFrameCounter,
+	#   _CARenderServerGetDebugOption, _CARenderServerSetDebugOption. Both frame-counter call sites pass
+	#   zero and STORE the result into DTGraphicsService._lastFPSCount with nothing testing or branching
+	#   on it, so "zero frames rendered" is a fact about a guest with no render server. The debug option
+	#   REGISTER IS HONOURED (set-then-get returns what was set; its initial value is zero because there
+	#   is no server holding state), never a "STUB:" line.
+	#   one DOCUMENTED METHOD-FREE class (LoggingSupport's shape) -- _OBJC_CLASS_$_CADisplay, to which
+	#   the client sends zero selectors anywhere in the image.
+	# VERSION: compatibility 1.2.0 already MATCHES the client's demand -- the enforced value, so no
+	# version work and no claim -- while the current version (1.11.0 against a demand of 1193.38.0) is
+	# deliberately left alone under the CoreData proof, the same decision as the four version reverts.
+	QuartzCore
+	# MEASURED 2026-10-12, the rung after QuartzCore, from the same referrer -- the SECOND of the two
+	# gaps known ahead of time, classified only now that the ladder arrived:
+	#   "Library not loaded: /System/Library/Frameworks/CoreLocation.framework/Versions/A/CoreLocation
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
+	#    Reason: image not found"
+	# DECLARATION gap plus TWO method-free classes, which is the LoggingSupport shape twice and the
+	# smallest addition this walk has needed. The component is real (src/frameworks/CoreLocation, sixteen
+	# .m files of CL* classes) and was never named here. DVTInstrumentsFoundation binds exactly two
+	# classrefs from it, both eager in __DATA __objc_classrefs: _OBJC_CLASS_$_CLLocation and
+	# _OBJC_CLASS_$_CLSimulationManager. Both had HEADERS in the tree and no implementations -- and both
+	# headers declare an @interface with NO methods, so method-free was already the tree's written
+	# decision and these files only supply the class symbols. The client sends neither class anything:
+	# zero references to either name anywhere in the image's code.
+	# VERSION: compatibility 1.0.0 matches the demand (the enforced value, so no claim); the current
+	# version (tree 2245.16.14 against a demand of 3064.0.3) is left alone under the CoreData proof.
+	CoreLocation
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -807,6 +895,16 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"NetworkStatistics\", \"guest_path\": \"/System/Library/PrivateFrameworks/NetworkStatistics.framework/Versions/A/NetworkStatistics\", \"host_path\": \"$<TARGET_FILE:NetworkStatistics>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"kperf\", \"guest_path\": \"/System/Library/PrivateFrameworks/kperf.framework/Versions/A/kperf\", \"host_path\": \"$<TARGET_FILE:kperf>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"StreamingZip\", \"guest_path\": \"/System/Library/PrivateFrameworks/StreamingZip.framework/Versions/A/StreamingZip\", \"host_path\": \"$<TARGET_FILE:StreamingZip>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"MetalNoGPU\", \"guest_path\": \"/System/Library/Frameworks/Metal.framework/Versions/A/Metal\", \"host_path\": \"$<TARGET_FILE:MetalNoGPU>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"LoggingSupport\", \"guest_path\": \"/System/Library/PrivateFrameworks/LoggingSupport.framework/Versions/A/LoggingSupport\", \"host_path\": \"$<TARGET_FILE:LoggingSupport>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"QuartzCore\", \"guest_path\": \"/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore\", \"host_path\": \"$<TARGET_FILE:QuartzCore>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"CoreLocation\", \"guest_path\": \"/System/Library/Frameworks/CoreLocation.framework/Versions/A/CoreLocation\", \"host_path\": \"$<TARGET_FILE:CoreLocation>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
