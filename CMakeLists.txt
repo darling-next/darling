@@ -440,12 +440,24 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	#    Reason: image not found"
 	# DECLARATION gap: the tree builds it (src/external/cocotron/CoreGraphics) and this component never
 	# named it. DVTFoundation binds four symbols from it, _CGRectGetMaxX/_CGRectGetMaxY/_CGRectGetMinX/
-	# _CGRectGetMinY, all through __DATA_CONST __got (eager), and the tree implements all four
-	# (CGGeometry.h/CGGeometry.m), so this is not a missing implementation. Its load command demands
-	# "current version 1965.1.2" against compatibility 64.0.0, while the framework declared 1070.22.0 --
-	# so, as with AssertionServices, the declaration alone would not have loaded and the version is
-	# raised in the same pass.
+	# _CGRectGetMinY, all through __DATA_CONST __got (eager). Unlike the two rungs above, the SYMBOLS
+	# were never the problem: the tree implements all four (CGGeometry.h/CGGeometry.m). The gap was the
+	# compatibility level -- the load command demands "current version 1965.1.2" against compatibility
+	# 64.0.0, while the framework declared 1070.22.0 -- so the version is raised in the same pass and
+	# the declaration alone would not have loaded.
 	CoreGraphics
+	# MEASURED 2026-10-12, the rung after CoreGraphics, same discipline:
+	#   "Library not loaded: /System/Library/Frameworks/DiskArbitration.framework/Versions/A/DiskArbitration
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTFoundation.framework/Versions/A/DVTFoundation
+	#    Reason: image not found"
+	# DECLARATION gap and nothing else: the tree builds it (src/frameworks/DiskArbitration) and this
+	# component never named it. DVTFoundation binds three symbols, _DASessionCreate,
+	# _DASessionScheduleWithRunLoop and _DASessionUnscheduleFromRunLoop, all through __DATA_CONST __got
+	# (eager), and the tree implements all three (DASession.c). Unlike the CoreGraphics and
+	# AssertionServices rungs, the compatibility level already matches: the load command demands
+	# current 1.0.0 against compatibility 1.0.0 and the framework declares exactly that, so no version
+	# change was needed here.
+	DiskArbitration
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -574,6 +586,8 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"AssertionServices\", \"guest_path\": \"/System/Library/PrivateFrameworks/AssertionServices.framework/Versions/A/AssertionServices\", \"host_path\": \"$<TARGET_FILE:AssertionServices>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"CoreGraphics\", \"guest_path\": \"/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics\", \"host_path\": \"$<TARGET_FILE:CoreGraphics>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"DiskArbitration\", \"guest_path\": \"/System/Library/Frameworks/DiskArbitration.framework/Versions/A/DiskArbitration\", \"host_path\": \"$<TARGET_FILE:DiskArbitration>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
