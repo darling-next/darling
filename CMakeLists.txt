@@ -458,6 +458,18 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# current 1.0.0 against compatibility 1.0.0 and the framework declares exactly that, so no version
 	# change was needed here.
 	DiskArbitration
+	# MEASURED 2026-10-12, the rung after DiskArbitration, same discipline:
+	#   "Library not loaded: /System/Library/PrivateFrameworks/DiskManagement.framework/Versions/A/DiskManagement
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTFoundation.framework/Versions/A/DVTFoundation
+	#    Reason: image not found"
+	# DECLARATION gap and nothing else, the DiskArbitration shape: the tree builds it
+	# (src/private-frameworks/DiskManagement) and this component never named it. DVTFoundation binds one
+	# name from it, the Objective-C class _OBJC_CLASS_$_DMManager, through __DATA __objc_classrefs
+	# rather than __got -- still a load-time requirement, because the class object has to exist in the
+	# image for the runtime to fix that reference up. The tree implements it (DMManager.h and the
+	# DiskManagement sources). Version: the load command demands current 1.0.0 against compatibility
+	# 1.0.0 and the framework declares exactly that, so no version change was needed.
+	DiskManagement
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -588,6 +600,8 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"CoreGraphics\", \"guest_path\": \"/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics\", \"host_path\": \"$<TARGET_FILE:CoreGraphics>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"DiskArbitration\", \"guest_path\": \"/System/Library/Frameworks/DiskArbitration.framework/Versions/A/DiskArbitration\", \"host_path\": \"$<TARGET_FILE:DiskArbitration>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"DiskManagement\", \"guest_path\": \"/System/Library/PrivateFrameworks/DiskManagement.framework/Versions/A/DiskManagement\", \"host_path\": \"$<TARGET_FILE:DiskManagement>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
