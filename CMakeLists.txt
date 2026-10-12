@@ -774,6 +774,33 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# VERSION: compatibility 1.0.0 matches the demand (the enforced value, so no claim); the current
 	# version (tree 2245.16.14 against a demand of 3064.0.3) is left alone under the CoreData proof.
 	CoreLocation
+	#
+	# MEASURED 2026-10-12, supplied as a WAVE (scripts/closure_analyze.py --sweep) rather than one rung
+	# at a time: these six are DECLARATION rows -- the tree already builds each one, the strong
+	# referrer's demanded symbols are all present in the built artifact (demanded-not-exported = 0 for
+	# every one), and in each case the COMPATIBILITY version matches the load command's demand while the
+	# current shortfall is left unraised under the CoreData proof (current_version is not enforced).
+	#   ApplicationServices -- strong referrer DevToolsCore binds 0; the sweep's 18+1 names are behind
+	#     weak+upward XCTAutomationSupport/XCUIAutomation, and the weak AX* names all exist in the built
+	#     HIServices (489 exports). Demand 1.0.0/66.0.0 against a tree 1.0.0/48.0.0.
+	#   AuthKit -- DVTAppStoreConnect 1, DVTITunesSoftwareServiceFoundation 2, Notarization 2 (union 2,
+	#     both exported). Demand and declaration both 1.0.0/1.0.0.
+	#   login -- IDEFoundation binds 1, present. Demand 1.0.0/264.1.2 against a tree 1.0.0/137.0.0.
+	#     NAME COLLISION to keep in mind: this target is the FRAMEWORK (src/private-frameworks/login);
+	#     the system_cmds executable is target login-exe with OUTPUT_NAME login, so `ninja login` builds
+	#     the executable while $<TARGET_FILE:login> is the framework.
+	#   exslt -- Localization binds 1, present (17 exports). Demand 9.0.0/9.15.0; the tree declares
+	#     compat 9.0.0, and its DYLIB_CURRENT_VERSION is misspelled, so current is unset (separate nit).
+	#   xslt -- Localization binds 0 symbols. Demand and declaration 3.0.0/3.26.0 (245 exports).
+	#   sqlite3 -- IDEFoundation 14, AppThinning 4, DNTDocumentationSupport 24, XCResultKit 36 (union 41,
+	#     all present, 255 exports). Demand 9.0.0/377.0.0 against a tree 9.0.0/252.0.0. The host file is
+	#     libsqlite3.0.dylib (its own LC_ID) while every client names /usr/lib/libsqlite3.dylib.
+	ApplicationServices
+	AuthKit
+	login
+	exslt
+	xslt
+	sqlite3
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -936,6 +963,21 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"QuartzCore\", \"guest_path\": \"/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore\", \"host_path\": \"$<TARGET_FILE:QuartzCore>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"CoreLocation\", \"guest_path\": \"/System/Library/Frameworks/CoreLocation.framework/Versions/A/CoreLocation\", \"host_path\": \"$<TARGET_FILE:CoreLocation>\"}")
+	# The WAVE of six DECLARATION rows measured on 2026-10-12 (see the target-list comment for the
+	# per-component evidence). One resource line each is enough: the deploy's Mach-O closure resolver
+	# pulls each image's reexports, as the declared CoreServices already does for FSEvents/LaunchServices.
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"ApplicationServices\", \"guest_path\": \"/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices\", \"host_path\": \"$<TARGET_FILE:ApplicationServices>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"AuthKit\", \"guest_path\": \"/System/Library/PrivateFrameworks/AuthKit.framework/Versions/A/AuthKit\", \"host_path\": \"$<TARGET_FILE:AuthKit>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"login\", \"guest_path\": \"/System/Library/PrivateFrameworks/login.framework/Versions/A/login\", \"host_path\": \"$<TARGET_FILE:login>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"exslt\", \"guest_path\": \"/usr/lib/libexslt.0.dylib\", \"host_path\": \"$<TARGET_FILE:exslt>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"xslt\", \"guest_path\": \"/usr/lib/libxslt.1.dylib\", \"host_path\": \"$<TARGET_FILE:xslt>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"sqlite3\", \"guest_path\": \"/usr/lib/libsqlite3.dylib\", \"host_path\": \"$<TARGET_FILE:sqlite3>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
