@@ -420,6 +420,32 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# CryptoKit was supplied: "Library not loaded: .../CoreAnalytics.framework/Versions/A/CoreAnalytics
 	# Referenced from .../DVTFoundation.framework/Versions/A/DVTFoundation".
 	CoreAnalytics
+	# MEASURED 2026-10-12, the rung after CoreAnalytics, same discipline: DVTFoundation's next missing
+	# load-time dependency is
+	#   "Library not loaded: /System/Library/PrivateFrameworks/AssertionServices.framework/Versions/A/AssertionServices
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTFoundation.framework/Versions/A/DVTFoundation
+	#    Reason: image not found"
+	# DECLARATION gap: the tree builds it (src/private-frameworks/AssertionServices) and this component
+	# never named it. DVTFoundation binds one symbol from it, _BKSWatchdogAssertionCreateForPID,
+	# through __DATA_CONST __got (eager, so dyld resolves it at load), and its load command demands
+	# "current version 1008.40.4" -- which is why the framework's own DYLIB_CURRENT_VERSION is raised
+	# to that version in the same pass (it said 223.140.2, so a declaration alone would not have
+	# loaded). NOTE for the reader: the tree's implementation of that symbol is a STUB
+	# (src/private-frameworks/AssertionServices/src/AssertionServices.m:98 prints "STUB: ..." and
+	# returns NULL); that is pre-existing tree state, not something this declaration introduces.
+	AssertionServices
+	# MEASURED 2026-10-12, the rung after AssertionServices, same discipline and the same shape:
+	#   "Library not loaded: /System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTFoundation.framework/Versions/A/DVTFoundation
+	#    Reason: image not found"
+	# DECLARATION gap: the tree builds it (src/external/cocotron/CoreGraphics) and this component never
+	# named it. DVTFoundation binds four symbols from it, _CGRectGetMaxX/_CGRectGetMaxY/_CGRectGetMinX/
+	# _CGRectGetMinY, all through __DATA_CONST __got (eager), and the tree implements all four
+	# (CGGeometry.h/CGGeometry.m), so this is not a missing implementation. Its load command demands
+	# "current version 1965.1.2" against compatibility 64.0.0, while the framework declared 1070.22.0 --
+	# so, as with AssertionServices, the declaration alone would not have loaded and the version is
+	# raised in the same pass.
+	CoreGraphics
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -542,6 +568,12 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"ImageIO\", \"guest_path\": \"/System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO\", \"host_path\": \"$<TARGET_FILE:ImageIO>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"CoreAnalytics\", \"guest_path\": \"/System/Library/PrivateFrameworks/CoreAnalytics.framework/Versions/A/CoreAnalytics\", \"host_path\": \"$<TARGET_FILE:CoreAnalytics>\"}")
+	# Same shape, same measurement as CoreAnalytics above: the exact path DVTFoundation's load command
+	# names.
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"AssertionServices\", \"guest_path\": \"/System/Library/PrivateFrameworks/AssertionServices.framework/Versions/A/AssertionServices\", \"host_path\": \"$<TARGET_FILE:AssertionServices>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"CoreGraphics\", \"guest_path\": \"/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics\", \"host_path\": \"$<TARGET_FILE:CoreGraphics>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
