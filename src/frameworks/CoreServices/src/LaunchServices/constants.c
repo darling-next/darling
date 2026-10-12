@@ -26,6 +26,28 @@ const CFStringRef _kLSExecutableFormatKey = CFSTR("LSExecutableFormat");
 const CFStringRef _kLSExecutableFormatMachOKey = CFSTR("LSExecutableMachOFormat");
 const CFStringRef _kLSExecutableFormatCFMKey = CFSTR("LSExecutableCFMFormat");
 
+/*
+ * The LSOpen options dictionary's keys (the asynchronous open's _kLSOpenOption*Key vocabulary).
+ * These are DATA -- each is a `const CFStringRef` variable a client binds and dereferences -- which
+ * is how the load closure's callers read them. The VALUES follow this file's own convention (the
+ * name without its leading underscore(s) and without the trailing "Key"; cf. _kLSPIDKey =
+ * "LSPID", _kLSExecutablePathKey = "LSExecutablePath") because no surface in the guest SDK carries
+ * one: the SDK has no header for these SPIs and no .tbd carries a value. The keys are only ever
+ * handed back to this same image (_LSOpenURLsWithCompletionHandler), so the value is what makes the
+ * dictionary's two ends agree; see LaunchServicesPriv.h for the full reasoning.
+ */
+const CFStringRef _kLSOpenOptionActivateKey = CFSTR("LSOpenOptionActivate");
+const CFStringRef _kLSOpenOptionArchitectureKey = CFSTR("LSOpenOptionArchitecture");
+const CFStringRef _kLSOpenOptionArgumentsKey = CFSTR("LSOpenOptionArguments");
+const CFStringRef _kLSOpenOptionEnvironmentVariablesKey = CFSTR("LSOpenOptionEnvironmentVariables");
+const CFStringRef _kLSOpenOptionIncludeCurrentEnvironmentValuesKey = CFSTR("LSOpenOptionIncludeCurrentEnvironmentValues");
+const CFStringRef _kLSOpenOptionLaunchStdErrPathKey = CFSTR("LSOpenOptionLaunchStdErrPath");
+const CFStringRef _kLSOpenOptionLaunchStdInPathKey = CFSTR("LSOpenOptionLaunchStdInPath");
+const CFStringRef _kLSOpenOptionLaunchStdOutPathKey = CFSTR("LSOpenOptionLaunchStdOutPath");
+const CFStringRef _kLSOpenOptionPreferRunningInstanceKey = CFSTR("LSOpenOptionPreferRunningInstance");
+const CFStringRef _kLSOpenOptionStopProcessKey = CFSTR("LSOpenOptionStopProcess");
+const CFStringRef _kLSOpenOptionWaitForApplicationToCheckInKey = CFSTR("LSOpenOptionWaitForApplicationToCheckIn");
+
 const CFStringRef _kLSASNKey = CFSTR("LSASN");
 
 const CFStringRef kLSItemContentType = CFSTR("LSItemContentType");
