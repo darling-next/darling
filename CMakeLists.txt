@@ -398,7 +398,9 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	#   "Library not loaded: /System/Library/PrivateFrameworks/MobileAsset.framework/Versions/A/MobileAsset
 	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTFoundation.framework/Versions/A/DVTFoundation"
 	# The tree builds it (src/private-frameworks/MobileAsset) and it was simply never declared here, so
-	# it landed nowhere in the prefix -- the same declaration gap as the framework above.
+	# it landed nowhere in the prefix -- the same declaration gap as the framework above. A plain
+	# declaration with no version claim of either kind: the load command demands current 1.0.0 against
+	# compatibility 1.0.0 and the tree declares exactly that, so both values are identical to the demand.
 	MobileAsset
 	# MEASURED 2026-10-12, the two rungs after MobileAsset, by probing a minimal xcodebuild project
 	# one missing load-time dependency at a time and then building the target each error named:
@@ -412,6 +414,10 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# is CryptoKit.framework, which NO target in this tree produces at all: it is the overlay build's
 	# product (the ported recipe's own prebuilt CryptoKit.framework), i.e. a different class of work,
 	# not another declaration here.
+	# Both are plain declarations with no version claim of either kind: CoreData's load command demands
+	# current 1522.1.0 against compatibility 1.0.0 and the tree declares current 752.0.0 against the
+	# same compatibility, while ImageIO's demand and declaration are both 1.0.0. See the CoreData note
+	# under the AssertionServices rung: that current-version shortfall is measured NOT to be enforced.
 	CoreData
 	ImageIO
 	# Same declaration gap again, and the same fix: Xcode's DVTFoundation hard-depends on
@@ -419,6 +425,8 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# builds it (src/private-frameworks/CoreAnalytics) but this component never named it. Measured after
 	# CryptoKit was supplied: "Library not loaded: .../CoreAnalytics.framework/Versions/A/CoreAnalytics
 	# Referenced from .../DVTFoundation.framework/Versions/A/DVTFoundation".
+	# Plain declaration, no version claim of either kind: the demand is current 1.0.0 against
+	# compatibility 1.0.0 and the tree declares exactly that.
 	CoreAnalytics
 	# MEASURED 2026-10-12, the rung after CoreAnalytics, same discipline: DVTFoundation's next missing
 	# load-time dependency is
@@ -427,10 +435,16 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	#    Reason: image not found"
 	# DECLARATION gap: the tree builds it (src/private-frameworks/AssertionServices) and this component
 	# never named it. DVTFoundation binds one symbol from it, _BKSWatchdogAssertionCreateForPID,
-	# through __DATA_CONST __got (eager, so dyld resolves it at load), and its load command demands
-	# "current version 1008.40.4" -- which is why the framework's own DYLIB_CURRENT_VERSION is raised
-	# to that version in the same pass (it said 223.140.2, so a declaration alone would not have
-	# loaded). NOTE for the reader: the tree's implementation of that symbol is a STUB
+	# through __DATA_CONST __got (eager, so dyld resolves it at load).
+	#
+	# MEASURED 2026-10-12, LATER AND CORRECTING THIS COMMENT: it used to say the framework's
+	# DYLIB_CURRENT_VERSION was raised to 1008.40.4 because the load command demands it. That raise was
+	# REVERTED -- dyld does not enforce the current version (proof: DVTFoundation demands current
+	# 1522.1.0 of CoreData, the deployed CoreData declares 752.0.0, and the client loaded it anyway).
+	# The declaration is what advanced this rung; the component's compatibility version already
+	# matched, which is the value dyld enforces. See its CMakeLists for the full note.
+	#
+	# NOTE for the reader: the tree's implementation of that symbol is a STUB
 	# (src/private-frameworks/AssertionServices/src/AssertionServices.m:98 prints "STUB: ..." and
 	# returns NULL); that is pre-existing tree state, not something this declaration introduces.
 	AssertionServices
@@ -441,10 +455,14 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# DECLARATION gap: the tree builds it (src/external/cocotron/CoreGraphics) and this component never
 	# named it. DVTFoundation binds four symbols from it, _CGRectGetMaxX/_CGRectGetMaxY/_CGRectGetMinX/
 	# _CGRectGetMinY, all through __DATA_CONST __got (eager). Unlike the two rungs above, the SYMBOLS
-	# were never the problem: the tree implements all four (CGGeometry.h/CGGeometry.m). The gap was the
-	# compatibility level -- the load command demands "current version 1965.1.2" against compatibility
-	# 64.0.0, while the framework declared 1070.22.0 -- so the version is raised in the same pass and
-	# the declaration alone would not have loaded.
+	# were never the problem: the tree implements all four (CGGeometry.h/CGGeometry.m).
+	#
+	# MEASURED 2026-10-12, LATER AND CORRECTING THIS COMMENT: it used to say the framework's
+	# DYLIB_CURRENT_VERSION was raised to 1965.1.2 because the load command demands it. That raise was
+	# REVERTED -- dyld does not enforce the current version (proof: DVTFoundation demands current
+	# 1522.1.0 of CoreData, the deployed CoreData declares 752.0.0, and the client loaded it anyway).
+	# The declaration is what advanced this rung, and the compatibility version -- the value dyld DOES
+	# enforce -- already matched at 64.0.0.
 	CoreGraphics
 	# MEASURED 2026-10-12, the rung after CoreGraphics, same discipline:
 	#   "Library not loaded: /System/Library/Frameworks/DiskArbitration.framework/Versions/A/DiskArbitration
@@ -501,9 +519,14 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# __objc_classrefs (the DiskManagement mechanism, not __got) -- still a load-time requirement. The
 	# class exists (src/.../ACSURLSession.m); note for the reader that its methods are LOUD
 	# forwarding stubs (it logs "Stub called: ..." and does not implement the selector), which is
-	# pre-existing tree state this rung does not fix. Version: the load command demands current
-	# 136.0.0 against compatibility 1.0.0, our compatibility already matches at 1.0.0, and only the
-	# current version is raised -- see that component's CMakeLists.
+	# pre-existing tree state this rung does not fix.
+	#
+	# MEASURED 2026-10-12, LATER AND CORRECTING THIS COMMENT: it used to say the framework's
+	# DYLIB_CURRENT_VERSION was raised to 136.0.0 because the load command demands it. That raise was
+	# REVERTED -- dyld does not enforce the current version (proof: DVTFoundation demands current
+	# 1522.1.0 of CoreData, the deployed CoreData declares 752.0.0, and the client loaded it anyway).
+	# The declaration is what advanced this rung, and the compatibility version -- the value dyld DOES
+	# enforce -- already matched at 1.0.0.
 	AssetCacheServices
 	# MEASURED 2026-10-12, the rung after AssetCacheServices, same discipline:
 	#   "Library not loaded: /System/Library/PrivateFrameworks/DiskImages.framework/Versions/A/DiskImages
@@ -513,11 +536,47 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# (src/private-frameworks/DiskImages) and this component never named it. DVTFoundation binds two
 	# symbols, _DICopyStrError and _DIHLDiskImageAttach, through __DATA_CONST __got (back to the
 	# ordinary mechanism after two classrefs rungs). Both exist, as LOUD STUBS in that component's
-	# functions.c -- pre-existing tree state, named here and not fixed by this rung. Version: the load
-	# command demands current 680.0.0 against compatibility 1.0.8; our compatibility already equals
-	# 1.0.8, so ONLY the current version is added, and the component's CMakeLists says why the
-	# compatibility version is deliberately not touched.
+	# functions.c -- pre-existing tree state, named here and not fixed by this rung.
+	#
+	# MEASURED 2026-10-12, LATER AND CORRECTING THIS COMMENT: it used to say a current version was
+	# added because the load command demands 680.0.0. That was REVERTED -- dyld does not enforce the
+	# current version (proof: DVTFoundation demands current 1522.1.0 of CoreData, the deployed CoreData
+	# declares 752.0.0, and the client loaded it anyway). The declaration is what advanced this rung.
+	# The compatibility version is the enforced value, and ours already equalled the client's 1.0.8,
+	# which is why it was deliberately not touched.
 	DiskImages
+	# MEASURED 2026-10-12, the rung after DiskImages -- and the FIRST ONE NOT REFERENCED BY DVTFoundation:
+	#   "Library not loaded: /System/Library/PrivateFrameworks/CrashReporterSupport.framework/Versions/A/CrashReporterSupport
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/SymbolicationDT.framework/Versions/A/SymbolicationDT
+	#    Reason: image not found"
+	# DVTFoundation's own dependency chain is satisfied (measured: it references this framework zero
+	# times, SymbolicationDT references it once), so the ladder has moved to the next image the client
+	# loads. DECLARATION gap: the tree builds it (src/private-frameworks/CrashReporterSupport) and this
+	# component never named it. SymbolicationDT binds one symbol, _CRCopySanitizedPath, through
+	# __DATA_CONST __got (the ordinary mechanism); it exists as a LOUD STUB in that component's
+	# functions.c -- pre-existing tree state, named and not fixed.
+	#
+	# VERSION, deliberately NOT claimed, and this is the interesting part: the load command demands
+	# current 15138.0.0 against compatibility 1.0.0 while the component declares 827.0.0. Measured
+	# evidence says dyld does NOT enforce the current version: DVTFoundation demands current 1522.1.0
+	# of CoreData, the deployed CoreData declares current 752.0.0, and the client loaded it and moved
+	# on. So a current-version claim here would be neither enforced nor a statement we can defend --
+	# the symbol behind it is a stub, not an implementation. The declaration is the whole fix.
+	CrashReporterSupport
+	# MEASURED 2026-10-12, the rung after CrashReporterSupport, and the second one from the NEW
+	# referrer rather than DVTFoundation:
+	#   "Library not loaded: /usr/lib/libcompression.dylib
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/SymbolicationDT.framework/Versions/A/SymbolicationDT
+	#    Reason: image not found"
+	# DECLARATION gap, and note this is a dylib at /usr/lib rather than a framework -- the guest path is
+	# the dylib's own install name (src/libcompression sets DYLIB_INSTALL_NAME to exactly that). The
+	# tree builds it (target `compression`, producing libcompression.dylib) and this component never
+	# named it. SymbolicationDT binds three symbols, _compression_stream_destroy,
+	# _compression_stream_init and _compression_stream_process, through __DATA_CONST __got (eager),
+	# and the tree IMPLEMENTS them (src/libcompression/src/compression.c, no stubs).
+	# Version: the load command demands current 1.0.0 against compatibility 1.0.0 and the tree declares
+	# exactly that, so no version claim of either kind was needed.
+	compression
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -656,6 +715,10 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"AssetCacheServices\", \"guest_path\": \"/System/Library/PrivateFrameworks/AssetCacheServices.framework/Versions/A/AssetCacheServices\", \"host_path\": \"$<TARGET_FILE:AssetCacheServices>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"DiskImages\", \"guest_path\": \"/System/Library/PrivateFrameworks/DiskImages.framework/Versions/A/DiskImages\", \"host_path\": \"$<TARGET_FILE:DiskImages>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"CrashReporterSupport\", \"guest_path\": \"/System/Library/PrivateFrameworks/CrashReporterSupport.framework/Versions/A/CrashReporterSupport\", \"host_path\": \"$<TARGET_FILE:CrashReporterSupport>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"compression\", \"guest_path\": \"/usr/lib/libcompression.dylib\", \"host_path\": \"$<TARGET_FILE:compression>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
