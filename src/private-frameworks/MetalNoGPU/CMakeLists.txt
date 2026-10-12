@@ -10,9 +10,13 @@ set(DYLIB_CURRENT_VERSION "370.63.7")
 # Objective-C messages where nil is a no-op).
 #
 # The name is MetalNoGPU rather than Metal because the tree already defines a `Metal` target --
-# src/external/metal, the real Vulkan-backed implementation, gated behind COMPONENT_dev_gui_common
-# and not built in this configuration. If that component is ever enabled, this one must go: two
-# images cannot claim the same install name.
+# src/external/metal, the real Vulkan-backed implementation, added under COMPONENT_dev_gui_common
+# when BUILD_METAL is on. Two images cannot claim the same install name, so this one is built only
+# when that real one is not: src/private-frameworks/CMakeLists.txt guards the add_subdirectory with
+# the top-level DARLING_ROOTLESS_METAL_TARGET selection, which is also what the deployment
+# declaration uses -- MEASURED 2026-10-12, when this file's old "not built in this configuration"
+# premise was false and both images existed with this one shadowing the real Metal on
+# /System/Library/Frameworks/Metal.framework/Versions/A/Metal.
 add_darling_library(MetalNoGPU SHARED
 	src/Metal.c
 )

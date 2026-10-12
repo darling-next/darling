@@ -53,8 +53,19 @@ if (COMPONENT_dev_gui_stubs_common)
 	# MetalNoGPU answers "no Metal device exists in this guest", which is true rather than a
 	# placeholder; see its source. It is here rather than under COMPONENT_dev_gui_common because
 	# that flag gates the REAL Vulkan-backed Metal in src/external/metal, and this library exists
-	# precisely because that one is not built. Remove this line if that component is enabled.
-	add_subdirectory(MetalNoGPU)
+	# precisely because that one is not built.
+	#
+	# MEASURED 2026-10-12 (the QuartzCore/MTLTextureInternal rung): the old "Remove this line if
+	# that component is enabled" is now the guard below, because the two can be built at once.
+	# COMPONENT_dev_gui_common is not the switch that matters here -- the top-level selection is
+	# (DARLING_ROOTLESS_METAL_TARGET = Metal when BUILD_METAL and dev_gui_common, MetalNoGPU
+	# otherwise), and a Vulkan host with a CLI-only component set has BUILD_METAL on without that
+	# directory. Two images cannot claim one install name, and the one that must go is the
+	# placeholder: the guest-visible Metal path has to be the image the rest of the tree links.
+	# The guard tests the selection itself, so this file cannot disagree with the declaration.
+	if (NOT DARLING_ROOTLESS_METAL_TARGET STREQUAL "Metal")
+		add_subdirectory(MetalNoGPU)
+	endif()
 	add_subdirectory(MobileDevice)
 	add_subdirectory(NetworkStatistics)
 	add_subdirectory(PackageKit)

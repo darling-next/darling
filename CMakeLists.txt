@@ -190,6 +190,23 @@ if(BUILD_METAL STREQUAL "auto")
 	endif()
 endif()
 
+# THE METAL IMAGE THE ROOTLESS TOOLCHAIN DECLARES (the rung notes are at its entry in
+# DARLING_ROOTLESS_TOOLCHAIN_TARGETS and at its resource entry below). MetalNoGPU is the honest
+# answer for a configuration that cannot put the Vulkan-backed Metal on that install name; when the
+# real one IS in this build it must be the image on
+# /System/Library/Frameworks/Metal.framework/Versions/A/Metal, because two images cannot claim one
+# install name and the rest of the tree links the real one (QuartzCore's Metal-enabled drawable code
+# binds its Objective-C class). Both halves of the condition are required: BUILD_METAL is "this host
+# can build it" and COMPONENT_dev_gui_common is the gate src/CMakeLists.txt actually adds
+# src/external/metal under, so a CLI-only tree on a Vulkan host still gets the placeholder. This one
+# variable is the single source of truth: src/private-frameworks builds the placeholder only when it
+# names the placeholder, so the two images can never both be built.
+if (BUILD_METAL AND COMPONENT_dev_gui_common)
+	set(DARLING_ROOTLESS_METAL_TARGET Metal)
+else()
+	set(DARLING_ROOTLESS_METAL_TARGET MetalNoGPU)
+endif()
+
 FindDsymutil()
 find_package(Setcap REQUIRED)
 
@@ -695,21 +712,44 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	#   "Library not loaded: /System/Library/Frameworks/Metal.framework/Versions/A/Metal
 	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
 	#    Reason: image not found"
-	# The tree HAS a real Metal (src/external/metal, Vulkan-backed) but it is gated behind
-	# COMPONENT_dev_gui_common and nothing is built, so the guest cannot load it. Enabling that
-	# component would pull a GPU stack into this bootstrap; instead this is MetalNoGPU, a
-	# TRUE-ANSWER implementation: this guest has no GPU, so "no device exists" is a fact rather than
-	# a placeholder. THE THIRD SHAPE (libRosetta and this; libAppleArchive's empty surface is the
-	# second, the loud stubs the first). DVTInstrumentsFoundation binds seven symbols, all eager:
-	# four calls it makes (_MTLCreateSystemDefaultDevice 2 sites, _MTLCopyAllDevices 4,
-	# _MTLCopyAllDevicesWithObserver 1, _MTLRemoveDeviceObserver 2) and three notification NAMES it
-	# only reads. Neither call site of _MTLCreateSystemDefaultDevice tests for NULL -- one messages
-	# the result, the other sends it -[%rdi _removeGPU:] -- and messaging nil is a no-op, so the
-	# client tolerates the empty answer. See the source for the full measurement, the no-op
-	# reasoning for _MTLRemoveDeviceObserver, and why the three notification values are arbitrary
-	# but consistent (nothing posts them; the symbol is the single source clients agree through).
-	# NOTE: it does NOT print a "STUB:" line -- the answers are the truth, not a stand-in.
-	MetalNoGPU
+	# The tree HAS a real Metal (src/external/metal, Vulkan-backed). That rung declared MetalNoGPU
+	# -- a TRUE-ANSWER implementation: this guest has no Metal device, so "no device exists" is a
+	# fact rather than a placeholder, THE THIRD SHAPE (libRosetta and this; libAppleArchive's empty
+	# surface is the second, the loud stubs the first). It does NOT print a "STUB:" line. DVT
+	# InstrumentsFoundation binds seven symbols, all eager: four calls it makes
+	# (_MTLCreateSystemDefaultDevice 2 sites, _MTLCopyAllDevices 4, _MTLCopyAllDevicesWithObserver 1,
+	# _MTLRemoveDeviceObserver 2) and three notification NAMES it only reads. Neither call site of
+	# _MTLCreateSystemDefaultDevice tests for NULL -- one messages the result, the other sends it
+	# -[%rdi _removeGPU:] -- and messaging nil is a no-op, so the client tolerates the empty answer.
+	# See MetalNoGPU's source for that measurement, the no-op reasoning for
+	# _MTLRemoveDeviceObserver, and why its three notification values are arbitrary but consistent.
+	#
+	# CORRECTED MEASURED 2026-10-12, the rung after QuartzCore: that rung's premise was FALSE for
+	# this configuration, and the declaration it produced made a real component unreachable.
+	#   (1) It said the real Metal "is gated behind COMPONENT_dev_gui_common and nothing is built".
+	#       The gate that matters is BUILD_METAL (ENABLE_METAL=AUTO + llvm-config + Vulkan), and in
+	#       this tree it is ON: build/verify14/src/external/metal/Metal is built, 1.2 MB fat,
+	#       exporting 238 names including its 34 Objective-C classes and all seven symbols
+	#       DVTInstrumentsFoundation binds. QuartzCore links it (Metal_private) and links
+	#       indium_private, and the deploy's closure resolver had ALREADY pulled libindium.dylib
+	#       and libiridium.dylib into the prefix for QuartzCore -- so the GPU stack the old note
+	#       wanted to keep out of the bootstrap was in the guest already. MetalNoGPU changed only
+	#       which image answered the install name.
+	#   (2) THE SHADOWING, which is the defect this file now records: both images claim
+	#       /System/Library/Frameworks/Metal.framework/Versions/A/Metal, and declaring MetalNoGPU
+	#       for that path made the built real Metal unreachable. The loader then stopped on
+	#       QuartzCore, whose __DATA_CONST __objc_classrefs binds _OBJC_CLASS_$_MTLTextureInternal
+	#       EAGERLY (its one other Metal bind, _MTLCreateSystemDefaultDevice, is lazy): a class only
+	#       the real Metal defines, at the ABI the tree's own Metal implements
+	#       (MTLTextureInternal : NSObject <MTLTexture>, -initWithTexture:device:resourceOptions:,
+	#       the initializer QuartzCore's CAMetalDrawableInternal actually sends -- i386 does not
+	#       reference Metal classes at all). MetalNoGPU can answer a function truthfully; it cannot
+	#       become a texture, so the honest image here is the one the tree already has.
+	# SELECTED, NOT NAMED: DARLING_ROOTLESS_METAL_TARGET is Metal when BUILD_METAL and MetalNoGPU
+	# otherwise (set right after the BUILD_METAL decision). The MetalNoGPU path is unchanged for the
+	# configurations that cannot build the real one; this configuration is the exception, not the
+	# new rule.
+	${DARLING_ROOTLESS_METAL_TARGET}
 	# MEASURED 2026-10-12, the rung after Metal, from the same referrer:
 	#   "Library not loaded: /System/Library/PrivateFrameworks/LoggingSupport.framework/Versions/A/LoggingSupport
 	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
@@ -1005,8 +1045,11 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"kperf\", \"guest_path\": \"/System/Library/PrivateFrameworks/kperf.framework/Versions/A/kperf\", \"host_path\": \"$<TARGET_FILE:kperf>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"StreamingZip\", \"guest_path\": \"/System/Library/PrivateFrameworks/StreamingZip.framework/Versions/A/StreamingZip\", \"host_path\": \"$<TARGET_FILE:StreamingZip>\"}")
+	# The Metal image is SELECTED, not named: DARLING_ROOTLESS_METAL_TARGET is Metal when
+	# BUILD_METAL and MetalNoGPU otherwise. See the rung notes at its target-list entry for why
+	# (the placeholder must not shadow the real Metal the tree builds and links).
 	string(APPEND _rootless_toolchain_extra_resources
-		",\n    {\"target\": \"MetalNoGPU\", \"guest_path\": \"/System/Library/Frameworks/Metal.framework/Versions/A/Metal\", \"host_path\": \"$<TARGET_FILE:MetalNoGPU>\"}")
+		",\n    {\"target\": \"${DARLING_ROOTLESS_METAL_TARGET}\", \"guest_path\": \"/System/Library/Frameworks/Metal.framework/Versions/A/Metal\", \"host_path\": \"$<TARGET_FILE:${DARLING_ROOTLESS_METAL_TARGET}>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"LoggingSupport\", \"guest_path\": \"/System/Library/PrivateFrameworks/LoggingSupport.framework/Versions/A/LoggingSupport\", \"host_path\": \"$<TARGET_FILE:LoggingSupport>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
