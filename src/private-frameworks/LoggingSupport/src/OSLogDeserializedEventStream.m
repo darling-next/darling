@@ -42,10 +42,17 @@
  * wide. Left method-free, any future caller gets ordinary Objective-C defaults rather than a
  * plausible wrong answer, and the absence of behaviour is deliberate and named rather than accidental.
  *
- * LOUDNESS NOTE: this family makes placeholders loud, but loudness cannot be a load-time print here --
- * Darling's dyld does not run initializers for late-loaded images (filed as dar-mr18). So the
- * loudness is documentation: this comment, the commit message, and the filed task for the real
- * deserialization. Same mechanism, same reason, as libAppleArchive's notice.
+ * LOUDNESS NOTE, CORRECTED 2026-10-12: this family makes placeholders loud, and an earlier version of
+ * this note claimed a load-time print was impossible here because "Darling's dyld does not run
+ * initializers for late-loaded images". THAT CLAIM WAS WRONG and is retracted together with its filing
+ * (dar-mr18, closed as NOT A DEFECT): dlopen reaches runInitializers for every SUCCESSFUL load, and the
+ * run that appeared to show otherwise had a FAILED dlopen (its link threw on a missing library, so the
+ * mapped images were garbage-collected before any initializer ran). What is true here is narrower and
+ * different: this class has no call site to print from -- the client binds the classref and sends it
+ * zero selectors -- so a constructor notice would announce a class nobody talks to. The loudness is
+ * therefore documentation: this comment, the commit message, and the filed task for the real
+ * deserialization. Same mechanism as libAppleArchive's notice, but for that reason rather than the
+ * retracted one.
  *
  * IF A FUTURE CALLER NEEDS BEHAVIOUR, THIS FILE IS WHERE IT GOES. Implement it for real then, with the
  * measurement of what that caller demands; do not grow this comment into a promise it cannot keep.
