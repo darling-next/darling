@@ -166,6 +166,37 @@ LSASNRef _LSASNCreateWithPid(CFAllocatorRef allocator, pid_t pid)
 	return CFNumberCreate(NULL, kCFNumberLongType, &lpid);
 }
 
+/*
+ * The application that matches a set of application-information items. The items are the running
+ * application's own vocabulary -- the same _kLSPIDKey/_kLSExecutablePathKey/... families this file
+ * keeps for the check-in path -- so the set being matched is LaunchServices' RUNNING applications,
+ * and the only caller in the Xcode load closure passes exactly one pair, {_kLSPIDKey: pid}:
+ *
+ *   DVTInstrumentsFoundation 0xac40 (4 arguments: session kLSDefaultSessionID, count 1,
+ *   keys -> the address of a stack CFStringRef holding _kLSPIDKey, values -> the address of a stack
+ *   CFNumberRef holding the pid). It tests the result for NULL at 0xac48, and otherwise accepts only
+ *   a one-element array: it takes element 0 (0xac72) to ask _LSCopyApplicationInformation for
+ *   _kCFBundleIdentifierKey, and marks the process as an application when that happens; any other
+ *   count falls through to "no application" at 0xacf9.
+ *
+ * THIS GUEST HAS NO SUCH SET, so it cannot answer the query and says so the way this family does:
+ * NULL -- what the sibling _LSCopyApplicationInformation below answers as well. Reaching the running
+ * set means reaching a check-in registry, and the guest has none: _LSApplicationCheckIn (this file)
+ * only records the calling process's OWN ASN in g_ourASN, lsd's scanner registers bundles on disk
+ * and no process (launchservicesd/LSBundle.m has no table of running applications, and its message
+ * handler replies to everything without looking at a registry), and nothing else in the tree maps a
+ * pid to a bundle. Answering from the application DATABASE instead would report a pid match -- and
+ * so an "is an application" verdict at the caller's 0xace4 -- for a process that was never
+ * registered, which is exactly the fabricated record this must not produce; an empty array would
+ * claim the same match set was computed and came out empty. A NULL is also the answer while the
+ * database holds nothing at all, which is this prefix's state.
+ */
+CFArrayRef _LSCopyMatchingApplicationsWithItems(LSSessionID sessionID, CFIndex count,
+	const CFStringRef* keys, const CFTypeRef* values)
+{
+	return NULL;
+}
+
 static mach_port_name_t deathPort()
 {
 	static dispatch_once_t onceDeathPort;

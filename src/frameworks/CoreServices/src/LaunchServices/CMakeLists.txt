@@ -16,6 +16,7 @@ add_framework(LaunchServices
 		LaunchServices.c
 		LaunchServices.cpp
 		LSApplicationProxy.m
+		LSApplicationRecord.m
 		LSApplicationWorkspace.m
 		LSRunning.m
 		constants.c

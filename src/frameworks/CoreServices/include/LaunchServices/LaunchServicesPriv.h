@@ -91,6 +91,11 @@ CFDictionaryRef _LSCopyApplicationInformation(LSSessionID sessionID, CFTypeRef a
 
 LSASNRef _LSASNCreateWithPid(CFAllocatorRef allocator, pid_t pid);
 
+// The running applications whose application-information items (the _kLS*Key families above) match
+// `count` key/value pairs. NULL when there are none to match against: this guest registers no
+// running application, as LSRunning.m explains.
+CFArrayRef _LSCopyMatchingApplicationsWithItems(LSSessionID sessionID, CFIndex count, const CFStringRef *keys, const CFTypeRef *values);
+
 OSStatus _LSLaunchApplication(CFURLRef appPath);
 
 // Assumed
