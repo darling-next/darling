@@ -19,6 +19,8 @@ add_framework(CoreLocation
 
     SOURCES
         src/CoreLocation.m
+        src/CLLocation.m
+        src/CLSimulationManager.m
         src/_CLLocationManagerRoutineProxy.m
         src/CLLocationManagerRoutine.m
         src/CLEmergencyEnablementAssertion.m

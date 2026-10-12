@@ -50,6 +50,11 @@ if (COMPONENT_dev_gui_stubs_common)
 	add_subdirectory(IOPlatformPluginFamily)
 	add_subdirectory(kperf)
 	add_subdirectory(LoggingSupport)
+	# MetalNoGPU answers "no Metal device exists in this guest", which is true rather than a
+	# placeholder; see its source. It is here rather than under COMPONENT_dev_gui_common because
+	# that flag gates the REAL Vulkan-backed Metal in src/external/metal, and this library exists
+	# precisely because that one is not built. Remove this line if that component is enabled.
+	add_subdirectory(MetalNoGPU)
 	add_subdirectory(MobileDevice)
 	add_subdirectory(NetworkStatistics)
 	add_subdirectory(PackageKit)

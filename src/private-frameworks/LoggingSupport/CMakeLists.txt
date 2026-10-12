@@ -24,6 +24,7 @@ add_framework(LoggingSupport
     SOURCES
         src/LoggingSupport.m
         src/LoggingSupport_OSLogCoder.m
+        src/OSLogDeserializedEventStream.m
         src/OSLogEventProxy.m
         src/OSLogEventDecomposedMessage.m
         src/OSLogMessagePlaceholder.m

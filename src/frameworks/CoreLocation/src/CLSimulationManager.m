@@ -1,7 +1,7 @@
 /*
  This file is part of Darling.
 
- Copyright (C) 2019 Lubos Dolezel
+ Copyright (C) 2026 Darling contributors
 
  Darling is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,16 +19,21 @@
 
 #import <CoreLocation/CLSimulationManager.h>
 
+/* A DOCUMENTED METHOD-FREE CLASS, and here the tree had already decided that: the header this
+ * implements (include/CoreLocation/CLSimulationManager.h) declares
+ * @interface CLSimulationManager : NSObject with no methods at all. This file only supplies the class
+ * SYMBOL.
+ *
+ * MEASURED NEED, 2026-10-12, while walking Xcode 26.3's load-time dependency ladder in a guest.
+ * DVTInstrumentsFoundation binds _OBJC_CLASS_$_CLSimulationManager eagerly through __DATA
+ * __objc_classrefs, alongside _OBJC_CLASS_$_CLLocation -- the only two classes of this framework it
+ * wants, and the two the tree had headers for but no implementations. The client sends this class
+ * NOTHING: zero references anywhere in the image's code, only the classref. A simulation manager that
+ * guessed at simulated locations would be an invented implementation; method-free, it answers nothing
+ * rather than answering wrongly.
+ *
+ * IF A FUTURE CALLER NEEDS BEHAVIOUR, THIS FILE IS WHERE IT GOES, together with the header's interface.
+ */
 @implementation CLSimulationManager
-
-- (NSMethodSignature *)methodSignatureForSelector:(SEL)aSelector
-{
-    return [NSMethodSignature signatureWithObjCTypes: "v@:"];
-}
-
-- (void)forwardInvocation:(NSInvocation *)anInvocation
-{
-    NSLog(@"Stub called: %@ in %@", NSStringFromSelector([anInvocation selector]), [self class]);
-}
 
 @end
