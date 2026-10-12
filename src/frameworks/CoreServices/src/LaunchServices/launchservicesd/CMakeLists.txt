@@ -1,8 +1,14 @@
 project(launchservicesd)
 
+# The registration operation itself (the bundle row and its claims) lives in the parent directory so
+# that the framework's __LSRegisterURLWithOptions can run the same code: one writer convention for
+# /private/var/db/launchservices.db, not a daemon copy and a framework copy.
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}/..")
+
 set(sources
 	launchservicesd.m
 	LSBundle.m
+	../LSBundleRegistration.m
 )
 
 add_darling_executable(launchservicesd ${sources})

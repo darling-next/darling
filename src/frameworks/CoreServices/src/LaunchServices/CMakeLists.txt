@@ -18,6 +18,8 @@ add_framework(LaunchServices
 		LSApplicationProxy.m
 		LSApplicationRecord.m
 		LSApplicationWorkspace.m
+		LSBundleRegistration.m
+		LSRegister.m
 		LSRunning.m
 		constants.c
 		LSInfo.m
@@ -32,6 +34,7 @@ add_framework(LaunchServices
 		system
 		CarbonCore
 		FMDB
+		z
 )
 
 add_subdirectory(launchservicesd)

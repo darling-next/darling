@@ -98,6 +98,14 @@ CFArrayRef _LSCopyMatchingApplicationsWithItems(LSSessionID sessionID, CFIndex c
 
 OSStatus _LSLaunchApplication(CFURLRef appPath);
 
+// The registration direction: register the bundle the URL names into lsd's LaunchServices database
+// (/private/var/db/launchservices.db) by running the same registration code lsd's scan runs
+// (LSBundleRegistration.m). The options word is the caller's -- the one measured caller,
+// DVTFoundation, passes 2 -- and this tree's registration does not interpret it, because its one
+// behaviour (insert, or update when the Info.plist changed) is lsd's own test. Answers noErr, or
+// paramErr / fnfErr / kLSNotAnApplicationErr / kLSUnknownErr; see LSRegister.m.
+OSStatus _LSRegisterURLWithOptions(CFURLRef inURL, UInt32 inOptions);
+
 // Assumed
 #define kLSDownloadRiskCategoryKey CFSTR("LSDownloadRiskCategory")
 
