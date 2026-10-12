@@ -390,6 +390,12 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	#    Reason: image not found"
 	# It was not a declaration gap like the framework: libRosetta existed NOWHERE in the tree. The
 	# tree now builds it (src/libRosetta, one symbol, see its header for the measured caller), and
+	# AUDITED 2026-10-12, CORRECTING THIS COMMENT: the rung advanced while the demanded name did NOT exist.
+	# DVTFoundation binds _rosetta_is_current_process_translated (one leading underscore) non-lazily, and the
+	# artifact exported __rosetta_is_current_process_translated (two), because the C identifier was written with
+	# a leading underscore of its own. Fixed under dar-8twt; recorded here because "the ladder advanced" was
+	# accepted for a rung whose strong non-lazy demand was unsatisfied -- see the loader-leniency finding
+	# (dar-q50c) for why that was possible at all.
 	# three Xcode images reference it (SharedFrameworks/DVTFoundation,
 	# SharedFrameworks/AssetRuntime/DVTFoundation, SharedFrameworks/CoreSymbolicationDT).
 	Rosetta
@@ -484,8 +490,12 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# (src/private-frameworks/DiskManagement) and this component never named it. DVTFoundation binds one
 	# name from it, the Objective-C class _OBJC_CLASS_$_DMManager, through __DATA __objc_classrefs
 	# rather than __got -- still a load-time requirement, because the class object has to exist in the
-	# image for the runtime to fix that reference up. The tree implements it (DMManager.h and the
-	# DiskManagement sources). Version: the load command demands current 1.0.0 against compatibility
+	# image for the runtime to fix that reference up.
+	# AUDITED 2026-10-12, CORRECTING THIS COMMENT: it used to say "The tree implements it (DMManager.h and the
+	# DiskManagement sources)". It does not. DMManager.m:22-32 is methodSignatureForSelector:/forwardInvocation:
+	# only and logs "Stub called", so the class LOADS and forwards rather than answering -- a declaration over a
+	# stub, which is the acceptable-but-must-be-named side of this family's policy and is now mechanically
+	# classified as STUB-or-incomplete by scripts/closure_analyze.py. Version: the load command demands current 1.0.0 against compatibility
 	# 1.0.0 and the framework declares exactly that, so no version change was needed.
 	DiskManagement
 	# MEASURED 2026-10-12, the rung after DiskManagement, same discipline -- and this one is MIXED:
@@ -498,7 +508,7 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# _ASI_CopyComputerModelName, _ASI_CopyCurrentCPUDescription,
 	# _ASI_GetCurrentCPUDescriptionWithFormat, _ASI_NumberOfCPUs, _ASI_PhysicalMemorySize.
 	#
-	# Six of the seven existed only as LOUD STUBS (functions.c prints "STUB: ..." and returns NULL);
+	# Six of the seven existed only as stubs (functions.c prints "STUB: ..." and returns NULL);
 	# they are pre-existing tree state, left untouched, and filed as their own task -- this rung does
 	# not fix their answers. The seventh did not exist at all, which is why a declaration alone would
 	# NOT have advanced the rung: dyld resolves all seven eagerly, so "image not found" would simply
@@ -506,6 +516,13 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# real in src/private-frameworks/AppleSystemInfo/src/CurrentCPUDescription.c, from the only CPU
 	# data this guest actually answers (hw.machine, hw.ncpu; machdep.cpu.brand_string and
 	# hw.cpufrequency are unknown oids here), with the client's call site as the contract.
+	#
+	# AUDITED 2026-10-12, CORRECTING THIS COMMENT: only FOUR of the six are loud. Audited mechanically
+	# (scripts/closure_analyze.py), two of the demanded names are SILENT stand-ins -- ASI_NumberOfCPUs
+	# returns 1 and ASI_CopyComputerModelName returns @"UNIMPLEMENTED" without logging anything -- which is
+	# the side of the family's policy that is NOT acceptable, because a caller cannot tell an answer from a
+	# placeholder. Filed separately (dar-bnw5); the component as deployed answers six of the seven demanded
+	# calls with a stand-in and is classified STUB-or-incomplete, not "mixed and fixed".
 	# Version: the load command demands current 1.0.0 against compatibility 1.0.0 and the framework
 	# declares exactly that, so no version claim was needed.
 	AppleSystemInfo
@@ -596,12 +613,17 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	#   "Library not loaded: /System/Library/PrivateFrameworks/PlugInKit.framework/Versions/A/PlugInKit
 	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
 	#    Reason: image not found"
-	# The tree builds it (src/private-frameworks/PlugInKit, a real framework with PKBundle/PKHost/
-	# PKManager/PKDaemonClient implementations, not stubs) and this component never named it.
+	# The tree builds it (src/private-frameworks/PlugInKit) and this component never named it.
 	# DVTInstrumentsFoundation binds three things, _PKIdentifierAttribute through __DATA_CONST __got and
 	# the classrefs _OBJC_CLASS_$_PKManager and _OBJC_CLASS_$_PKHost -- the classref mechanism again,
-	# after AssertionServices and AssetCacheServices. All three exist in the tree (globals.c defines the
-	# first; PKManager.m and PKHost.m implement the classes).
+	# after AssertionServices and AssetCacheServices. All three exist in the tree, which is what the
+	# declaration needed.
+	# AUDITED 2026-10-12, CORRECTING THIS COMMENT: it used to call this "a real framework with PKBundle/PKHost/
+	# PKManager/PKDaemonClient implementations, not stubs" and to say "PKManager.m and PKHost.m implement the
+	# classes". The two DEMANDED classrefs do not: both are methodSignatureForSelector:/forwardInvocation: only
+	# (the "Stub called" forwarding pattern), so the client can load and message them and gets forwarding rather
+	# than behaviour. Others in the component may be real; the demanded ones are not. Mechanically classified as
+	# STUB-or-incomplete by scripts/closure_analyze.py.
 	# Plain declaration, no version claim of either kind: the demand is current 1.0.0 against
 	# compatibility 1.0.0 and the tree declares exactly that.
 	PlugInKit
@@ -693,10 +715,11 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
 	#    Reason: image not found"
 	# DECLARATION gap, with ONE class added so the declaration can hold: the tree builds this component
-	# (src/private-frameworks/LoggingSupport, 58 .m files, no stub markers) and this component never
+	# (src/private-frameworks/LoggingSupport, 58 .m files) and this component never
 	# named it. DVTInstrumentsFoundation binds SEVEN classrefs from it, all eager in __DATA
-	# __objc_classrefs. SIX are full pre-existing implementations -- OSLogEventLiveStore, OSLogEventLiveStream,
-	# OSLogEventStore, OSLogEventStream, OSLogPreferencesCategory, OSLogPreferencesSubsystem -- and the
+	# __objc_classrefs -- OSLogEventLiveStore, OSLogEventLiveStream,
+	# OSLogEventStore, OSLogEventStream, OSLogPreferencesCategory, OSLogPreferencesSubsystem, plus the
+	# seventh below -- and the
 	# SEVENTH, OSLogDeserializedEventStream, was the only class the tree did not have. Because the
 	# classref is eager, declaring without it would have turned a clear image-not-found into a
 	# symbol-not-found (the kperf lesson), so it was added: a DOCUMENTED METHOD-FREE class, the fourth
@@ -723,6 +746,13 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	#   is no server holding state), never a "STUB:" line.
 	#   one DOCUMENTED METHOD-FREE class (LoggingSupport's shape) -- _OBJC_CLASS_$_CADisplay, to which
 	#   the client sends zero selectors anywhere in the image.
+	# AUDITED 2026-10-12, ADDING WHAT THIS COMMENT DID NOT KNOW: this rung is classified REAL for the four
+	# symbols DVTFoundation demands, and it is the only component of the walk in that class -- but a DIFFERENT
+	# referrer, DVTInstrumentsFoundation, also links CoreGraphics strongly and binds _CGSAcceleratorForDisplayNumber
+	# non-lazily, and that symbol is in neither the artifact nor the cocotron source. The rung advanced with it
+	# absent (see the loader-leniency finding dar-q50c); the symbol is being added under dar-8twt. Nothing here
+	# is retracted -- the point is that "this rung is real" describes the four symbols it was declared for, not
+	# every symbol any client may bind from the same image.
 	# VERSION: compatibility 1.2.0 already MATCHES the client's demand -- the enforced value, so no
 	# version work and no claim -- while the current version (1.11.0 against a demand of 1193.38.0) is
 	# deliberately left alone under the CoreData proof, the same decision as the four version reverts.
