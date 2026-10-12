@@ -620,6 +620,21 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# exactly -- that is the value dyld compares -- while the CURRENT version is 130.0.0, the tree's own
 	# value, which EXCEEDS the 1.0.0 the client asks for. Nothing was raised to meet a demand here.
 	libdtrace
+	# MEASURED 2026-10-12, the rung after libdtrace, from the same referrer:
+	#   "Library not loaded: /System/Library/PrivateFrameworks/NetworkStatistics.framework/Versions/A/NetworkStatistics
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
+	#    Reason: image not found"
+	# DECLARATION gap, and the widest symbol surface of the ladder so far: the tree builds it
+	# (src/private-frameworks/NetworkStatistics) and this component never named it.
+	# DVTInstrumentsFoundation binds THIRTY symbols from it, all through __DATA_CONST __got (eager) --
+	# _NStatManagerCreate/_NStatManagerDestroy/_NStatManagerAddAllTCP/_NStatManagerAddAllUDP/
+	# _NStatManagerQueryAllSources/_NStatSourceCopyProperty and the rest. All thirty are present in the
+	# tree, which is why the rung is a declaration and not an implementation task.
+	# NOTE for the reader: functions.c implements them as LOUD STUBS (37 "STUB" sites, the
+	# DiskImages/AssertionServices style); that is pre-existing tree state this rung does not fix.
+	# Plain declaration, no version claim: measured from the deployed image, current 1.0.0 and
+	# compatibility 1.0.0, identical to the demand.
+	NetworkStatistics
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -768,6 +783,8 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"PlugInKit\", \"guest_path\": \"/System/Library/PrivateFrameworks/PlugInKit.framework/Versions/A/PlugInKit\", \"host_path\": \"$<TARGET_FILE:PlugInKit>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"libdtrace\", \"guest_path\": \"/usr/lib/libdtrace.dylib\", \"host_path\": \"$<TARGET_FILE:libdtrace>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"NetworkStatistics\", \"guest_path\": \"/System/Library/PrivateFrameworks/NetworkStatistics.framework/Versions/A/NetworkStatistics\", \"host_path\": \"$<TARGET_FILE:NetworkStatistics>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
