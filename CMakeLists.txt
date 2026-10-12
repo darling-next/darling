@@ -801,6 +801,34 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	exslt
 	xslt
 	sqlite3
+	#
+	# MEASURED 2026-10-12, the Accelerate rung -- the one whose gap is a SYMBOL, not just an image:
+	#   Library not loaded: /System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate
+	#   Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTSmartSearch.framework/Versions/A/DVTSmartSearch
+	# DVTSmartSearch binds twelve symbols from the `Accelerate` dependency field, all STRONG and
+	# NON-LAZY (chained imports 0x0..0xB, __DATA_CONST,__got), so declaring the framework without them
+	# would turn "image not found" into "symbol not found": nine are in the built libvDSP (455 exports:
+	# _vDSP_distancesq, _vDSP_dotpr, _vDSP_maxv, _vDSP_minv, _vDSP_svesq, _vDSP_vadd, _vDSP_vintb,
+	# _vDSP_vsdiv, _vDSP_vsmul) and three were ABSENT from libBNNS's twelve exports and from its source,
+	# so libBNNS now really implements them (BNNSCreateRandomGenerator, BNNSDestroyRandomGenerator,
+	# BNNSRandomFillUniformFloat -- AES-128 in counter mode, the single method BNNSRandomGeneratorMethod
+	# defines; the twelve pre-existing stubs are untouched).
+	# The Accelerate umbrella exports nothing itself: its value is its LC_REEXPORT_DYLIB of vecLib, and
+	# vecLib in turn re-exports the nine sub-dylibs below, so the whole chain has to be guest-visible for
+	# those nine names to resolve. Guest paths are the built artifacts' own LC_ID install names, read
+	# from build/verify14 rather than transcribed. Nothing here needs building: the tree already builds
+	# all eleven images.
+	Accelerate
+	vecLib
+	vMisc
+	vDSP
+	BLAS
+	LAPACK
+	LinearAlgebra
+	SparseBLAS
+	Quadrature
+	BNNS
+	Sparse
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -888,6 +916,28 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		string(REPLACE "." "_" _swift_framework_target "${_swift_framework_name}")
 		string(APPEND _rootless_toolchain_extra_resources
 			",\n    {\"target\": \"swift_framework_${_swift_framework_target}\", \"guest_path\": \"/System/Library/Frameworks/${_swift_framework_name}.framework/Versions/A/${_swift_framework_name}\", \"host_path\": \"${_rootless_toolchain_resource_dir}/System/Library/Frameworks/${_swift_framework_name}.framework/Versions/A/${_swift_framework_name}\"}")
+	endforeach()
+	# Three payload artifacts whose guest path is neither of the two globbed shapes above: a PRIVATE
+	# framework path (OSAnalytics, RemoteServiceDiscovery) and a plain /usr/lib dylib
+	# (libCoreEntitlements). Each payload file mirrors its guest path under `substitutes/`, so one
+	# recursive glob stages and declares all of them -- discovered, not listed, like the two globs
+	# above. The target label is synthetic for the same reason swift_framework_<name> is: the payload
+	# is staged here, not built by a target, and only host_path is read.
+	file(GLOB_RECURSE _rootless_substitutes CONFIGURE_DEPENDS
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/external/swift/substitutes/*")
+	foreach(_substitute IN LISTS _rootless_substitutes)
+		if(IS_DIRECTORY "${_substitute}")
+			continue()
+		endif()
+		file(RELATIVE_PATH _substitute_rel
+			"${CMAKE_CURRENT_SOURCE_DIR}/src/external/swift/substitutes" "${_substitute}")
+		get_filename_component(_substitute_dir "${_substitute_rel}" DIRECTORY)
+		file(MAKE_DIRECTORY "${_rootless_toolchain_resource_dir}/${_substitute_dir}")
+		configure_file("${_substitute}"
+			"${_rootless_toolchain_resource_dir}/${_substitute_rel}" COPYONLY)
+		string(REPLACE "/" "_" _substitute_target "substitute_${_substitute_rel}")
+		string(APPEND _rootless_toolchain_extra_resources
+			",\n    {\"target\": \"${_substitute_target}\", \"guest_path\": \"/${_substitute_rel}\", \"host_path\": \"${_rootless_toolchain_resource_dir}/${_substitute_rel}\"}")
 	endforeach()
 	# A framework this TREE BUILDS, so unlike the Swift payload above it does not exist at configure time and cannot
 	# be staged with configure_file: the manifest names the build product directly with a generator expression, the
@@ -978,6 +1028,31 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"xslt\", \"guest_path\": \"/usr/lib/libxslt.1.dylib\", \"host_path\": \"$<TARGET_FILE:xslt>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"sqlite3\", \"guest_path\": \"/usr/lib/libsqlite3.dylib\", \"host_path\": \"$<TARGET_FILE:sqlite3>\"}")
+	# The Accelerate rung (see the target-list comment for the twelve measured demands). One resource
+	# line per image of the re-export chain, each guest_path being that artifact's own LC_ID install
+	# name, and the vecLib sub-dylibs living under Accelerate.framework/Versions/A/Frameworks.
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"Accelerate\", \"guest_path\": \"/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate\", \"host_path\": \"$<TARGET_FILE:Accelerate>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"vecLib\", \"guest_path\": \"/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/vecLib\", \"host_path\": \"$<TARGET_FILE:vecLib>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"vMisc\", \"guest_path\": \"/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libvMisc.dylib\", \"host_path\": \"$<TARGET_FILE:vMisc>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"vDSP\", \"guest_path\": \"/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libvDSP.dylib\", \"host_path\": \"$<TARGET_FILE:vDSP>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"BLAS\", \"guest_path\": \"/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib\", \"host_path\": \"$<TARGET_FILE:BLAS>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"LAPACK\", \"guest_path\": \"/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libLAPACK.dylib\", \"host_path\": \"$<TARGET_FILE:LAPACK>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"LinearAlgebra\", \"guest_path\": \"/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libLinearAlgebra.dylib\", \"host_path\": \"$<TARGET_FILE:LinearAlgebra>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"SparseBLAS\", \"guest_path\": \"/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libSparseBLAS.dylib\", \"host_path\": \"$<TARGET_FILE:SparseBLAS>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"Quadrature\", \"guest_path\": \"/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libQuadrature.dylib\", \"host_path\": \"$<TARGET_FILE:Quadrature>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"BNNS\", \"guest_path\": \"/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBNNS.dylib\", \"host_path\": \"$<TARGET_FILE:BNNS>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"Sparse\", \"guest_path\": \"/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libSparse.dylib\", \"host_path\": \"$<TARGET_FILE:Sparse>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
