@@ -27,6 +27,7 @@ add_framework(AppleSystemInfo
 
 	SOURCES
 		src/AppleSystemInfo.c
+		src/CurrentCPUDescription.c
 		src/functions.c
 	DEPENDENCIES
 		system

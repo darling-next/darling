@@ -470,6 +470,54 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# DiskManagement sources). Version: the load command demands current 1.0.0 against compatibility
 	# 1.0.0 and the framework declares exactly that, so no version change was needed.
 	DiskManagement
+	# MEASURED 2026-10-12, the rung after DiskManagement, same discipline -- and this one is MIXED:
+	#   "Library not loaded: /System/Library/PrivateFrameworks/AppleSystemInfo.framework/Versions/A/AppleSystemInfo
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTFoundation.framework/Versions/A/DVTFoundation
+	#    Reason: image not found"
+	# The tree builds it (src/private-frameworks/AppleSystemInfo) and this component never named it, so
+	# part of the gap is the usual DECLARATION one. DVTFoundation binds SEVEN names from it, all
+	# through __DATA_CONST __got (eager): _ASI_BusSpeedInHz, _ASI_CPUSpeedInHz,
+	# _ASI_CopyComputerModelName, _ASI_CopyCurrentCPUDescription,
+	# _ASI_GetCurrentCPUDescriptionWithFormat, _ASI_NumberOfCPUs, _ASI_PhysicalMemorySize.
+	#
+	# Six of the seven existed only as LOUD STUBS (functions.c prints "STUB: ..." and returns NULL);
+	# they are pre-existing tree state, left untouched, and filed as their own task -- this rung does
+	# not fix their answers. The seventh did not exist at all, which is why a declaration alone would
+	# NOT have advanced the rung: dyld resolves all seven eagerly, so "image not found" would simply
+	# have become "Symbol not found: _ASI_GetCurrentCPUDescriptionWithFormat". It is implemented for
+	# real in src/private-frameworks/AppleSystemInfo/src/CurrentCPUDescription.c, from the only CPU
+	# data this guest actually answers (hw.machine, hw.ncpu; machdep.cpu.brand_string and
+	# hw.cpufrequency are unknown oids here), with the client's call site as the contract.
+	# Version: the load command demands current 1.0.0 against compatibility 1.0.0 and the framework
+	# declares exactly that, so no version claim was needed.
+	AppleSystemInfo
+	# MEASURED 2026-10-12, the rung after AppleSystemInfo, same discipline:
+	#   "Library not loaded: /System/Library/PrivateFrameworks/AssetCacheServices.framework/Versions/A/AssetCacheServices
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTFoundation.framework/Versions/A/DVTFoundation
+	#    Reason: image not found"
+	# DECLARATION gap plus a compatibility-level claim, the CoreGraphics shape. The tree builds it
+	# (src/private-frameworks/AssetCacheServices) and this component never named it. DVTFoundation
+	# binds one name, the Objective-C class _OBJC_CLASS_$_ACSURLSession, through __DATA
+	# __objc_classrefs (the DiskManagement mechanism, not __got) -- still a load-time requirement. The
+	# class exists (src/.../ACSURLSession.m); note for the reader that its methods are LOUD
+	# forwarding stubs (it logs "Stub called: ..." and does not implement the selector), which is
+	# pre-existing tree state this rung does not fix. Version: the load command demands current
+	# 136.0.0 against compatibility 1.0.0, our compatibility already matches at 1.0.0, and only the
+	# current version is raised -- see that component's CMakeLists.
+	AssetCacheServices
+	# MEASURED 2026-10-12, the rung after AssetCacheServices, same discipline:
+	#   "Library not loaded: /System/Library/PrivateFrameworks/DiskImages.framework/Versions/A/DiskImages
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTFoundation.framework/Versions/A/DVTFoundation
+	#    Reason: image not found"
+	# DECLARATION gap plus a current-version claim. The tree builds it
+	# (src/private-frameworks/DiskImages) and this component never named it. DVTFoundation binds two
+	# symbols, _DICopyStrError and _DIHLDiskImageAttach, through __DATA_CONST __got (back to the
+	# ordinary mechanism after two classrefs rungs). Both exist, as LOUD STUBS in that component's
+	# functions.c -- pre-existing tree state, named here and not fixed by this rung. Version: the load
+	# command demands current 680.0.0 against compatibility 1.0.8; our compatibility already equals
+	# 1.0.8, so ONLY the current version is added, and the component's CMakeLists says why the
+	# compatibility version is deliberately not touched.
+	DiskImages
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -602,6 +650,12 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"DiskArbitration\", \"guest_path\": \"/System/Library/Frameworks/DiskArbitration.framework/Versions/A/DiskArbitration\", \"host_path\": \"$<TARGET_FILE:DiskArbitration>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"DiskManagement\", \"guest_path\": \"/System/Library/PrivateFrameworks/DiskManagement.framework/Versions/A/DiskManagement\", \"host_path\": \"$<TARGET_FILE:DiskManagement>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"AppleSystemInfo\", \"guest_path\": \"/System/Library/PrivateFrameworks/AppleSystemInfo.framework/Versions/A/AppleSystemInfo\", \"host_path\": \"$<TARGET_FILE:AppleSystemInfo>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"AssetCacheServices\", \"guest_path\": \"/System/Library/PrivateFrameworks/AssetCacheServices.framework/Versions/A/AssetCacheServices\", \"host_path\": \"$<TARGET_FILE:AssetCacheServices>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"DiskImages\", \"guest_path\": \"/System/Library/PrivateFrameworks/DiskImages.framework/Versions/A/DiskImages\", \"host_path\": \"$<TARGET_FILE:DiskImages>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()

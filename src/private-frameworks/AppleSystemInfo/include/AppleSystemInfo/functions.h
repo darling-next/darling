@@ -17,6 +17,8 @@ You should have received a copy of the GNU General Public License
 along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <stdint.h>
+
 void* ASI_BusSpeedInHz(void);
 void* ASI_CPUSpeedInHz(void);
 void* ASI_CopyBusSpeedDescription(void);
@@ -39,3 +41,7 @@ void* CopyIOPlatformSerialNumberString(void);
 void* CopyPropertyAsData(void);
 void* GetIOPlatformFeature(void);
 void* PlatformOverideExistsAndIsSet(void);
+/* Implemented (src/CurrentCPUDescription.c), not a stub: answers from the guest's hw.machine and
+ * hw.ncpu, which are the only CPU keys this guest answers. The argument is one the client passes as
+ * 0x10000; see that file for why it is treated as a cap. */
+void* ASI_GetCurrentCPUDescriptionWithFormat(uint32_t maxLength);
