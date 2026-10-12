@@ -635,6 +635,26 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# Plain declaration, no version claim: measured from the deployed image, current 1.0.0 and
 	# compatibility 1.0.0, identical to the demand.
 	NetworkStatistics
+	# MEASURED 2026-10-12, the rung after NetworkStatistics, from the same referrer:
+	#   "Library not loaded: /System/Library/PrivateFrameworks/kperf.framework/Versions/A/kperf
+	#    Referenced from: .../Xcode.app/Contents/SharedFrameworks/DVTInstrumentsFoundation.framework/Versions/A/DVTInstrumentsFoundation
+	#    Reason: image not found"
+	# DECLARATION gap: the tree builds it (src/private-frameworks/kperf) and this component never
+	# named it. DVTInstrumentsFoundation binds FIFTY symbols from kperf itself, all eagerly through
+	# __DATA_CONST __got, and all fifty are present in the tree.
+	#
+	# READ THIS BEFORE COUNTING ITS DEMAND BY SUBSTRING: DVTInstrumentsFoundation binds 79 symbols
+	# whose dependency name contains "kperf", but 29 of those belong to a DIFFERENT dependency,
+	# @rpath/kperfdataDT.framework/Versions/A/kperfdataDT (Xcode's own file, not ours) -- _kpep_db_create,
+	# _kpdecode_cursor_create and the rest. Count by the dependency field, not by substring, or kperf
+	# looks like an implementation task when it is not. That mistake was made once here and corrected.
+	#
+	# NOTE for the reader: the tree implements those fifty as LOUD STUBS (108 stub sites in kperf.c),
+	# the DiskImages/AssertionServices style -- the rung loads and prints rather than works, and that is
+	# pre-existing tree state this declaration does not change.
+	# Plain declaration, no version claim: measured from the deployed image, current 1.0.0 and
+	# compatibility 1.0.0, identical to the demand.
+	kperf
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -785,6 +805,8 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"libdtrace\", \"guest_path\": \"/usr/lib/libdtrace.dylib\", \"host_path\": \"$<TARGET_FILE:libdtrace>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"NetworkStatistics\", \"guest_path\": \"/System/Library/PrivateFrameworks/NetworkStatistics.framework/Versions/A/NetworkStatistics\", \"host_path\": \"$<TARGET_FILE:NetworkStatistics>\"}")
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"kperf\", \"guest_path\": \"/System/Library/PrivateFrameworks/kperf.framework/Versions/A/kperf\", \"host_path\": \"$<TARGET_FILE:kperf>\"}")
 	if(DARLING_ROOTLESS_HOMEBREW)
 		include(cmake/RootlessHomebrew.cmake)
 	endif()
