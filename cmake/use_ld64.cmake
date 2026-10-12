@@ -189,11 +189,25 @@ FUNCTION(use_ld64 target)
 	# bundles.  The build stages the whole payload set in
 	# rootless-toolchain-resources, so map whatever is there rather than a
 	# hand-kept list.
+	#
+	# THE GLOB MUST NOT READ THE STAGING DIRECTORY. The rootless-toolchain block fills that directory
+	# with configure_file, and it does so AFTER this function has already been expanded for the targets
+	# that call it, so in a NEW build dir the glob is empty, every client of the Swift payload fails to
+	# link, and the failure looks like a missing payload rather than a configure-order defect.
+	# MEASURED 2026-10-12: `cmake` once + `ninja` in a fresh build dir produced ZERO mappings and died
+	# at 8216/9298 with
+	#   "ld: file not found: /usr/lib/swift/libswiftFoundation.dylib for architecture x86_64"
+	# (FMDB, installer); running the configure a SECOND time produced 1308 mappings and the build
+	# finished -- i.e. "configure twice in a fresh build dir" was a defect in this glob, not a fact of
+	# life. CONFIGURE_DEPENDS does not repair it (the re-configure repeats the same order; measured),
+	# but discovering the names where they are CHECKED IN does: the staged set is a copy of
+	# src/external/swift, which exists at configure time, and the mapping's target stays the path the
+	# build stages them to.
 	set(_darling_swift_maps " ")
-	file(GLOB _darling_swift_payload "${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/*.dylib")
+	file(GLOB _darling_swift_payload CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/external/swift/*.dylib")
 	foreach(_darling_swift_dylib IN LISTS _darling_swift_payload)
 		get_filename_component(_darling_swift_name "${_darling_swift_dylib}" NAME)
-		string(APPEND _darling_swift_maps "-Wl,-dylib_file,/usr/lib/swift/${_darling_swift_name}:${_darling_swift_dylib} ")
+		string(APPEND _darling_swift_maps "-Wl,-dylib_file,/usr/lib/swift/${_darling_swift_name}:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/${_darling_swift_name} ")
 	endforeach()
 	set_property(TARGET ${target} APPEND_STRING PROPERTY LINK_FLAGS "${_darling_swift_maps}")
 
