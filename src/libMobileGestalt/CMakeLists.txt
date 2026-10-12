@@ -6,6 +6,7 @@ set(DYLIB_CURRENT_VERSION "1.0.0")
 
 add_darling_library(MobileGestalt SHARED
     src/MobileGestalt.m
+    src/MobileGestaltDevice.m
 )
 make_fat(MobileGestalt)
 target_link_libraries(MobileGestalt system objc Foundation)

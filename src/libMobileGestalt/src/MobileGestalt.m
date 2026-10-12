@@ -22,6 +22,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+/* The one data symbol the header used to define (see the note there): the target now has two
+ * translation units, so the definition lives here, where the classic farm is. */
+CFStringRef kMGQReleaseType = CFSTR("kMGQReleaseType");
+
 static int verbose = 0;
 
 __attribute__((constructor))

@@ -22,9 +22,29 @@
 #define _MobileGestalt_H_
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <stdint.h>
 
 // I don't know what the actual keys values are...
-CFStringRef kMGQReleaseType = CFSTR("kMGQReleaseType");
+// (declared here, defined once in src/MobileGestalt.m: this header is included by more than one
+// translation unit now, and a definition in a header is a duplicate symbol at link time)
+extern CFStringRef kMGQReleaseType;
+
+/* The MODERN device SPI (the macOS 26 / iOS 18 shape).  The ABI is the SDK's own
+ * /usr/lib/libMobileGestalt.tbd, which names these eight; the SDK ships no header for them, so the
+ * shapes below are the ones the measured clients compile against, and the `_obj` suffix means the
+ * answer is an Objective-C string (CFStringRef here to stay C-compatible; toll-free bridged), not
+ * a CF-owning `copy`.  Ownership is +0/autoreleased -- the one client (Xcode 26.3's XCTHarness)
+ * balances it with _objc_retainAutoreleasedReturnValue + release, measured from its own code.  See
+ * src/MobileGestaltDevice.m for the call sites and for which answers are real facts and which are
+ * honest absences. */
+void* MobileGestalt_get_current_device(void);
+int32_t MobileGestalt_get_cpuType(void* device);
+int32_t MobileGestalt_get_cpuSubType(void* device);
+CFStringRef MobileGestalt_copy_humanReadableProductVersionString_obj(void* device);
+CFStringRef MobileGestalt_copy_productType_obj(void* device);
+CFStringRef MobileGestalt_copy_supplementalBuildVersion_obj(void* device);
+CFStringRef MobileGestalt_copy_uniqueDeviceID_obj(void* device);
+CFStringRef MobileGestalt_copy_userAssignedDeviceName_obj(void* device);
 
 void* MGCancelNotifications(void);
 CFStringRef MGCopyAnswer(CFStringRef key, void* unknown);
