@@ -250,6 +250,34 @@ CFDictionaryRef MDItemCopyAttributes(MDItemRef item, CFArrayRef names) {
 	return NULL;
 };
 
+// MDItemCopyAttributesBulk is a private Metadata function: Apple's public
+// MDItem.h does not declare it, but the SDK's Metadata.tbd and Xcode's
+// DebugSymbolsDT both carry it, and DebugSymbolsDT imports it STRONGLY from the
+// CoreServices field (chained-fixup GOT, so it is bound at load and a missing
+// definition aborts the dlopen even though the only callers are the Spotlight
+// path).
+//
+// As measured from those callers (DSFSDB/UpdateCachedQueryResults and
+// MDQueryDidUpdateCallback), the arguments are a CFArray of MDItemRefs and a
+// CFArray of attribute-name CFStrings, and the result is consumed as a CFArray
+// of CFDictionaryRefs parallel to the input: the attribute names are
+// {kMDItemPath} and {kMDItemPath, com_apple_xcode_dsym_uuids,
+// com_apple_xcode_dsym_paths}, and NULL is the API's own "could not copy"
+// return, which every call site handles by falling back to the per-item
+// MDItemCopyAttribute/MDItemCopyAttributes calls and then to the on-disk DSYM
+// bundle.
+//
+// Darling cannot answer the request: MDItemCreate/MDItemCreateWithURL retain no
+// path and no attribute (so every MDItem* copy above answers NULL), and the
+// requested attributes describe a Spotlight index the guest does not have --
+// MDQuery is a stub, so no MDItem ever comes out of a query either. Returning a
+// CFDictionary of nothing, or a length-mismatched array, would report success
+// for a copy that copied nothing; the absence is reported instead, which is
+// exactly the degradation the callers were written for.
+CFArrayRef MDItemCopyAttributesBulk(CFArrayRef items, CFArrayRef attributes) {
+	return NULL;
+};
+
 CFDictionaryRef MDItemCopyAttributeList(MDItemRef item, ...) {
 	// stub
 	return NULL;
