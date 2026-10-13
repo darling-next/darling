@@ -27,6 +27,17 @@ CGImageRef CGImageSourceCreateImageAtIndex(CGImageSourceRef self,size_t index,CF
    return [self createImageAtIndex:index options:options];
 }
 
+CFDictionaryRef CGImageSourceCopyProperties(CGImageSourceRef self,CFDictionaryRef options) {
+   /* Apple returns the CONTAINER's properties here (CGImageSource.h: "These properties apply to the
+      container in general").  Onyx2D's O2ImageSource exposes only its per-image properties
+      (copyPropertiesAtIndex:), so the honest answer is the real, parsed properties of the source's
+      own first image -- exactly the facts the family can produce from a file it parsed -- and never
+      an invented dictionary: the base O2ImageSource and the formats whose source does not populate
+      properties (PNG, BMP, ICNS) return an EMPTY dictionary, so a caller that reads PixelWidth /
+      PixelHeight observes absence rather than a fabricated size. */
+   return (CFDictionaryRef)[self copyPropertiesAtIndex:0 options:options];
+}
+
 CFDictionaryRef CGImageSourceCopyPropertiesAtIndex(CGImageSourceRef self, size_t index,CFDictionaryRef options) {
    return (CFDictionaryRef)[self copyPropertiesAtIndex:index options:options];
 }

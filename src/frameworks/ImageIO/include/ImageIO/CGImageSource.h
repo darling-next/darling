@@ -25,6 +25,7 @@ IMAGEIO_EXTERN CFStringRef CGImageSourceGetType(CGImageSourceRef self);
 IMAGEIO_EXTERN size_t CGImageSourceGetCount(CGImageSourceRef self);
 
 IMAGEIO_EXTERN CGImageRef CGImageSourceCreateImageAtIndex(CGImageSourceRef self, size_t index, CFDictionaryRef options);
+IMAGEIO_EXTERN CFDictionaryRef CGImageSourceCopyProperties(CGImageSourceRef self, CFDictionaryRef options);
 IMAGEIO_EXTERN CFDictionaryRef CGImageSourceCopyPropertiesAtIndex(CGImageSourceRef self, size_t index, CFDictionaryRef options);
 
 IMAGEIO_EXTERN CGImageSourceRef CGImageSourceCreateWithDataProvider(CGDataProviderRef provider, CFDictionaryRef options);
