@@ -46,6 +46,7 @@ int __mldr_ring_doorbell(int fd);   // perf#30: the process-control page protoco
 #include <stdarg.h>
 
 #include "dthreads.h"
+#include "native_threads.h"
 
 #include <darlingserver/rpc.h>
 
@@ -275,7 +276,13 @@ void* __darling_thread_create(unsigned long stack_size, unsigned long pth_obj_si
 		unsigned long seq = atomic_fetch_add(&g_dthread_create_seq, 1);
 		mldr_thread_diagf("[mldr-dthread pre seq=%lu tid=%d stack_addr=%p pth=%p]\n",
 				seq, (int)syscall(SYS_gettid), (void*)args.stack_addr, pth);
+		/* This thread IS a guest thread: darling_thread_entry installs its real guest TSD base itself
+		 * (args.callbacks->thread_set_tsd_base below). native_threads.c's pthread_create interposer must not wrap
+		 * it -- the wrapper's own synthetic TSD array would only be discarded -- and keeping this path untouched is
+		 * what makes guest threads' identity (distinct, non-zero, non-duplicated) exactly what it was. */
+		__darling_native_thread_create_begin();
 		int pc_rc = pthread_create(&nativeLibcThread, &attr, darling_thread_entry, &args);
+		__darling_native_thread_create_end();
 		int pc_errno = errno;
 		mldr_thread_diagf("[mldr-dthread post seq=%lu tid=%d rc=%d errno=%d th=%p]\n",
 				seq, (int)syscall(SYS_gettid), pc_rc, pc_errno, (void*)nativeLibcThread);

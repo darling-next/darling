@@ -23,6 +23,7 @@ set(mldr_sources
 	commpage.c
 	elfcalls/elfcalls.c
 	elfcalls/dthreads.c
+	elfcalls/native_threads.c
 	elfcalls/threads.c
 )
 
@@ -34,7 +35,12 @@ target_compile_definitions(mldr PRIVATE
 )
 
 target_compile_options(mldr PRIVATE -pthread)
-target_link_options(mldr PRIVATE -pthread)
+# native_threads.c defines pthread_create for the host threads NATIVE libraries create inside a guest process. The
+# loader is the process's main executable, so its definition heads the dynamic loader's global symbol scope and
+# interposes for every object loaded afterwards (measured on the host: a dlopened library, directly or through a
+# chain of dlopens, binds to it on the lazy first call and after). The export is named so that exactly this one
+# symbol leaves .dynsym and mldr's other symbols stay private.
+target_link_options(mldr PRIVATE -pthread -Wl,--export-dynamic-symbol=pthread_create)
 
 target_link_libraries(mldr PRIVATE -lrt -ldl mldr_dserver_rpc -lm)
 
@@ -61,7 +67,8 @@ if (BUILD_TARGET_32BIT)
 	target_compile_options(mldr32 PRIVATE -m32)
 	target_link_options(mldr32 PRIVATE -m32)
 	target_compile_options(mldr32 PRIVATE -pthread)
-	target_link_options(mldr32 PRIVATE -pthread)
+	# Same interposition as mldr: see the note on the 64-bit target above.
+	target_link_options(mldr32 PRIVATE -pthread -Wl,--export-dynamic-symbol=pthread_create)
 	target_link_libraries(mldr32 PRIVATE -lrt -ldl mldr32_dserver_rpc)
 
 	install(TARGETS mldr32 DESTINATION libexec/darling/usr/libexec/darling)
