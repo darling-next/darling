@@ -24,6 +24,7 @@
 #define _SANDBOX_H_
 
 #include <sys/cdefs.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <mach/message.h>
@@ -190,6 +191,29 @@ int sandbox_container_path_for_pid(pid_t pid, char *buffer, size_t bufsize);
 int sandbox_wakeup_daemon(char **errorbuf);
 
 int sandbox_query_approval_policy_for_path(const char* query, const char* path, char **approval);
+
+/* libsystem_containermanager's query SPI, answered here -- see sandbox.c for why this file owns it and
+ * why the query cannot be served. Apple ships no header for it in any SDK this workspace has, so the
+ * shapes below are the ones the demanding images' call sites fix (measured): the query is rdi, the
+ * scalar argument rsi, the answer rax; container_class_t is Apple's typedef for the class value
+ * (container_query_set_class is called with 2 = application and 4 = widgetExtension). */
+typedef struct container_query_s *container_query_t;
+typedef struct container_error_s *container_error_t;
+typedef struct container_s *container_t;
+
+/* The primary persona's unique string (Mach-O name _CONTAINER_PERSONA_PRIMARY: the C identifier has no
+ * leading underscore of its own -- the same underscore trap dar-8twt recorded for libRosetta). */
+extern char *CONTAINER_PERSONA_PRIMARY;
+
+container_query_t container_query_create(void);
+void container_query_free(container_query_t query);
+bool container_query_set_class(container_query_t query, uint64_t cls);
+bool container_query_set_identifiers(container_query_t query, void *identifiers);
+bool container_query_operation_set_flags(container_query_t query, uint64_t flags);
+bool container_query_set_persona_unique_string(container_query_t query, const char *persona_unique_string);
+container_t container_query_get_single_result(container_query_t query);
+container_error_t container_query_get_last_error(container_query_t query);
+char *container_error_copy_unlocalized_description(container_error_t error);
 
 const char *_amkrtemp(const char *);
 

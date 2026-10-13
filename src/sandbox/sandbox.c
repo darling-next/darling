@@ -253,3 +253,172 @@ int rootless_check_datavault_flag(const char* path, const char* storage_class) {
 int sandbox_query_approval_policy_for_path(const char* query, const char* path, char **approval) {
 	return -1;
 }
+
+/*
+ * libsystem_containermanager's query SPI -- the ten names XCTHarness binds eagerly from the libSystem
+ * field. The SDK fixes them: MacOSX.sdk/usr/lib/system/libsystem_containermanager.tbd exports
+ * _container_query_create, _container_query_free, _container_query_get_last_error,
+ * _container_query_get_single_result, _container_query_operation_set_flags, _container_query_set_class,
+ * _container_query_set_identifiers, _container_query_set_persona_unique_string,
+ * _container_error_copy_unlocalized_description and the data symbol _CONTAINER_PERSONA_PRIMARY, and
+ * MacOSX.sdk/usr/lib/libSystem.B.tbd's reexported-libraries list names
+ * /usr/lib/system/libsystem_containermanager.dylib -- Apple's owner of the family.
+ *
+ * THIS TREE NEVER BUILDS THAT OWNER. Apple's own sub-library list names it (optionallibs:
+ * "system_containermanager") and init.c carries the family's init hook behind
+ * HAVE_SYSTEM_CONTAINERMANAGER, but no source for it exists anywhere in the checkout (a grep of the
+ * whole tree finds no definition of any of the ten names). So the family has no owner here, and it
+ * goes beside the container code this tree does have: the sandbox. Apple's libsystem_sandbox.tbd owns
+ * the container-PATH family (_container_path_for_pid, _container_path_for_audit_token, ...) and this
+ * file already answers sandbox_container_path_for_pid; the query family is the same container domain,
+ * split into a dylib Darling never built. That is the route libplatform took for
+ * __os_feature_enabled_impl, whose Apple owner (libsystem_featureflags) is another optionallib this
+ * tree never builds.
+ *
+ * THE OPERATION CANNOT BE SERVED, SO IT FAILS THE FAMILY'S OWN WAY. containermanagerd -- the daemon
+ * the man page describes, working in concert with sandbox(7) and secinitd(8) -- does not exist in this
+ * guest, and neither does a container database (the prefix has no ~/Library/Containers). Apple's
+ * container_query_create is a LOCAL allocation that does not talk to the daemon, so the honest shape is
+ * a real query that fails where the family fails: get_single_result returns NULL and records an error,
+ * get_last_error returns that error, and container_error_copy_unlocalized_description copies its text.
+ * A NULL create would be a different statement (an allocation failure) that a client checking the
+ * setters would misread, and a fabricated container_t was refused outright: the clients read a path out
+ * of the result and PreviewsDeveloperTools additionally consumes a sandbox token from it
+ * (container_copy_sandbox_token -> sandbox_extension_consume), so a made-up container would claim a
+ * data container and a grant this guest cannot back.
+ *
+ * MEASURED CLIENT USE -- the only two images in the Xcode tree that reference the family; XCTHarness is
+ * the only one either workload's load closure reaches (PreviewsDeveloperTools is not reached).
+ *   XCTHarness, x86_64, in XCTHLocalDevice.dataContainerURL(for:bundleID:):
+ *     0x1572ba create -> testq/je 0x157343: NULL skips the container lookup and copies files anyway,
+ *              with NO error (the graceful path);
+ *     0x1572d5 set_class(query, 2); 0x153bd8 set_identifiers(query, xpc_string(bundleID));
+ *     0x1572f8 operation_set_flags(query, 0x800000000);
+ *     0x15730a set_persona_unique_string(query, CONTAINER_PERSONA_PRIMARY) -- every setter's result
+ *              IGNORED;
+ *     0x157312 get_single_result; NULL -> 0x157379 get_last_error ->
+ *              container_error_copy_unlocalized_description, and when both are non-NULL the copied text
+ *              IS the thrown error's message (a NULL description falls back to bundleID +
+ *              "/Library/Logs/DiagnosticReports");
+ *     0x157333 / 0x157431 free(query) on every path that created one.
+ *   PreviewsDeveloperTools, x86_64: create -> NULL is "CouldNotGetAppContainerError"; then the same
+ *   set/get/free sequence (plus operation_set_platform, a name this entry's closure does not demand).
+ * Both clients load CONTAINER_PERSONA_PRIMARY's VALUE and pass it straight into
+ * set_persona_unique_string (the bind is a __got slot holding the symbol's ADDRESS, then one load of
+ * the value), so the symbol must be a char * whose value is the primary persona's unique string.
+ *
+ * WHAT IS NOT ANSWERED. The value of CONTAINER_PERSONA_PRIMARY is not observable from any artifact in
+ * this workspace -- no header in any SDK ships it and no provider binary exists (the tbd carries names
+ * only) -- so it is not taken from memory as Apple's literal. It is the family's own token for the
+ * primary persona ("primary"; the sibling _CONTAINER_PERSONA_CURRENT names the other sentinel), it is a
+ * valid C string so no client can fault on it, and it is INERT at every measured call site: both
+ * clients only pass it into a query that cannot be served. NULL was rejected as the value, because
+ * Apple's own clients intend a specific persona and NULL would silently change the request to the
+ * default one. The identifiers of set_identifiers are likewise not retained: the query can never
+ * execute, so it holds no reference to the caller's xpc object (which the caller releases immediately
+ * after the call); the setter answers true because the parameter is a valid identifier list, and the
+ * failure the client observes is the query's own, at get_single_result.
+ */
+struct container_error_s {
+	char *description; /* malloc'd copy, owned by the error */
+};
+
+struct container_query_s {
+	uint64_t cls;
+	uint64_t flags;
+	char *persona_unique_string; /* malloc'd copy, owned by the query */
+	bool has_error;
+	struct container_error_s error;
+};
+
+char *CONTAINER_PERSONA_PRIMARY = "primary";
+
+container_query_t container_query_create(void)
+{
+	/* A local allocation, as Apple's own create is: it does not talk to the daemon. */
+	return calloc(1, sizeof(struct container_query_s));
+}
+
+void container_query_free(container_query_t query)
+{
+	if (query == NULL) {
+		return;
+	}
+	free(query->persona_unique_string);
+	free(query->error.description);
+	free(query);
+}
+
+bool container_query_set_class(container_query_t query, uint64_t cls)
+{
+	if (query == NULL) {
+		return false;
+	}
+	query->cls = cls;
+	return true;
+}
+
+bool container_query_set_identifiers(container_query_t query, void *identifiers)
+{
+	if (query == NULL) {
+		return false;
+	}
+	/* Not retained: the query can never execute, so it holds no reference to the caller's object
+	 * (see the block comment above). */
+	(void) identifiers;
+	return true;
+}
+
+bool container_query_operation_set_flags(container_query_t query, uint64_t flags)
+{
+	if (query == NULL) {
+		return false;
+	}
+	query->flags = flags;
+	return true;
+}
+
+bool container_query_set_persona_unique_string(container_query_t query, const char *persona_unique_string)
+{
+	char *copy;
+
+	if (query == NULL) {
+		return false;
+	}
+	copy = persona_unique_string ? strdup(persona_unique_string) : NULL;
+	if (persona_unique_string != NULL && copy == NULL) {
+		return false;
+	}
+	free(query->persona_unique_string);
+	query->persona_unique_string = copy;
+	return true;
+}
+
+container_t container_query_get_single_result(container_query_t query)
+{
+	if (query == NULL) {
+		return NULL;
+	}
+	query->has_error = true;
+	free(query->error.description);
+	query->error.description = strdup(
+		"the container manager is not available in this guest: no container manager daemon "
+		"and no container database exist, so no container can be returned");
+	return NULL;
+}
+
+container_error_t container_query_get_last_error(container_query_t query)
+{
+	if (query == NULL || !query->has_error) {
+		return NULL;
+	}
+	return &query->error;
+}
+
+char *container_error_copy_unlocalized_description(container_error_t error)
+{
+	if (error == NULL || error->description == NULL) {
+		return NULL;
+	}
+	return strdup(error->description);
+}
