@@ -62,6 +62,38 @@ FSEventStreamEventId FSEventStreamGetLatestEventId(ConstFSEventStreamRef streamR
 	return [((FSEventsImpl*) streamRef) lastEventID];
 }
 
+/*
+ * The two flush entry points. Both are called by DevToolsCore's DTFileSystemEventStream (flush ->
+ * FSEventStreamFlushAsync at 0x16376e, flushSync -> FSEventStreamFlushSync at 0x16377c, each a tail
+ * call passing the stream).
+ *
+ * The stream is the inotify descriptor below, not fseventsd: this implementation reads the kernel's
+ * inotify queue on its own dispatch source and delivers a callback per batch, and the `latency`
+ * FSEventStreamCreate is given is not used to delay anything. So there is no daemon-side buffer to
+ * ask for -- the answer each client needs is derivable here, and it is:
+ *
+ *   FlushAsync  returns the largest event id of any event ever queued for this stream, which is
+ *               exactly what this implementation's monotonically increasing counter holds
+ *               (_lastEventID, one past the last event appended to _idArray). Asynchronous by
+ *               contract, it must not wait, and there is nothing to wait for: the source handler
+ *               delivers the events it has read without further prompting.
+ *   FlushSync   must have invoked the client callback for every event that had already occurred by
+ *               the time it returns, so it reads and delivers on the caller's thread
+ *               (FSEventsImpl -flushSynchronously).
+ *
+ * The stream reference is released by FSEventStreamRelease and invalidated by FSEventStreamInvalidate,
+ * as for every other entry point here.
+ */
+FSEventStreamEventId FSEventStreamFlushAsync(FSEventStreamRef streamRef)
+{
+	return [((FSEventsImpl*) streamRef) lastEventID];
+}
+
+void FSEventStreamFlushSync(FSEventStreamRef streamRef)
+{
+	[((FSEventsImpl*) streamRef) flushSynchronously];
+}
+
 void FSEventStreamInvalidate(FSEventStreamRef streamRef)
 {
 	[((FSEventsImpl*) streamRef) invalidate];

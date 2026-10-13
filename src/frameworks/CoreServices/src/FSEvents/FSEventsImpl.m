@@ -188,6 +188,14 @@ static void rlPerform(void* info)
 
 -(void)_readEvents
 {
+	[self _drainPendingEvents];
+	[self _dispatchEvents];
+}
+
+/* Everything the kernel has already queued for this stream, read into the three arrays. No
+ * delivery happens here, so FSEventStreamFlushSync can read and then deliver on its own thread. */
+-(void)_drainPendingEvents
+{
 	const size_t bytes = sizeof(struct inotify_event) + 4096 + 1;
 	struct inotify_event* evt = (struct inotify_event*) malloc(bytes);
 
@@ -213,7 +221,24 @@ static void rlPerform(void* info)
 	}
 
 	free(evt);
-	[self _dispatchEvents];
+}
+
+/* The synchronous flush of the FSEvents API (FSEventStreamFlushSync): read what has already
+ * occurred and invoke the client callback for it BEFORE returning to the caller. The caller's own
+ * thread is used, and g_fsEventsQueue is held for the whole operation, so the source handler -- the
+ * only other reader of the arrays -- cannot run in between. */
+-(void)flushSynchronously
+{
+	/* A stopped stream does not call its client back ("The client callback will not be called for
+	 * this stream while it is stopped"), and the flush is defined only after FSEventStreamStart. */
+	if (!_running)
+		return;
+
+	dispatch_sync(g_fsEventsQueue, ^{
+		[self _drainPendingEvents];
+		if ([_pathArray count] > 0)
+			[self _deliverEvents];
+	});
 }
 
 -(void)_processSingleEvent:(struct inotify_event*)evt
@@ -286,13 +311,25 @@ static void rlPerform(void* info)
 
 -(void)_doCallback
 {
+	dispatch_suspend(_source);
+	dispatch_sync(g_fsEventsQueue, ^{});
+
+	[self _deliverEvents];
+
+	dispatch_resume(_source);
+	[self release];
+}
+
+/* The delivery half. It is called with the arrays stable -- from the source handler's own queue, or
+ * from a thread that has just dispatch_sync'ed that queue -- and it is what leaves them empty
+ * again. It must NOT dispatch_sync g_fsEventsQueue itself: FSEventStreamFlushSync reaches it while
+ * holding that queue. */
+-(void)_deliverEvents
+{
 	void* ptrToPass = _pathArray;
 	char** cpathArray = NULL;
 	NSArray<NSDictionary*>* dicts = NULL;
 
-	dispatch_suspend(_source);
-	dispatch_sync(g_fsEventsQueue, ^{});
-	
 	if (!(_flags & kFSEventStreamCreateFlagUseCFTypes))
 	{
 		@autoreleasepool
@@ -342,8 +379,6 @@ static void rlPerform(void* info)
 	_idArray = NULL;
 
 	[_pathArray removeAllObjects];
-	dispatch_resume(_source);
-	[self release];
 }
 
 @end

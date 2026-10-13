@@ -15,6 +15,7 @@ add_framework(AE
 	PARENT "CoreServices"
 
 	SOURCES
+		AEDataModel.c
 		empty.c
 		stub.c
 

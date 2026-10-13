@@ -18,6 +18,7 @@ add_framework(LaunchServices
 		LSApplicationProxy.m
 		LSApplicationRecord.m
 		LSApplicationWorkspace.m
+		LSBundleProxy.m
 		LSBundleRegistration.m
 		LSRegister.m
 		LSRunning.m

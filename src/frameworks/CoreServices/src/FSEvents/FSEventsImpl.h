@@ -61,7 +61,10 @@
 -(void)start;
 -(void)stop;
 -(FSEventStreamEventId)lastEventID;
+-(void)flushSynchronously;
 -(void)_doCallback;
+-(void)_deliverEvents;
+-(void)_drainPendingEvents;
 
 @end
 
