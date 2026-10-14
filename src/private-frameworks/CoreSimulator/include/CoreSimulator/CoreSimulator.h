@@ -105,6 +105,7 @@
 #import <CoreSimulator/SimSDKInfo.h>
 #import <CoreSimulator/SimSelectedRuntimePolicyResult.h>
 #import <CoreSimulator/SimServiceContext.h>
+#import <CoreSimulator/SimUsageTracker.h>
 #import <CoreSimulator/SimVolumeManager.h>
 #import <CoreSimulator/SimVolumeManagerNotification.h>
 #import <CoreSimulator/_SimDeallocSentinel.h>

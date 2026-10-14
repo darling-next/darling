@@ -83,6 +83,7 @@ add_framework(CoreSimulator
 		src/SimNSPasteboard.m
 		src/SimPasteboardItemWrappedData.m
 		src/SimServiceContext.m
+		src/SimUsageTracker.m
 		src/SimHostResourceChecker.m
 		src/NSArray+SimPasteboardItem.m
 		src/NSString+SimPasteboardItem.m
