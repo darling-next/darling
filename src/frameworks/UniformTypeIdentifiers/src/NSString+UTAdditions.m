@@ -21,4 +21,26 @@
 
 @implementation NSString (UTAdditions)
 
+// Semantics: Apple's SDK header (MacOSX.sdk .../UniformTypeIdentifiers.framework/Headers/
+// UTAdditions.h, quoted in this rung's evidence) -- "If the receiver already has a path extension,
+// and that path extension is valid for file system objects of type contentType, no additional
+// extension is appended to the receiver before constructing the result ... If the extension could
+// not be appended, this method returns a copy of self."
+- (NSString *)stringByAppendingPathExtensionForType:(UTType *)contentType
+{
+	if (![contentType isKindOfClass: [UTType class]])
+		return [[self copy] autorelease];
+
+	// An extension the receiver already carries is kept when a type with that extension conforms to
+	// the requested one; otherwise the type's own preferred extension is appended.
+	NSString *extension = [self pathExtension];
+	if ([extension length] > 0 && [[UTType typeWithFilenameExtension: extension] conformsToType: contentType])
+		return [[self copy] autorelease];
+
+	NSString *preferred = [contentType preferredFilenameExtension];
+	if ([preferred length] == 0)
+		return [[self copy] autorelease];
+	return [self stringByAppendingPathExtension: preferred];
+}
+
 @end

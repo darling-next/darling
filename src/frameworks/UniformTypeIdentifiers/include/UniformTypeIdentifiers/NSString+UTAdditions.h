@@ -18,7 +18,14 @@
 */
 
 #include <Foundation/Foundation.h>
+#include <UniformTypeIdentifiers/UTType.h>
 
 @interface NSString (UTAdditions)
+
+// Apple's UTAdditions.h declares two members here. Only this one is sent by any image of the
+// workload's load closure (XCResultKit and XCTHarness reference the selector; nothing references
+// -stringByAppendingPathComponent:conformingToType:), so only this one is implemented. The
+// documentation the body follows is that header's.
+- (NSString *)stringByAppendingPathExtensionForType:(UTType *)contentType;
 
 @end
