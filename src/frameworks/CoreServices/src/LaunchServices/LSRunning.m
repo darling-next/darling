@@ -167,6 +167,54 @@ LSASNRef _LSASNCreateWithPid(CFAllocatorRef allocator, pid_t pid)
 }
 
 /*
+ * _LSASNCreate -- the LSASN factory behind a synchronous application launch, and the second C
+ * CoreServices import Xcode 26.3's iOS plug-in binds and this image did not carry.
+ *
+ * WHAT IS ESTABLISHED.  The ONLY image in Xcode that imports it is IDEiOSSupportCore (x86_64 slice
+ * sha256 3d941fe8f7fec44db944850aebe67d93a3a389559b7794162ea450c33b78fd5e); import entry 40, field
+ * ordinal 6 (the CoreServices umbrella), weak false and EAGER, so the symbol must exist for the
+ * plug-in to load at all.  Its one call site, 0x51d7f, is reached ONLY from the success branch of
+ * _LSOpenApplicationURL (0x51cd8 je 0x51d77) and passes THREE arguments -- a NULL CFAllocatorRef in
+ * %rdi and, in %esi/%edx, the two 32-bit words the caller read out of that open's 8-byte out value
+ * (0x51d77 movl -0x30(%rbp),%esi ; 0x51d7a movl -0x2c(%rbp),%edx):
+ *
+ *   51d77: movl  -0x30(%rbp), %esi      ; word0
+ *   51d7a: movl  -0x2c(%rbp), %edx      ; word1
+ *   51d7d: xorl  %edi, %edi             ; CFAllocatorRef = NULL
+ *   51d7f: callq 0x8c5c2                ; _LSASNCreate
+ *   51d84: movq  %rax, %r15             ; the ASN the rest of the method uses
+ *   51d99: callq 0x8c5c8                ; _LSCopyApplicationInformationItem(-2, asn, _kLSPIDKey)
+ *   51db3: callq *objc_msgSend          ; [that, intValue] -> the launched app's pid
+ *
+ * So the ARITY and the register classes are measured, which is all the loader needs.
+ *
+ * WHAT IS *NOT* ESTABLISHED, and is therefore not invented.  Apple declares _LSASNCreate in its
+ * internal LaunchServices header, which the SDK does not ship (the SDK's LaunchServices.tbd lists
+ * the export and nothing more), so the meaning of the two 32-bit words -- whether they are an ASN's
+ * own halves, or a pid plus something else, or a ProcessSerialNumber's two halves -- and the CF
+ * representation Apple wraps them in are UNKNOWN here.  An ASN built from a guess would be a
+ * fabricated record: the caller's next act is to resolve it back to a pid through
+ * _LSCopyApplicationInformationItem, which this file answers with NULL because the guest keeps no
+ * running-application registry (see _LSCopyMatchingApplicationsWithItems below for the same
+ * refusal).  A made-up ASN would therefore be contradicted one call later, exactly as a
+ * fabricated "launched = true" would be in _LSOpenURLsWithCompletionHandler.
+ *
+ * AND IT CANNOT BE REACHED IN THIS GUEST AT ALL: its only caller arrives here after
+ * _LSOpenApplicationURL returns noErr, and that entry point answers kLSServerCommunicationErr
+ * because there is no LaunchServices server to perform the open.  Absence -- NULL, the answer this
+ * file's other running-application queries give -- is the truthful result of a factory whose input
+ * cannot be named, and it drives the caller's own failure path instead of a fabricated success.
+ */
+LSASNRef _LSASNCreate(CFAllocatorRef allocator, uint32_t word0, uint32_t word1)
+{
+	(void) allocator;
+	(void) word0;
+	(void) word1;
+
+	return NULL;
+}
+
+/*
  * The application that matches a set of application-information items. The items are the running
  * application's own vocabulary -- the same _kLSPIDKey/_kLSExecutablePathKey/... families this file
  * keeps for the check-in path -- so the set being matched is LaunchServices' RUNNING applications,

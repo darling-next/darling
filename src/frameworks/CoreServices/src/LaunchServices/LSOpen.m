@@ -237,6 +237,76 @@ _LSOpenURLsWithCompletionHandler(
 }
 
 /*
+ * THE SYNCHRONOUS SINGLE-APPLICATION OPEN: Apple's private _LSOpenApplicationURL, the one C
+ * CoreServices import Xcode 26.3's iOS plug-in binds that this image did not carry. It belongs
+ * beside LSOpenURLsWithCompletionHandler above and the deprecated public LSOpenApplication below:
+ * it is the same operation with the application named by URL instead of by parameters alone, and
+ * this file's siblings already end in a ProcessSerialNumber * out-parameter (LSOpenURLsWithRole,
+ * LSOpenApplication).
+ *
+ * THE ONE MEASURED CALLER (Xcode 26.3's IDEiOSSupportCore, x86_64 slice sha256
+ * 3d941fe8f7fec44db944850aebe67d93a3a389559b7794162ea450c33b78fd5e): its import entry 43 binds this
+ * name from dependency field ordinal 6 (/System/Library/Frameworks/CoreServices.framework/Versions/A/
+ * CoreServices -- the umbrella this sub-framework is re-exported through), weak false, eager true,
+ * i.e. a HARD STOP for the loader.  ONE call site, 0x51cba inside
+ * -[DVTSimulatorApp launchWithError:andReadyCallback:], reached through the symbol stub at 0x8c5d4:
+ *
+ *   51c34: movl   $0x10200, -0x78(%rbp)     ; the caller's own parameter block is built first
+ *   ...    (the block spans ~0x34 bytes, a pointer to the app record at +0x14, zeroed elsewhere)
+ *   51c54: movq   <lazy-init>, %rax ; 0x14(%r12)
+ *   51c78: movq   $0, -0x30(%rbp)           ; the 8-byte out value, zeroed
+ *   51c7c: movq   <selref>, %rsi ; objc_msgSend
+ *   51c8a: movq   %r15, %rdi                ; self (DVTSimulatorApp)
+ *   51c8d: callq  *objc_msgSend             ; -[DVTSimulatorApp ...] -> app record
+ *   51c9a: movq   <selref>, %rsi
+ *   51ca4: callq  *objc_msgSend             ; app URL
+ *   51cb1: movq   %rax, %rdi                ; arg 1: the application's CFURLRef
+ *   51cb4: movq   %r12, %rsi                ; arg 2: the parameter block at -0x78(%rbp)
+ *   51cb7: movq   %r13, %rdx                ; arg 3: &the 8-byte out value
+ *   51cba: callq  0x8c5d4                   ; _LSOpenApplicationURL
+ *   51cbf: movl   %eax, %r12d               ; the RESULT IS READ AS AN OSStatus
+ *   51cd5: testl  %r12d, %r12d
+ *   51cd8: je     0x51d77                   ; status == 0 -> the SUCCESS path below
+ *   51cde: ...                              ; status != 0 -> *outError = [NSError
+ *                                           ;   errorWithDomain:_NSOSStatusErrorDomain code:status]
+ *                                           ;   and the method returns -1
+ *   51d77: movl   -0x30(%rbp), %esi         ; the SUCCESS path reads the out value as two 32-bit
+ *   51d7a: movl   -0x2c(%rbp), %edx         ;   words and calls _LSASNCreate(NULL, word0, word1)
+ *   51d7d: xorl   %edi, %edi
+ *   51d7f: callq  0x8c5c2                   ; _LSASNCreate
+ *   51d99: callq  0x8c5c8                   ; _LSCopyApplicationInformationItem(-2, asn, _kLSPIDKey)
+ *
+ * So the C-level shape is (CFURLRef, <params>, <8-byte out>) -> OSStatus, and the caller's FAILURE
+ * path is already written: any non-zero status becomes an NSError in *outError and the method
+ * returns -1.
+ *
+ * WHY THE FAILURE, AND WHY IT IS THIS FAMILY'S OWN.  The same three measurements that decided
+ * _LSOpenURLsWithCompletionHandler above apply to the synchronous open: launchservicesd is not
+ * deployed and there is no /private/var/db/launchservices.db, the running-application registry does
+ * not exist (LSRunning.m refuses to fabricate one), and the tree's fork/exec launcher
+ * (_LSLaunchApplication) honours none of the options a caller of this family passes.  Apple's own
+ * code for "the LaunchServices server cannot be reached" is kLSServerCommunicationErr, which is
+ * exactly what the caller's failure path already handles -- so this is that status, and the out
+ * value is left untouched (only the success path reads it).
+ *
+ * THE ARGUMENTS ARE ACCEPTED AND NOT INTERPRETED: the operation cannot be served whatever they say,
+ * so the parameter block is not decoded field by field and nothing is validated into a different
+ * answer.
+ */
+OSStatus
+_LSOpenApplicationURL(
+	CFURLRef inApplicationURL,
+	const LSApplicationParameters *inAppParams,
+	ProcessSerialNumber *outPSN)
+{
+	(void) inApplicationURL;
+	(void) inAppParams;
+	(void) outPSN;
+
+	return kLSServerCommunicationErr;
+}
+
+/*
 OSStatus LSOpenApplication(const LSApplicationParameters *appParams, ProcessSerialNumber *outPSN)
 {
 

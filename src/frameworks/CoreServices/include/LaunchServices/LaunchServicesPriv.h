@@ -154,6 +154,26 @@ typedef void (^LSOpenURLsCompletionHandler)(LSASNRef asn, Boolean launched, CFEr
 OSStatus _LSOpenURLsWithCompletionHandler(CFArrayRef inURLs, CFURLRef inApplicationURL,
 	CFDictionaryRef inOptions, LSOpenURLsCompletionHandler inCompletionHandler);
 
+// The SYNCHRONOUS single-application open, with the application named by URL: Apple's private
+// _LSOpenApplicationURL -- the URL-taking sibling of the deprecated public
+// LSOpenApplication(appParams, outPSN) in LSOpenDeprecated.h and of LSOpenURLsWithRole in LSOpen.m,
+// BOTH of which already end in a `ProcessSerialNumber *` out-parameter in this tree.  Measured on
+// the ONE image that imports it (Xcode 26.3's IDEiOSSupportCore, x86_64 slice, chained fixups:
+// import entry 43, dependency field CoreServices, STRONG and EAGER): three arguments -- the
+// application URL, a parameters pointer, and the 8-byte out value the caller reads after the call.
+// This guest has no LaunchServices server, so the answer is the family's own
+// kLSServerCommunicationErr; LSOpen.m carries the measured call site and the reasoning.
+OSStatus _LSOpenApplicationURL(CFURLRef inApplicationURL,
+	const LSApplicationParameters *inAppParams, ProcessSerialNumber *outPSN);
+
+// The LSASN factory behind a launch.  Apple declares it in its internal LaunchServices header, which
+// the SDK does not ship, so the only ground here is the ONE measured caller (IDEiOSSupportCore,
+// import entry 40, same field): three arguments -- a NULL CFAllocatorRef and the two 32-bit words it
+// read out of _LSOpenApplicationURL's out value -- reached ONLY after that open returned noErr.
+// The wording of the two words is deliberately not invented; see LSRunning.m for why this answers
+// absence.
+LSASNRef _LSASNCreate(CFAllocatorRef allocator, uint32_t word0, uint32_t word1);
+
 // Assumed
 #define kLSDownloadRiskCategoryKey CFSTR("LSDownloadRiskCategory")
 
