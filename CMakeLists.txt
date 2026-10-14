@@ -920,6 +920,28 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# ordinary path carried it (26 private frameworks were present in each root; MobileDevice was not
 	# among them). Nothing else about it is special -- it is not a second source-authoring rung.
 	MobileDevice
+	# MEASURED 2026-10-14, the rung after MobileDevice. With MobileDevice in place the plug-in scan
+	# advanced to the NEXT image of the same bundle, Xcode's own
+	# Contents/Frameworks/IDESimulatorFoundation.framework/Versions/A/IDESimulatorFoundation
+	# (sha256 83db461982c7f9846adf4a160baaa6b6d73925852a3d3f2429d6756b84873c0f, 1,072,192 bytes), and stopped on the FIRST absolute-path dependency its
+	# LC_LOAD_DYLIB list names:
+	#   DVTPlugInLoading: Failed to load code for plug-in com.apple.dt.IDESimulatorFoundation ...
+	#     (dlopen_preflight(.../IDESimulatorFoundation): Library not loaded:
+	#       /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator
+	#       Reason: image not found)
+	# The load command is STRONG (LC_LOAD_DYLIB, compatibility 1.0.0, current 1051.17.8) and the
+	# referrer binds EIGHT names from it -- six ObjC class refs (_OBJC_CLASS_$_SimDiskImage,
+	# _OBJC_CLASS_$_SimDiskImageIdentifier, _OBJC_CLASS_$_SimDiskImageManager,
+	# _OBJC_CLASS_$_SimRuntime, _OBJC_CLASS_$_SimServiceContext, _OBJC_CLASS_$_SimUsageTracker) and
+	# _SimDiskImageStateDisplayString/_SimDiskImageStateIsTerminal -- so the image cannot be a file
+	# that merely exists. Seven of the eight are exported by the built image; the eighth is the next
+	# wall and is named in the rung's evidence. It is the MobileDevice declaration gap exactly: the
+	# tree BUILDS this image (src/private-frameworks/CoreSimulator, registered under
+	# COMPONENT_dev_gui_stubs_common), its own LC_ID is exactly the demanded path
+	# (compatibility 1.0.0, current 885.2.0 -- dyld checks the COMPATIBILITY version, so the demanded
+	# current version 1051.17.8 is informational), and the toolchain component named neither it nor
+	# its guest path, so neither prefix root carried it.
+	CoreSimulator
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -1146,6 +1168,18 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 	# two roots identical.
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"MobileDevice\", \"guest_path\": \"/System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice\", \"host_path\": \"$<TARGET_FILE:MobileDevice>\"}")
+	# MEASURED 2026-10-14 -- see the measured note on this target in DARLING_ROOTLESS_TOOLCHAIN_TARGETS.
+	# Xcode's IDESimulatorFoundation carries a STRONG LC_LOAD_DYLIB for this exact path and binds
+	# eight names from it, so the plug-in cannot load until the image is in the prefix. The guest path
+	# is the image's own LC_ID, read from the built artifact rather than transcribed
+	# (llvm-objdump --macho --dylib-id build/verify14/src/private-frameworks/CoreSimulator/CoreSimulator
+	# -> /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator), and it
+	# is the CONCRETE version directory, exactly as for MobileDevice above. It is also the ONLY artifact
+	# in this component whose guest path is under Library/ rather than usr/ or System/: the deploy's own
+	# runtime_deploy_targets() (west_commands/test_runtime.py) gives a Library/ path ONE destination,
+	# the guest-visible prefix root, which is the root the guest's /Library resolves from.
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"CoreSimulator\", \"guest_path\": \"/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator\", \"host_path\": \"$<TARGET_FILE:CoreSimulator>\"}")
 	# The Accelerate rung (see the target-list comment for the twelve measured demands). One resource
 	# line per image of the re-export chain, each guest_path being that artifact's own LC_ID install
 	# name, and the vecLib sub-dylibs living under Accelerate.framework/Versions/A/Frameworks.
