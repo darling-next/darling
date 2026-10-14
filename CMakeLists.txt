@@ -416,6 +416,25 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# three Xcode images reference it (SharedFrameworks/DVTFoundation,
 	# SharedFrameworks/AssetRuntime/DVTFoundation, SharedFrameworks/CoreSymbolicationDT).
 	Rosetta
+	# MEASURED 2026-10-14, the rung after the platform scan: BOTH xcodebuild workloads clear the plugin
+	# scan only to stop on a DEFERRED load --
+	#   "Failed to load code for plug-in com.apple.dt.IDE.IDEiOSSupportCore (.../Contents/PlugIns/
+	#    IDEiOSSupportCore.framework), error = ... (dlopen_preflight(.../IDEiOSSupportCore): Library not
+	#    loaded: /usr/lib/liboah.dylib  Referenced from: .../IDEiOSSupportCore  Reason: image not found)"
+	# NOT a declaration gap like the framework rungs: no component of this tree built that install name.
+	# (The only liboah mention anywhere under src/ is an Apple Xcode project file,
+	# src/external/IOKitUser/IOKitUser.xcodeproj/project.pbxproj -- not a CMake target and not a build
+	# input.) The tree now builds it (src/liboah, ONE exported symbol). MEASURED PER REFERRER before the
+	# image was written, because the referrers are not all the same shape: IDEiOSSupportCore has a STRONG
+	# LC_LOAD_DYLIB and its 608-entry chained import table holds ZERO entries for that ordinal;
+	# IDEFoundation has a WEAK load command and zero imports; IDEInterfaceBuilderCocoaTouchIntegration has
+	# a STRONG load command and imports exactly _oah_is_current_process_translated; SymbolicationDT (and
+	# the two DVTInstrumentsFoundation Resources images liboainject.dylib and RemoteInjectionAgent) only
+	# dlopen the absolute path at run time and tolerate a missing handler. The remaining names of the
+	# iPhoneOS SDK's liboah.tbd (Rosetta/AOT translation machinery) have no provider in this tree and are
+	# deliberately NOT exported -- see src/liboah/src/oah.c. The load command demands compatibility
+	# 1.0.0 and current 1.0.0 and the component declares exactly that, so no version claim of either kind.
+	oah
 	# MEASURED 2026-10-12, one rung further: with libRosetta in place DVTFoundation's next missing
 	# load-time dependency is
 	#   "Library not loaded: /System/Library/PrivateFrameworks/MobileAsset.framework/Versions/A/MobileAsset
@@ -1011,6 +1030,12 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 	# guest-visible and not merely installed under libexec/darling.
 	string(APPEND _rootless_toolchain_extra_entrypoints
 		",\n    {\"target\": \"Rosetta\", \"guest_path\": \"/usr/lib/libRosetta.dylib\", \"host_path\": \"$<TARGET_FILE:Rosetta>\"}")
+	# Same shape and same measured reason as libRosetta immediately above: Xcode's iOS platform plug-in
+	# hard-links /usr/lib/liboah.dylib at load time (STRONG load command; it binds zero symbols from it),
+	# so the image has to be guest-visible and not merely installed under libexec/darling. See its target
+	# entry above and src/liboah/src/oah.c for the per-referrer measurement.
+	string(APPEND _rootless_toolchain_extra_entrypoints
+		",\n    {\"target\": \"oah\", \"guest_path\": \"/usr/lib/liboah.dylib\", \"host_path\": \"$<TARGET_FILE:oah>\"}")
 	string(APPEND _rootless_toolchain_extra_entrypoints
 		",\n    {\"target\": \"PackageKit\", \"guest_path\": \"/System/Library/PrivateFrameworks/PackageKit.framework/Versions/A/PackageKit\", \"host_path\": \"$<TARGET_FILE:PackageKit>\"}")
 	# Same shape as PackageKit immediately above and for the same measured reason: DVTFoundation
