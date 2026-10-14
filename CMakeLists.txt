@@ -869,6 +869,18 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	Quadrature
 	BNNS
 	Sparse
+	# MEASURED 2026-10-14, the rung after the platform scan (both workloads advanced to this next
+	# wall at once). libobjc dlopens this image BY ABSOLUTE NAME the first time a block-based
+	# trampoline is used:
+	#   objc[<pid>]: couldn't dlopen libobjc-trampolines.dylib:
+	#     dlopen(/usr/lib/libobjc-trampolines.dylib, 262): image not found
+	# at src/external/objc4/runtime/objc-block-trampolines.mm:173, whose _objc_fatal arm aborts
+	# (abort_with_payload; both xcodebuild workloads returned XCB_RC=134). It is the same
+	# invisible-to-the-loader class as the ICU data file: nothing ever links it, so no LOAD command
+	# names it and the Mach-O closure resolver cannot reach it. It was a DECLARATION gap and nothing
+	# else -- the tree builds and installs the image (its own LC_ID is exactly the demanded
+	# /usr/lib/libobjc-trampolines.dylib, and it is the built objc4 runtime's sibling).
+	objc-trampolines
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -1071,6 +1083,14 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"xslt\", \"guest_path\": \"/usr/lib/libxslt.1.dylib\", \"host_path\": \"$<TARGET_FILE:xslt>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"sqlite3\", \"guest_path\": \"/usr/lib/libsqlite3.dylib\", \"host_path\": \"$<TARGET_FILE:sqlite3>\"}")
+	# MEASURED 2026-10-14, the rung after the platform scan -- see the measured note on this target in
+	# DARLING_ROOTLESS_TOOLCHAIN_TARGETS. libobjc dlopens /usr/lib/libobjc-trampolines.dylib by
+	# absolute name, so no LOAD command ever names it and the closure resolver cannot see it; without
+	# this declaration the image was built and deployed NOWHERE, and both xcodebuild workloads aborted
+	# at objc-block-trampolines.mm:173 with XCB_RC=134. The guest path is the image's own LC_ID, which
+	# is exactly the name libobjc asks for.
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"objc-trampolines\", \"guest_path\": \"/usr/lib/libobjc-trampolines.dylib\", \"host_path\": \"$<TARGET_FILE:objc-trampolines>\"}")
 	# The Accelerate rung (see the target-list comment for the twelve measured demands). One resource
 	# line per image of the re-export chain, each guest_path being that artifact's own LC_ID install
 	# name, and the vecLib sub-dylibs living under Accelerate.framework/Versions/A/Frameworks.
