@@ -1636,6 +1636,84 @@ static void test_prefix_marker(void)
 	remove_fixture_tree(directory);
 }
 
+static void require_symlink_target(int directory_fd, const char* leaf,
+	const char* expected)
+{
+	struct stat status;
+	require(fstatat(directory_fd, leaf, &status,
+			AT_SYMLINK_NOFOLLOW) == 0,
+		"inspect prefix namespace entry");
+	require(S_ISLNK(status.st_mode),
+		"prefix namespace entry is not a symlink");
+	char target[256];
+	ssize_t length = readlinkat(directory_fd, leaf, target,
+		sizeof(target) - 1);
+	require(length > 0 && (size_t)length < sizeof(target) - 1,
+		"read prefix namespace symlink");
+	target[length] = '\0';
+	require(strcmp(target, expected) == 0,
+		"prefix namespace symlink target mismatch");
+}
+
+static void require_same_file(int directory_fd, const char* left,
+	const char* right)
+{
+	struct stat left_status;
+	struct stat right_status;
+	require(fstatat(directory_fd, left, &left_status, 0) == 0,
+		"inspect standardized prefix path");
+	require(fstatat(directory_fd, right, &right_status, 0) == 0,
+		"inspect private prefix path");
+	require(left_status.st_dev == right_status.st_dev &&
+		left_status.st_ino == right_status.st_ino,
+		"prefix namespace paths do not name the same file");
+}
+
+/*
+ * ORACLE for the rootless prefix namespace. On Darwin /var, /tmp and /etc are symlinks into
+ * /private, and the ordinary install creates them the same way (CMakeLists.txt InstallSymlink).
+ * A real /var directory is NOT equivalent: Foundation standardizes /private/var/<x> to /var/<x>
+ * (the /private prefix is stripped for /private/var, /private/etc and /private/tmp), so with a
+ * real directory the standardized name resolves to a DIFFERENT, empty directory. MEASURED on the
+ * xcodebuild ladder: Xcode 26.3's reader lstat()s /private/var/tmp/<proj>/<proj>.xcodeproj -> 0
+ * and then /var/tmp/<proj>/<proj>.xcodeproj -> ENOENT, and reports "Unable to read project"
+ * (NSCocoaErrorDomain error 4), exit 74, for a project that is present. This test fails on the
+ * real-directory layout (bad arm) and passes on the symlink layout (fixed arm).
+ */
+static void test_rootless_namespace_layout(void)
+{
+	char root[] = "/tmp/darling-prefix-namespace-test.XXXXXX";
+	char* directory = mkdtemp(root);
+	require(directory != NULL, "mkdtemp namespace fixture");
+	char prefix[2048];
+	snprintf(prefix, sizeof(prefix), "%s/prefix", directory);
+
+	darling_runtime_prefix created = DARLING_RUNTIME_PREFIX_INITIALIZER;
+	struct darling_runtime_prefix_lifecycle_result result;
+	prepare_prefix_fixture(prefix, created, &result);
+	require(result.action == DARLING_RUNTIME_PREFIX_CREATED,
+		"namespace fixture prefix was not created");
+
+	require_symlink_target(created->directory_fd, "var", "private/var");
+	require_symlink_target(created->directory_fd, "tmp", "private/tmp");
+	require_symlink_target(created->directory_fd, "etc", "private/etc");
+
+	/* The Darwin equivalence the reader depends on: the standardized and the private names are
+	 * the same file, so a client that strips /private still names the directory it started from. */
+	require_same_file(created->directory_fd, "var/tmp", "private/var/tmp");
+	require_same_file(created->directory_fd, "var/run", "private/var/run");
+	require_same_file(created->directory_fd, "tmp", "private/tmp");
+
+	/* The exact question the measured failure asked, as a resolution (not just a link target). */
+	struct stat status;
+	require(fstatat(created->directory_fd, "var/tmp", &status, 0) == 0 &&
+			S_ISDIR(status.st_mode),
+		"standardized /var/tmp does not resolve to a directory");
+
+	darling_runtime_mode_close_prefix(created);
+	remove_fixture_tree(directory);
+}
+
 int main(void)
 {
 	const char* selected = getenv("DARLING_RUNTIME_PREFIX_TEST_CASE");
@@ -1652,6 +1730,8 @@ int main(void)
 			test_prefix_lifecycle();
 		else if (strcmp(selected, "marker") == 0)
 			test_prefix_marker();
+		else if (strcmp(selected, "namespace") == 0)
+			test_rootless_namespace_layout();
 		else
 			require(0, "unknown focused lifecycle test case");
 		puts("DARLING_RUNTIME_MODE_CONTRACT_OK");
@@ -1667,6 +1747,7 @@ int main(void)
 	test_owned_capability_rejects_reopen();
 	test_prefix_lifecycle();
 	test_prefix_marker();
+	test_rootless_namespace_layout();
 	puts("DARLING_RUNTIME_MODE_CONTRACT_OK");
 	return 0;
 }

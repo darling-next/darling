@@ -89,12 +89,43 @@ static long rootlessShellspawnReadyTimeoutMs(void)
 	return timeout_ms;
 }
 
+/*
+ * The shellspawn endpoint, prefix-relative. Darwin has /var -> private/var and this project's prefixes
+ * created by the fixed rootless skeleton do too (see runtime_mode_prefix.c), while prefixes created
+ * before that fix carry a REAL var directory. The fd-anchored walk refuses to traverse a symlink
+ * component, so the spelling follows the layout the prefix was created with -- and that is also the
+ * spelling its launchd binds, so the two always agree.
+ */
+static const char* shellspawnDirectory(void)
+{
+	static const char* resolved;
+	if (resolved != NULL)
+		return resolved;
+	struct stat status;
+	resolved = "var/run";
+	if (g_runtimePrefix->directory_fd >= 0 &&
+			fstatat(g_runtimePrefix->directory_fd, "var", &status,
+				AT_SYMLINK_NOFOLLOW) == 0 &&
+			S_ISLNK(status.st_mode))
+		resolved = "private/var/run";
+	return resolved;
+}
+
+static const char* shellspawnSocketRelative(void)
+{
+	static char path[64];
+	if (path[0] == '\0')
+		snprintf(path, sizeof(path), "%s/shellspawn.sock",
+			shellspawnDirectory());
+	return path;
+}
+
 static void removeRuntimeStateFiles(void)
 {
 	char error[512] = {0};
-	static const char* entries[] = {
+	const char* entries[] = {
 		".init.pid",
-		"var/run/shellspawn.sock",
+		shellspawnSocketRelative(),
 		".darlingserver.sock",
 	};
 	for (size_t index = 0;
@@ -339,7 +370,7 @@ int main(int argc, char ** argv)
 	if (pidInit == 0)
 	{
 		if (darling_runtime_mode_unlink_relative(g_runtimePrefix,
-				"var/run/shellspawn.sock", 0, true,
+				shellspawnSocketRelative(), 0, true,
 				runtimeModeError, sizeof(runtimeModeError)) != 0) {
 			fprintf(stderr, "Cannot clear stale shellspawn socket: %s\n",
 				runtimeModeError);
@@ -357,7 +388,7 @@ int main(int argc, char ** argv)
 				errno = 0;
 				int statusResult =
 					darling_runtime_mode_stat_relative(g_runtimePrefix,
-						"var/run/shellspawn.sock", &socketStatus,
+						shellspawnSocketRelative(), &socketStatus,
 						runtimeModeError, sizeof(runtimeModeError));
 				if (statusResult == 0) {
 					if (!S_ISSOCK(socketStatus.st_mode)) {
@@ -785,7 +816,7 @@ int connectToShellspawn(pid_t pidInit)
 	const long ready_timeout_ms = rootlessShellspawnReadyTimeoutMs();
 	char error[512] = {0};
 	int socketDirectoryFD = darling_runtime_mode_open_relative_directory(
-		g_runtimePrefix, "var/run", false, error, sizeof(error));
+		g_runtimePrefix, shellspawnDirectory(), false, error, sizeof(error));
 	if (socketDirectoryFD < 0) {
 		fprintf(stderr, "Cannot retain shellspawn socket directory: %s\n",
 			error);

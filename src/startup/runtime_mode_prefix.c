@@ -943,11 +943,10 @@ int darling_runtime_mode_setup_prefix(
 		"private/var",
 		"private/var/log",
 		"private/var/db",
+		"private/var/run",
+		"private/var/tmp",
+		"private/tmp",
 		"private/etc",
-		"var",
-		"var/run",
-		"var/tmp",
-		"var/log",
 	};
 	for (size_t index = 0;
 			index < sizeof(directories) / sizeof(directories[0]);
@@ -968,6 +967,26 @@ int darling_runtime_mode_setup_prefix(
 	if (symlinkat("private/etc", handle->directory_fd, "etc") != 0)
 		return prefix_error(error, error_size,
 			"cannot create prefix configuration namespace: %s",
+			strerror(errno));
+	/*
+	 * /var and /tmp are SYMLINKS into /private on Darwin, and the ordinary install creates them
+	 * the same way (CMakeLists.txt: InstallSymlink(private/var .../var), InstallSymlink(private/tmp
+	 * .../tmp), InstallSymlink(private/etc .../etc)). A real /var directory is NOT equivalent: a
+	 * client that standardizes /private/var/<x> to /var/<x> -- which Foundation does, e.g.
+	 * -[NSURL URLByStandardizingPath] and Swift String.standardizingPath, both of which strip the
+	 * /private prefix for /private/var, /private/etc and /private/tmp -- then names a path that does
+	 * not exist. MEASURED: Xcode 26.3's xcodebuild reader asks
+	 * lstat("/private/var/tmp/<proj>/<proj>.xcodeproj") -> 0 and then
+	 * lstat("/var/tmp/<proj>/<proj>.xcodeproj") -> ENOENT, and reports "Unable to read project"
+	 * (NSCocoaErrorDomain error 4) and exits 74 for a project that is present.
+	 */
+	if (symlinkat("private/var", handle->directory_fd, "var") != 0)
+		return prefix_error(error, error_size,
+			"cannot create prefix var namespace: %s",
+			strerror(errno));
+	if (symlinkat("private/tmp", handle->directory_fd, "tmp") != 0)
+		return prefix_error(error, error_size,
+			"cannot create prefix tmp namespace: %s",
 			strerror(errno));
 
 	int etc_fd = open_relative_directory(handle->directory_fd,
