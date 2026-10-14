@@ -900,6 +900,26 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# else -- the tree builds and installs the image (its own LC_ID is exactly the demanded
 	# /usr/lib/libobjc-trampolines.dylib, and it is the built objc4 runtime's sibling).
 	objc-trampolines
+	# MEASURED 2026-10-14, the rung after liboah/NSNumberFormatterCompatibility. With liboah in place
+	# the same dlopen_preflight walk of Xcode's iOS platform plug-in advanced to the NEXT dependency
+	# in its own LC_LOAD_DYLIB list:
+	#   Failed to load code for plug-in com.apple.dt.IDE.IDEiOSSupportCore ... (dlopen_preflight(
+	#   .../IDEiOSSupportCore): Library not loaded:
+	#     /System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice
+	#     Referenced from: .../IDEiOSSupportCore   Reason: image not found)
+	# The referrer is Contents/PlugIns/IDEiOSSupportCore.framework/Versions/A/IDEiOSSupportCore
+	# (sha256 3d941fe8f7fec44db944850aebe67d93a3a389559b7794162ea450c33b78fd5e), which carries a
+	# STRONG, non-weak LC_LOAD_DYLIB for it at
+	# compatibility 1.0.0 / current 1818.60.2 and binds TWELVE strong eager names from it
+	# (_AMDGetBundleVersion, _AMDServiceConnectionGet{Socket,TypeID}, _AMDServiceConnection{Invalidate,
+	# Receive,Send}, _AMS{Cleanup,Initialize}, _AMS{ConnectTo,DisconnectFrom}CrashReportCopyTarget,
+	# _AMSCopyCrashReportsFromTarget, _SZArchiverCreateStreamableZip) -- so the image cannot be a file
+	# that merely exists. It is the objc-trampolines declaration gap again: the tree BUILDS the image
+	# (src/private-frameworks/MobileDevice), its own LC_ID is exactly the demanded path, and the
+	# toolchain component named neither it nor its guest path, so no prefix filled through the
+	# ordinary path carried it (26 private frameworks were present in each root; MobileDevice was not
+	# among them). Nothing else about it is special -- it is not a second source-authoring rung.
+	MobileDevice
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -1116,6 +1136,16 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 	# is exactly the name libobjc asks for.
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"objc-trampolines\", \"guest_path\": \"/usr/lib/libobjc-trampolines.dylib\", \"host_path\": \"$<TARGET_FILE:objc-trampolines>\"}")
+	# MEASURED 2026-10-14 -- see the measured note on this target in DARLING_ROOTLESS_TOOLCHAIN_TARGETS.
+	# Xcode's IDEiOSSupportCore carries a STRONG LC_LOAD_DYLIB for this exact path and binds twelve
+	# strong eager names from it, so the plug-in cannot load until the image is in the prefix. The
+	# guest path is the image's own LC_ID, read from the built artifact rather than transcribed, and it
+	# is the CONCRETE version directory: the framework's top-level name is a symlink in the libexec
+	# root (made by CMake's install rule) and absent in the guest-visible root, exactly like the other
+	# twenty-odd private frameworks this component declares, so declaring the concrete file keeps the
+	# two roots identical.
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"MobileDevice\", \"guest_path\": \"/System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/MobileDevice\", \"host_path\": \"$<TARGET_FILE:MobileDevice>\"}")
 	# The Accelerate rung (see the target-list comment for the twelve measured demands). One resource
 	# line per image of the re-export chain, each guest_path being that artifact's own LC_ID install
 	# name, and the vecLib sub-dylibs living under Accelerate.framework/Versions/A/Frameworks.
