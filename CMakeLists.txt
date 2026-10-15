@@ -1059,6 +1059,30 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		string(APPEND _rootless_toolchain_extra_resources
 			",\n    {\"target\": \"swift_framework_${_swift_framework_target}\", \"guest_path\": \"/System/Library/Frameworks/${_swift_framework_name}.framework/Versions/A/${_swift_framework_name}\", \"host_path\": \"${_rootless_toolchain_resource_dir}/System/Library/Frameworks/${_swift_framework_name}.framework/Versions/A/${_swift_framework_name}\"}")
 	endforeach()
+	# A third shape the two globs above cannot express: a payload binary whose install name is a PRIVATE
+	# framework path. The frameworks glob maps to /System/Library/Frameworks and the runtime glob to
+	# /usr/lib/swift, so a private-framework payload is discovered under its own directory and keeps its
+	# own guest path (measured: Xcode 26.3's SWBUtil.framework hard-links
+	# /System/Library/PrivateFrameworks/ArgumentParserInternal.framework/Versions/A/ArgumentParserInternal
+	# and the whole IDEXCBuildSupportCore plug-in is refused with "Reason: image not found" while that
+	# image is absent, so the file has to be guest-visible at exactly that path and not merely installed
+	# under libexec/darling). Discovered rather than listed, like the globs around it: the payload grows
+	# as the overlay work reaches each one.
+	file(GLOB _rootless_private_frameworks CONFIGURE_DEPENDS
+		"${CMAKE_CURRENT_SOURCE_DIR}/src/external/swift/private-frameworks/*.framework")
+	foreach(_private_framework IN LISTS _rootless_private_frameworks)
+		get_filename_component(_private_framework_name "${_private_framework}" NAME_WE)
+		set(_private_framework_binary "${_private_framework}/Versions/A/${_private_framework_name}")
+		if(NOT EXISTS "${_private_framework_binary}")
+			continue()
+		endif()
+		file(MAKE_DIRECTORY "${_rootless_toolchain_resource_dir}/System/Library/PrivateFrameworks/${_private_framework_name}.framework/Versions/A")
+		configure_file("${_private_framework_binary}"
+			"${_rootless_toolchain_resource_dir}/System/Library/PrivateFrameworks/${_private_framework_name}.framework/Versions/A/${_private_framework_name}" COPYONLY)
+		string(REPLACE "." "_" _private_framework_target "${_private_framework_name}")
+		string(APPEND _rootless_toolchain_extra_resources
+			",\n    {\"target\": \"private_framework_${_private_framework_target}\", \"guest_path\": \"/System/Library/PrivateFrameworks/${_private_framework_name}.framework/Versions/A/${_private_framework_name}\", \"host_path\": \"${_rootless_toolchain_resource_dir}/System/Library/PrivateFrameworks/${_private_framework_name}.framework/Versions/A/${_private_framework_name}\"}")
+	endforeach()
 	# Three payload artifacts whose guest path is neither of the two globbed shapes above: a PRIVATE
 	# framework path (OSAnalytics, RemoteServiceDiscovery) and a plain /usr/lib dylib
 	# (libCoreEntitlements). Each payload file mirrors its guest path under `substitutes/`, so one
