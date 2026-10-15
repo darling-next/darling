@@ -329,6 +329,25 @@ configure_file(
 	"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist"
 	COPYONLY
 )
+# MEASURED (2026-10-15, prefix-verify14): a ROOTLESS prefix's
+# /System/Library/LaunchDaemons shows the UPPER (prefix) directory's entries ONLY -- the runtime
+# root's other launchd plists (installed by their components into
+# libexec/darling/System/Library/LaunchDaemons) are NOT visible to the guest, so the guest's launchd
+# never loads those jobs. Measured in the guest: `ls -la /System/Library/LaunchDaemons/` printed
+# ".", "..", "org.darlinghq.shellspawn.plist" and nothing else, while
+# /usr/sbin/filecoordinationd (a lower-placement file with no upper counterpart) WAS visible.
+#
+# The consequence is not cosmetic: com.apple.FileCoordination has no receiver, so a client's
+# xpc_connection_create_mach_service + resume cannot activate, and Foundation's
+# -[NSFileCoordinator(Internal) submitIntent:onQueue:withBlock:] waits DISPATCH_TIME_FOREVER on a
+# semaphore only the reply handler signals (src/external/foundation/src/NSFileCoordinator.m:378/414).
+# xcodebuild's main thread parks there (bead dar-liaq, the ladder's file-coordination wall). The job
+# must therefore be placed in the prefix like shellspawn's is.
+configure_file(
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/external/foundation/services/filecoordinationd/com.apple.FileCoordination.plist"
+	"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/com.apple.FileCoordination.plist"
+	COPYONLY
+)
 configure_file(
 	"${CMAKE_CURRENT_SOURCE_DIR}/etc/hosts"
 	"${_rootless_bootstrap_resource_dir}/private/etc/hosts"
@@ -353,6 +372,7 @@ file(GENERATE
   ],
   \"resources\": [
     {\"target\": \"shellspawn_launchd_plist\", \"guest_path\": \"/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist\", \"host_path\": \"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/org.darlinghq.shellspawn.plist\"},
+    {\"target\": \"filecoordination_launchd_plist\", \"guest_path\": \"/System/Library/LaunchDaemons/com.apple.FileCoordination.plist\", \"host_path\": \"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/com.apple.FileCoordination.plist\"},
     {\"target\": \"hosts_default\", \"guest_path\": \"/private/etc/hosts\", \"host_path\": \"${_rootless_bootstrap_resource_dir}/private/etc/hosts\", \"placement\": \"lower\"}
   ]
 }
