@@ -1730,6 +1730,29 @@ job_new_anonymous(jobmgr_t jm, pid_t anonpid)
 		return NULL;
 	}
 
+#ifdef DARLING
+	/* MEASURED (2026-10-15, prefix-verify14, bead dar-liaq). The bound below is XNU's own pid space
+	 * (PID_MAX = 99999), and a rootless Darling guest process is a LINUX HOST process, so guest pids
+	 * are the host's -- millions (measured: 3040933), bounded by /proc/sys/kernel/pid_max. Every pid
+	 * in that range was refused here, which removed the ONLY route by which a process launchd did not
+	 * itself spawn can be resolved to a job: jobmgr_find_by_pid(..., create_anon=true) ->
+	 * job_new_anonymous -> NULL -> job_mig_intran() -> NULL -> every job_subsystem routine answers
+	 * BOOTSTRAP_NO_MEMORY (1105) WITHOUT consulting its Mach service table. launchd's own debug log
+	 * records it at the MIG id of the lookup (404 = look_up2):
+	 *   30560320  com.apple.launchd 3040416 com.apple.launchd 3040416  Did PID_MAX change? Got request from PID: 3040933
+	 * while a lookup from a job launchd DID spawn (the bootstrapper com.apple.launchctl.System) is
+	 * answered and logged normally ("Mach service lookup failed: ..."). Consequence: the xcodebuild
+	 * wall -- NSFileCoordinator's xpc_connection_create_mach_service("com.apple.FileCoordination") +
+	 * resume cannot activate (bootstrap_look_up -> 1105), its async reply never arrives, and
+	 * dispatch_semaphore_wait(waiter, DISPATCH_TIME_FOREVER) parks forever.
+	 *
+	 * An upper bound is not usable here: sysctl KERN_MAXPROC is how the runtime's pid maximum is
+	 * reachable from this file (get_kern_max_proc()), and MEASURED in run P7 with that substitution
+	 * the refusal above still fired, so the call does not report a range covering the guest pid space.
+	 * The pid needs no numeric validation in Darling anyway -- the proc_pidinfo() call three lines
+	 * down is the real test, and it returns 0 for a pid that does not exist (the caller then gets
+	 * NULL). */
+#else
 	if (anonpid >= 100000) {
 		/* The kernel current defines PID_MAX to be 99999, but that define isn't
 		 * exported.
@@ -1738,6 +1761,7 @@ job_new_anonymous(jobmgr_t jm, pid_t anonpid)
 		errno = EINVAL;
 		return NULL;
 	}
+#endif
 
 	/* libproc returns the number of bytes written into the buffer upon success,
 	 * zero on failure. I'd much rather it return -1 on failure, like sysctl(3).

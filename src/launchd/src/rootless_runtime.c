@@ -57,6 +57,12 @@ int rootless_runtime_prepare(void)
 		mode_t mode;
 	} directories[] = {
 		{ "/private/var/db/launchd.db/com.apple.launchd", 0755 },
+		/* launchd's auxiliary log store (launchd_vsyslog() opens
+		 * /private/var/log/com.apple.launchd/launchd-{debug,perf,shutdown}.<username>.log there when
+		 * the corresponding /private/var/db/.launchd_log_* switch exists). fopen() does not create
+		 * directories, so the store must exist before the first message or the diagnostics are lost;
+		 * MEASURED 2026-10-15: an absent directory is exactly how this prefix lost them. */
+		{ "/private/var/log/com.apple.launchd", 0755 },
 		{ "/private/tmp", 01777 },
 		{ "/private/var/tmp", 01777 },
 		{ "/var/run", 0755 },

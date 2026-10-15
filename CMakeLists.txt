@@ -343,10 +343,19 @@ configure_file(
 # semaphore only the reply handler signals (src/external/foundation/src/NSFileCoordinator.m:378/414).
 # xcodebuild's main thread parks there (bead dar-liaq, the ladder's file-coordination wall). The job
 # must therefore be placed in the prefix like shellspawn's is.
-configure_file(
+# A launchd plist in the guest's /System/Library/LaunchDaemons must NOT be
+# group- or world-writable: launchctl's path_goodness_check (support/launchctl.c) SKIPS such a file
+# ("Dubious permissions on file (skipping)") and launchd then never imports the job at all, so its
+# MachServices have no receiver. MEASURED 2026-10-15 (prefix-verify14, bead dar-liaq): with the plist
+# placed mode 0775, launchd's own debug log listed no `Importing com.apple.FileCoordination.` and
+# `bootstrap_look_up com.apple.FileCoordination` failed; with the SAME bytes at 0755 the log shows
+# `System: Importing com.apple.FileCoordination.` and all three `Mach service added:` lines. The
+# source file carries the execute bit and the workspace umask is 002, so COPYONLY placement is a
+# mode lottery -- install the resource with an explicit 0644 instead.
+file(COPY
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/external/foundation/services/filecoordinationd/com.apple.FileCoordination.plist"
-	"${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons/com.apple.FileCoordination.plist"
-	COPYONLY
+	DESTINATION "${_rootless_bootstrap_resource_dir}/System/Library/LaunchDaemons"
+	FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
 )
 configure_file(
 	"${CMAKE_CURRENT_SOURCE_DIR}/etc/hosts"

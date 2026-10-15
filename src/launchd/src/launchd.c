@@ -621,6 +621,23 @@ pid1_magic_init(void)
 	_launchd_database_dir = LAUNCHD_DB_PREFIX "/com.apple.launchd";
 	_launchd_log_dir = LAUNCHD_LOG_PREFIX "/com.apple.launchd";
 
+	/* MEASURED (2026-10-15, prefix-verify14, bead dar-liaq). launchd's auxiliary log files -- the
+	 * per-job/per-message `launchd-debug.<username>.log` written by launchd_vsyslog() when
+	 * /private/var/db/.launchd_log_debug exists -- were UNWRITABLE in a rootless prefix even with that
+	 * switch present: their open is gated on `launchd_var_available`, which the ONLY setter
+	 * (jobmgr_callback's EVFILT_FS VQ_UPDATE arm) needs a mount/filesystem event to fire, and a
+	 * mount-less rootless prefix never produces one. Measured: `.launchd_log_debug` present for a
+	 * whole boot, /private/var/log/com.apple.launchd/ stayed empty, so launchd's own account of its
+	 * job machinery ("Importing %s.", "Mach service added: %s", "Mach service lookup failed: %s") was
+	 * unreadable and a plist launchd REFUSED was indistinguishable from one it never saw. In rootless
+	 * mode the launcher prepares the prefix tree (rootless_runtime_prepare creates and chmods
+	 * /private/var/log/com.apple.launchd) BEFORE launchd starts and there is no /var to wait for, so
+	 * the store is available from the first message: state that instead of waiting for an event that
+	 * cannot arrive. */
+	if (darling_rootless) {
+		launchd_var_available = true;
+	}
+
 	(void)posix_assumes_zero(setsid());
 	(void)posix_assumes_zero(chdir("/"));
 	(void)posix_assumes_zero(setlogin("root"));
