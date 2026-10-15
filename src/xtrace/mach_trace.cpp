@@ -507,6 +507,10 @@ static void print_mach_msg(xtrace::String* log, const mach_msg_header_t* msg, ma
 		{
 			mach_msg_ool_descriptor_t* ool = (mach_msg_ool_descriptor_t*) ptr;
 			log->append_format(", ool [%p; %u]", ool->address, ool->size);
+			// REVERTED (follow-up 8): reading the descriptor's address here segfaulted a traced arm
+			// (jobs/oslogfwk-bs3, core /tmp/t4cores/core.2915140) -- the address is not the sender's
+			// live buffer on every path this formatter runs on. The name this was meant to reach is
+			// measured another way (tests/fcd_sync_send_park_guest.c).
 			ptr = (mach_msg_descriptor_t*) (ool + 1);
 		}
 		else if (type == MACH_MSG_OOL_PORTS_DESCRIPTOR)
