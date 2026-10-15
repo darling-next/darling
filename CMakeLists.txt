@@ -971,6 +971,43 @@ set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	# current version 1051.17.8 is informational), and the toolchain component named neither it nor
 	# its guest path, so neither prefix root carried it.
 	CoreSimulator
+	# MEASURED 2026-10-15, the rung after the lane-memfd fix (the fd-collision defect whose fix let
+	# the child past the lane attach). With that fix in place the child reached dyld's own init and
+	# died on a STRONG demand, quoted from the child's own core (/tmp/t4cores/core.484280):
+	#   Library not loaded: /System/Library/Frameworks/OSLog.framework/Versions/A/OSLog
+	#   Referenced from: .../SwiftBuild.framework/Versions/A/PlugIns/SWBBuildService.bundle/
+	#                    Contents/Frameworks/SWBBuildSystem.framework/Versions/A/SWBBuildSystem
+	#   Reason: image not found        (stack: _dyld_start -> dyld::_main -> dyld::halt)
+	# THE SET, NOT ONE RUNG: `scripts/closure_analyze.py --sweep` over the SWBBuildService bundle's
+	# images (110 images reached) gives the whole wave this closure is missing -- 16 xcode-provided,
+	# 4 weak-only (libswiftIOKit, libswiftCompression, libRemarks, ExecutionPolicy: every referrer
+	# LC_LOAD_WEAK_DYLIB, so not blockers) and exactly TWO strong rows, both from SWBBuildSystem:
+	#   /System/Library/Frameworks/OSLog.framework/Versions/A/OSLog  2 demanded symbols
+	#       _OBJC_CLASS_$_OSLogMessageComponent, _OBJC_CLASS_$_OSLogStore
+	#   /usr/lib/swift/libswiftOSLog.dylib                          1 demanded symbol
+	#       _$sSo10OSLogStoreC0A0E10getEntries4with2at8matchings11AnySequenceVySo0A5EntryCG...
+	# and the second of those is answered by the Swift overlay in the payload (see the overlay
+	# entry), so this image is the wall. Tree-wide (`--referrers tree` over every Xcode subtree) the
+	# demand on this install name is three classrefs: the two above plus _OBJC_CLASS_$_OSLogEntryLog
+	# (IDESourceEditor, SymbolCacheSupport). Load command: STRONG LC_LOAD_DYLIB, compatibility
+	# 1.0.0 / current 1815.60.2 -- the versions below.
+	# REAL, NOT A STUB, AND WHY IT IS BACKED BY ASL: Apple's OSLog.framework reads the tracev3
+	# unified log through LoggingSupport's index/chunk readers, and THIS TREE HAS NEITHER HALF of
+	# that path -- measured 2026-10-15, every file of src/private-frameworks/LoggingSupport/src/
+	# _OSLog*.m, OSLogEventStore.m, OSLogEventStream.m and OSLogEventProxy.m is a 32-line
+	# methodSignatureForSelector:/forwardInvocation: forwarding stub, in this tree and in the
+	# VibeDarling reference checkout alike, and libsystem_trace's signpost entry points assert on
+	# call. What this tree does have is the writer: libsystem_trace's _os_log_impl decodes every
+	# os_log message and writes it into ASL (the "org.puredarwin.os_log" client, with the
+	# "os_log(3)" marker, Subsystem, Category, the argument buffer's hex, the decoded message and
+	# asl_base_msg's Time/Sender/PID/Level). So the framework's store side reads THAT store, through
+	# libsystem_asl (Apple's real syslog implementation, 14.5k lines in src/external/syslog), and
+	# the entry values it hands back -- date, composed message, subsystem, category, level, process,
+	# pid, sender -- are the record's own. The store's exclusions are documented in the source and
+	# in the rung's evidence rather than filled in: the ASL record carries no format string (so
+	# OSLogEntryWithPayload.formatString is empty and components is empty), no thread id, no
+	# activity id, and the ASL database has no store tiers (storeCategory Undefined).
+	OSLog
 )
 if(DARLING_ROOTLESS_TOOLCHAIN)
 	set(_missing_toolchain_targets)
@@ -1188,6 +1225,16 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
 		",\n    {\"target\": \"QuartzCore\", \"guest_path\": \"/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore\", \"host_path\": \"$<TARGET_FILE:QuartzCore>\"}")
 	string(APPEND _rootless_toolchain_extra_resources
 		",\n    {\"target\": \"CoreLocation\", \"guest_path\": \"/System/Library/Frameworks/CoreLocation.framework/Versions/A/CoreLocation\", \"host_path\": \"$<TARGET_FILE:CoreLocation>\"}")
+	# A framework this tree BUILDS (src/frameworks/OSLog), so like framework_UniformTypeIdentifiers
+	# above it is named by its build product rather than staged at configure time. MEASURED
+	# 2026-10-15: SWBBuildSystem's STRONG LC_LOAD_DYLIB for this path (compatibility 1.0.0 / current
+	# 1815.60.2) was the child's next stop after the lane-memfd fix, and the prefix carried no such
+	# image. Installing it under libexec/darling is not enough on its own -- this manifest is the
+	# only thing that makes a component guest-visible (the UniformTypeIdentifiers lesson) -- so the
+	# declaration is part of the rung, not an afterthought. See the target-list entry for the whole
+	# measured wave and for what this framework's store side is built on.
+	string(APPEND _rootless_toolchain_extra_resources
+		",\n    {\"target\": \"OSLog\", \"guest_path\": \"/System/Library/Frameworks/OSLog.framework/Versions/A/OSLog\", \"host_path\": \"$<TARGET_FILE:OSLog>\"}")
 	# The WAVE of six DECLARATION rows measured on 2026-10-12 (see the target-list comment for the
 	# per-component evidence). One resource line each is enough: the deploy's Mach-O closure resolver
 	# pulls each image's reexports, as the declared CoreServices already does for FSEvents/LaunchServices.

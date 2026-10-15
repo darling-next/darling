@@ -70,6 +70,12 @@ if (COMPONENT_dev_gui_stubs_common)
 	add_subdirectory(UniformTypeIdentifiers)
 	add_subdirectory(UserNotifications)
 	add_subdirectory(VideoToolbox)
+	# OSLog.framework: the build service (SWBBuildSystem) hard-links
+	# /System/Library/Frameworks/OSLog.framework/Versions/A/OSLog and binds OSLogStore and
+	# OSLogMessageComponent from it eagerly, so the image has to exist; it is a real framework over
+	# the ASL log store libsystem_trace writes, not a stub.  Same block as the other frameworks
+	# Xcode's tools load (see the rung's entry in the top-level CMakeLists).
+	add_subdirectory(OSLog)
 endif()
 
 # this is for core GUI frameworks with actual implementations
