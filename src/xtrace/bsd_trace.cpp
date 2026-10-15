@@ -1040,8 +1040,57 @@ static const struct {
 	[521] = { 6, { print_arg_int, print_arg_int, print_arg_ptr, print_arg_int, print_arg_str, print_arg_int } }, // abort_with_payload
 };
 
+/* WRITE PAYLOAD, BOUNDED BY THE SYSCALL'S OWN LENGTH (follow-up 5, 2026-10-15).
+ * MEASURED NEED: the dying build service's own words -- `libc++abi: terminating with ... exception of type
+ * ...` -- are written to its stderr, which xcodebuild owns through a pipe it never echoes; so they appear in
+ * no console, no harness log and no server log (0 occurrences, measured across two runs), and the guest
+ * cannot be straced in this configuration (ptrace_scope=1 with a daemonised run owner: PTRACE_SEIZE returns
+ * EPERM, measured). This library is already the tree's in-guest instrument: it is inserted with
+ * DYLD_INSERT_LIBRARIES and inherited by every child, which is how the service gets it too.
+ * Safety: never read past the length the caller passed (a read past it could fault inside the traced
+ * process and destroy the very record this exists for), cap at 512 bytes, stop at NUL, escape the rest. */
+static void print_write_payload(xtrace::String* log, void* arg, void* lenArg)
+{
+	const unsigned char* buf = (const unsigned char*)arg;
+	size_t len = (size_t)(uintptr_t)lenArg;
+	if (buf == NULL) { log->append("NULL"); return; }
+	size_t cap = len > 512 ? 512 : len;
+	log->append("\"");
+	for (size_t i = 0; i < cap; ++i) {
+		unsigned char c = buf[i];
+		if (c == 0) { break; }
+		switch (c) {
+			case '\\': log->append("\\\\"); break;
+			case '"':  log->append("\\\""); break;
+			case '\n': log->append("\\n"); break;
+			case '\r': log->append("\\r"); break;
+			case '\t': log->append("\\t"); break;
+			default:
+				if (c < 0x20 || c == 0x7f) {
+					log->append_format("\\x%02x", c);
+				} else {
+					char s[2] = { (char)c, 0 };
+					log->append(s);
+				}
+		}
+	}
+	log->append("\"");
+	if (len > cap) { log->append_format("...(%zu bytes total)", len); }
+}
+
 static void print_args(xtrace::String* log, int nr, void* args[])
 {
+	/* write/write_nocancel: fd, PAYLOAD, length -- the payload as text, not as a bare pointer */
+	if (nr == 4 || nr == 397)
+	{
+		print_arg_int(log, args[0]);
+		log->append(", ");
+		print_write_payload(log, args[1], args[2]);
+		log->append(", ");
+		print_arg_int(log, args[2]);
+		return;
+	}
+
 	int cnt = args_info[nr].args_cnt;
 	for (int i = 0; i < cnt; i++)
 	{
