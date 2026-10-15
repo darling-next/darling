@@ -1,5 +1,4 @@
 #include "string.h"
-#include "lock.h"
 
 #include <assert.h>
 #include <cstring>

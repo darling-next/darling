@@ -12,6 +12,7 @@ set(xtrace_sources
 	xtracelib.cpp
 	trampoline.S
 	mach_trace.cpp
+	excerpt.cpp
 	bsd_trace.cpp
 	mig_trace.cpp
 	tls.cpp

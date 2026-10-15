@@ -13,13 +13,12 @@
 #include "mig_trace.h"
 #include "tls.h"
 #include "string.h"
+#include "excerpt.h"
 #include "safe_read.h"
 
-// The printable-run budget of ONE record: enough for a service name, a path and a termination message's text, and
-// not enough to turn the trace into a hexdump. Reaching it is REPORTED in the record (see print_inline_excerpt).
-#define XTRACE_EXCERPT_EMIT_MAX 1024u
 // How much of a payload is copied at a time. One page, so the safe reader never crosses an unmapped boundary
-// inside a chunk it then has to refuse as a whole.
+// inside a chunk it then has to refuse as a whole. A printable run is NOT closed at a chunk boundary; see
+// excerpt.h (XTRACE_EXCERPT_EMIT_MAX and XTRACE_EXCERPT_MIN_RUN live there, with the renderer they belong to).
 #define XTRACE_EXCERPT_CHUNK 4096u
 
 DEFINE_XTRACE_TLS_VAR(int, mach_call_nr, -1, NULL);
@@ -446,7 +445,8 @@ const char* xtrace_msg_type_to_str(mach_msg_type_name_t type_name, int full)
 
 // Darling (follow-up 7): a Mach message's inline data is where a PEER'S NAME travels -- a bootstrap
 // lookup, an XPC check-in -- so a parked send can be named from the trace instead of guessed at. Print the printable
-// runs (>= 4 characters) and nothing else, so a binary body does not turn the trace into a hexdump.
+// runs (>= XTRACE_EXCERPT_MIN_RUN characters) and nothing else, so a binary body does not turn the trace into a
+// hexdump.
 //
 // THE BOUND IS THE CALLER'S OWN LENGTH (follow-up 9). `declared` is what the message itself says it is
 // (`msgh_size` minus what was consumed), never a small constant: a 512-byte cap once cut the very buffer an abort
@@ -456,6 +456,11 @@ const char* xtrace_msg_type_to_str(mach_msg_type_name_t type_name, int full)
 //
 // The bytes are read through `xtrace_safe_copy`, never through the pointer: a payload that is not mapped yields
 // `unreadable: <reason>` instead of a SIGSEGV that would kill the process being measured (MEASURED, follow-up 8).
+//
+// THE RENDERING IS NOT DONE HERE (follow-up 19). A run is accumulated across the copies by the state in
+// excerpt.cpp, because a run that straddles a chunk boundary is ONE run, and because the previous inline
+// rendering used a length-limited conversion that this codebase's formatter does not implement -- it printed the
+// literal debris "*s" for every excerpt in every record. See excerpt.cpp for the measurement.
 static void print_inline_excerpt(xtrace::String* log, const char* data, size_t declared)
 {
 	if (declared == 0)
@@ -469,7 +474,9 @@ static void print_inline_excerpt(xtrace::String* log, const char* data, size_t d
 	if (scratch == NULL)
 		return;
 
-	size_t emitted = 0;
+	struct xtrace_excerpt_state state;
+	xtrace_excerpt_state_init(&state);
+
 	size_t scanned = 0;
 	size_t read_ok = 1;
 
@@ -489,20 +496,7 @@ static void print_inline_excerpt(xtrace::String* log, const char* data, size_t d
 		}
 
 		// ONLY THE SCRATCH IS EVER READ FROM HERE: the payload is copied in, never dereferenced while printing.
-		size_t start = SIZE_MAX;
-		for (size_t i = 0; i <= got; i++) {
-			const bool printable = (i < got) && (unsigned char) scratch[i] >= 32 && (unsigned char) scratch[i] < 127;
-			if (printable) {
-				if (start == SIZE_MAX)
-					start = i;
-				continue;
-			}
-			if (start != SIZE_MAX && i - start >= 4 && emitted < XTRACE_EXCERPT_EMIT_MAX) {
-				log->append_format(" \"%.*s\"", (int) (i - start), scratch + start);
-				emitted += (i - start) + 1;
-			}
-			start = SIZE_MAX;
-		}
+		xtrace_excerpt_render(&state, log, scratch, got);
 
 		if (got < chunk) {
 			// A short read: the tail of this chunk is not mapped. Say where the readable part ended rather than
@@ -516,10 +510,14 @@ static void print_inline_excerpt(xtrace::String* log, const char* data, size_t d
 		scanned += got;
 	}
 
+	// A run still open when the payload ended is a run at the end of the payload; it is rendered here and not
+	// dropped.
+	xtrace_excerpt_finish(&state, log);
+
 	if (log != NULL) {
 		if (read_ok && declared > wanted)
 			log->append_format(" ...[truncated: printed the first %zu of %zu declared byte(s); raise XTRACE_MAX_PAYLOAD_BYTES to see more]", wanted, declared);
-		else if (read_ok && emitted >= XTRACE_EXCERPT_EMIT_MAX)
+		else if (read_ok && state.emitted >= XTRACE_EXCERPT_EMIT_MAX)
 			log->append_format(" ...[truncated: the printable-run budget of %u character(s) was reached while %zu byte(s) were declared]", (unsigned) XTRACE_EXCERPT_EMIT_MAX, declared);
 	}
 }
