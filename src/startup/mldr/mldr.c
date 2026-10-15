@@ -1618,6 +1618,38 @@ uint64_t __mldr_fd_courier_send_token(int fd, uint32_t kind) {
 	return token;
 }
 
+// A MEMFD THIS PROCESS MAPS FOR IPC MUST NOT BE REACHABLE THROUGH A DIAGNOSTIC DESCRIPTOR.
+//
+// `memfd_create` returns the LOWEST free descriptor. The loader's diagnostics go to fd 2 (and fd 1), and a
+// spawned child can reach the loader with fd 2 free -- the guest's own spawn path marks every descriptor it
+// does not own O_CLOEXEC, so the host execve of the loader closes fd 2 for exactly the children that did not
+// name it in their file actions. MEASURED 2026-10-15 (xcodebuild's build-service child): the lane's backing
+// memfd landed on fd 2, this process's own diagnostic text was written at file offset 0 OF THAT MEMMFD --
+// i.e. over the ring control block -- and the child then faulted in `dserver_ring_producer_begin` on the
+// garbled `c2s_ring_off`; the core and the byte arithmetic are in
+// evidence/progress-collapse-rung/runs/postfix-child-core.txt. The same reasoning applies one step earlier
+// to the two pages THE LOADER creates and maps: this management page and the seed lane.
+//
+// So a memfd the loader is about to MAP is created and then moved above the diagnostic range, keeping the
+// CLOEXEC property of the original (both creators pass MFD_CLOEXEC). Failure to move it is a failure to
+// create it: better a documented -1 (all three callers have a datagram/failed path) than a page a later
+// diagnostic can overwrite.
+#define MLDR_DIAG_FD_LIMIT 3  // 0/1/2: the descriptors this loader's diagnostics write to
+
+static int mldr_memfd_private(const char* name, uint32_t flags) {
+	int fd = (int)syscall(SYS_memfd_create, name, flags);
+	if (fd < 0 || fd >= MLDR_DIAG_FD_LIMIT) {
+		return fd;
+	}
+	int moved = fcntl(fd, F_DUPFD_CLOEXEC, MLDR_DIAG_FD_LIMIT);
+	if (moved < MLDR_DIAG_FD_LIMIT) {
+		close(fd);
+		return -1;
+	}
+	close(fd);
+	return moved;
+}
+
 int __mldr_process_control_create(void) {
 	if (__mldr_process_control_memfd >= 0) {
 		// perf#30 (doc section 187): WHICH page. Two execve images share one pid and one address space, so
@@ -1633,7 +1665,7 @@ int __mldr_process_control_create(void) {
 		mldr_diagf("[mldr-ctl] create-NEW pid=%d\n", (int)getpid());
 	}
 	size_t size = sizeof(struct dserver_process_control);
-	int memfd = (int)syscall(SYS_memfd_create, "dserver-ctl", 0x1u);
+	int memfd = mldr_memfd_private("dserver-ctl", 0x1u);
 	if (memfd < 0) {
 		return -1;
 	}
@@ -2350,7 +2382,7 @@ void* __mldr_ring_lane_seed(void) {
 	uint64_t s2c_off = (c2s_off + ring_span + 63u) & ~63ull;
 	uint64_t total = (s2c_off + ring_span + 63u) & ~63ull;
 	int tid = (int)gettid();
-	int memfd = (int)syscall(__NR_memfd_create, "dring", 0x1u);
+	int memfd = mldr_memfd_private("dring", 0x1u);
 	if (memfd < 0) { mldr_ring_lane_state = -1; return 0; }
 	if (ftruncate(memfd, (off_t)total) < 0) { close(memfd); mldr_ring_lane_state = -1; return 0; }
 	void* map = mmap(0, total, PROT_READ | PROT_WRITE, MAP_SHARED, memfd, 0);
