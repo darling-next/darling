@@ -436,6 +436,35 @@ const char* xtrace_msg_type_to_str(mach_msg_type_name_t type_name, int full)
 	}
 }
 
+// Darling (follow-up 7): a Mach message's inline data is where a PEER'S NAME travels -- a bootstrap
+// lookup, an XPC check-in -- so a parked send can be named from the trace instead of guessed at. Print
+// the printable runs (>= 4 characters, at most 160 characters) and nothing else, so a binary body does
+// not turn the trace into a hexdump. The size is bounded before anything is read.
+static void print_inline_excerpt(xtrace::String* log, const char* data, size_t n)
+{
+	if (n == 0 || n > 4096)
+		return;
+
+	size_t start = SIZE_MAX;
+	size_t emitted = 0;
+	for (size_t i = 0; i <= n; i++)
+	{
+		bool printable = (i < n) && (unsigned char) data[i] >= 32 && (unsigned char) data[i] < 127;
+		if (printable)
+		{
+			if (start == SIZE_MAX)
+				start = i;
+			continue;
+		}
+		if (start != SIZE_MAX && i - start >= 4 && emitted < 160)
+		{
+			log->append_format(" \"%.*s\"", (int) (i - start), data + start);
+			emitted += (i - start) + 1;
+		}
+		start = SIZE_MAX;
+	}
+}
+
 static void print_mach_msg(xtrace::String* log, const mach_msg_header_t* msg, mach_msg_size_t size)
 {
 	log->append("{");
@@ -455,6 +484,8 @@ static void print_mach_msg(xtrace::String* log, const mach_msg_header_t* msg, ma
 	if (!MACH_MSGH_BITS_IS_COMPLEX(bits))
 	{
 		log->append_format(", %lu bytes of inline data", size - sizeof(mach_msg_header_t));
+		if (size > sizeof(mach_msg_header_t))
+			print_inline_excerpt(log, (const char*) (msg + 1), size - sizeof(mach_msg_header_t));
 		xtrace_log("%s\n", log->c_str());
 		log->clear();
 		return;
@@ -494,6 +525,8 @@ static void print_mach_msg(xtrace::String* log, const mach_msg_header_t* msg, ma
 	}
 
 	log->append_format(", %lu bytes of inline data", size - ((const char*) ptr - (const char*) msg));
+	if ((const char*) ptr <= (const char*) msg + size)
+		print_inline_excerpt(log, (const char*) ptr, size - (size_t) ((const char*) ptr - (const char*) msg));
 	xtrace_log("%s\n", log->c_str());
 	log->clear();
 }
