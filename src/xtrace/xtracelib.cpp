@@ -111,6 +111,12 @@ static int xtrace_split_entry_and_exit = 0;
 int xtrace_no_color = 0;
 int xtrace_kprintf = 0;
 
+// 64 KiB, the same ceiling the read/write payload printer uses: large enough for a libc++abi terminate message with
+// its whole exception text, and small enough that one record cannot turn a trace into a hexdump. Measured need: a
+// 512-byte cap truncated the very buffer an abort message was in, so the record that mattered arrived cut in half.
+#define XTRACE_MAX_PAYLOAD_DEFAULT (64UL * 1024UL)
+unsigned long xtrace_max_payload_bytes = XTRACE_MAX_PAYLOAD_DEFAULT;
+
 static int xtrace_use_logfile = 0;
 static int xtrace_use_per_thread_logfile = 0;
 
@@ -131,6 +137,22 @@ static bool string_is_truthy(const char* string) {
 	return string && (string[0] == '1' || string[0] == 'T' || string[0] == 't' || string[0] == 'Y' || string[0] == 'y');
 };
 
+// A decimal byte count, refusing anything that is not one: a caller who writes `=64k` must get the default rather
+// than a silent 64. `atoi` is not used because this runs before the tracer's own allocator is set up in some paths.
+static unsigned long string_is_byte_count(const char* string, unsigned long fallback) {
+	if (string == NULL || string[0] == '\0') {
+		return fallback;
+	}
+	unsigned long value = 0;
+	for (const char* p = string; *p; p++) {
+		if (*p < '0' || *p > '9') {
+			return fallback;
+		}
+		value = value * 10 + (unsigned long) (*p - '0');
+	}
+	return value == 0 ? fallback : value;
+}
+
 static void xtrace_setup_options(void)
 {
 	const char* xtrace_log_file = getenv("XTRACE_LOG_FILE");
@@ -139,6 +161,7 @@ static void xtrace_setup_options(void)
 	xtrace_no_color = string_is_truthy(getenv("XTRACE_NO_COLOR"));
 	xtrace_kprintf = string_is_truthy(getenv("XTRACE_KPRINTF"));
 	xtrace_use_per_thread_logfile = string_is_truthy(getenv("XTRACE_LOG_FILE_PER_THREAD"));
+	xtrace_max_payload_bytes = string_is_byte_count(getenv("XTRACE_MAX_PAYLOAD_BYTES"), XTRACE_MAX_PAYLOAD_DEFAULT);
 
 	if (xtrace_log_file != NULL && xtrace_log_file[0] != '\0') {
 		xtrace_use_logfile = 1;

@@ -13,6 +13,14 @@
 #include "mig_trace.h"
 #include "tls.h"
 #include "string.h"
+#include "safe_read.h"
+
+// The printable-run budget of ONE record: enough for a service name, a path and a termination message's text, and
+// not enough to turn the trace into a hexdump. Reaching it is REPORTED in the record (see print_inline_excerpt).
+#define XTRACE_EXCERPT_EMIT_MAX 1024u
+// How much of a payload is copied at a time. One page, so the safe reader never crosses an unmapped boundary
+// inside a chunk it then has to refuse as a whole.
+#define XTRACE_EXCERPT_CHUNK 4096u
 
 DEFINE_XTRACE_TLS_VAR(int, mach_call_nr, -1, NULL);
 DEFINE_XTRACE_TLS_VAR(void*, argument_ptr, NULL, NULL);
@@ -437,53 +445,123 @@ const char* xtrace_msg_type_to_str(mach_msg_type_name_t type_name, int full)
 }
 
 // Darling (follow-up 7): a Mach message's inline data is where a PEER'S NAME travels -- a bootstrap
-// lookup, an XPC check-in -- so a parked send can be named from the trace instead of guessed at. Print
-// the printable runs (>= 4 characters, at most 160 characters) and nothing else, so a binary body does
-// not turn the trace into a hexdump. The size is bounded before anything is read.
-static void print_inline_excerpt(xtrace::String* log, const char* data, size_t n)
+// lookup, an XPC check-in -- so a parked send can be named from the trace instead of guessed at. Print the printable
+// runs (>= 4 characters) and nothing else, so a binary body does not turn the trace into a hexdump.
+//
+// THE BOUND IS THE CALLER'S OWN LENGTH (follow-up 9). `declared` is what the message itself says it is
+// (`msgh_size` minus what was consumed), never a small constant: a 512-byte cap once cut the very buffer an abort
+// message was in, and the record that mattered arrived in half. `xtrace_max_payload_bytes` (default 64 KiB,
+// XTRACE_MAX_PAYLOAD_BYTES to change) only limits how much of a very large declared payload is worth printing, and
+// when it does cut, the cut is PRINTED -- a silently shortened payload reads like a different one.
+//
+// The bytes are read through `xtrace_safe_copy`, never through the pointer: a payload that is not mapped yields
+// `unreadable: <reason>` instead of a SIGSEGV that would kill the process being measured (MEASURED, follow-up 8).
+static void print_inline_excerpt(xtrace::String* log, const char* data, size_t declared)
 {
-	if (n == 0 || n > 4096)
+	if (declared == 0)
 		return;
 
-	size_t start = SIZE_MAX;
+	size_t wanted = declared;
+	if (wanted > (size_t) xtrace_max_payload_bytes)
+		wanted = (size_t) xtrace_max_payload_bytes;
+
+	char* scratch = xtrace_safe_scratch();
+	if (scratch == NULL)
+		return;
+
 	size_t emitted = 0;
-	for (size_t i = 0; i <= n; i++)
-	{
-		bool printable = (i < n) && (unsigned char) data[i] >= 32 && (unsigned char) data[i] < 127;
-		if (printable)
-		{
-			if (start == SIZE_MAX)
-				start = i;
-			continue;
+	size_t scanned = 0;
+	size_t read_ok = 1;
+
+	while (scanned < wanted) {
+		size_t chunk = wanted - scanned;
+		if (chunk > XTRACE_EXCERPT_CHUNK)
+			chunk = XTRACE_EXCERPT_CHUNK;
+
+		int err = 0;
+		const size_t got = xtrace_safe_copy(scratch, data + scanned, chunk, &err);
+		if (got == XTRACE_READ_UNREADABLE) {
+			read_ok = 0;
+			if (log != NULL)
+				log->append_format(" <unreadable: %p is not mapped for %zu byte(s) at offset %zu (errno %d)>",
+					(const void*) (data + scanned), chunk, scanned, err);
+			break;
 		}
-		if (start != SIZE_MAX && i - start >= 4 && emitted < 160)
-		{
-			log->append_format(" \"%.*s\"", (int) (i - start), data + start);
-			emitted += (i - start) + 1;
+
+		// ONLY THE SCRATCH IS EVER READ FROM HERE: the payload is copied in, never dereferenced while printing.
+		size_t start = SIZE_MAX;
+		for (size_t i = 0; i <= got; i++) {
+			const bool printable = (i < got) && (unsigned char) scratch[i] >= 32 && (unsigned char) scratch[i] < 127;
+			if (printable) {
+				if (start == SIZE_MAX)
+					start = i;
+				continue;
+			}
+			if (start != SIZE_MAX && i - start >= 4 && emitted < XTRACE_EXCERPT_EMIT_MAX) {
+				log->append_format(" \"%.*s\"", (int) (i - start), scratch + start);
+				emitted += (i - start) + 1;
+			}
+			start = SIZE_MAX;
 		}
-		start = SIZE_MAX;
+
+		if (got < chunk) {
+			// A short read: the tail of this chunk is not mapped. Say where the readable part ended rather than
+			// pretending the payload was shorter than it declared.
+			read_ok = 0;
+			if (log != NULL)
+				log->append_format(" <unreadable: only %zu of the %zu byte(s) at offset %zu are mapped (errno %d)>",
+					got, chunk, scanned, err);
+			break;
+		}
+		scanned += got;
+	}
+
+	if (log != NULL) {
+		if (read_ok && declared > wanted)
+			log->append_format(" ...[truncated: printed the first %zu of %zu declared byte(s); raise XTRACE_MAX_PAYLOAD_BYTES to see more]", wanted, declared);
+		else if (read_ok && emitted >= XTRACE_EXCERPT_EMIT_MAX)
+			log->append_format(" ...[truncated: the printable-run budget of %u character(s) was reached while %zu byte(s) were declared]", (unsigned) XTRACE_EXCERPT_EMIT_MAX, declared);
 	}
 }
 
 static void print_mach_msg(xtrace::String* log, const mach_msg_header_t* msg, mach_msg_size_t size)
 {
+	// THE HEADER ITSELF IS FOREIGN MEMORY. Read it through the safe path first, so a stale pointer is reported as
+	// `unreadable` instead of killing the traced process (MEASURED, follow-up 8: exactly that killed a traced arm).
+	mach_msg_header_t header;
+	int err = 0;
+	if (msg == NULL || xtrace_safe_copy(&header, msg, sizeof(header), &err) != sizeof(header)) {
+		log->append_format("mach message UNREADABLE: the header at %p is not mapped (errno %d)", (const void*) msg, err);
+		xtrace_log("%s\n", log->c_str());
+		log->clear();
+		return;
+	}
+	// A declared size under the header's own size is not a message this can decode, and the subtraction below would
+	// wrap to a huge length. Refuse it by name (a wrap here is how an out-of-range read is born).
+	if (size < sizeof(mach_msg_header_t)) {
+		log->append_format("mach message DECODE-STOPPED: msgh_size=%u is smaller than the %zu-byte header", (unsigned) size, sizeof(mach_msg_header_t));
+		xtrace_log("%s\n", log->c_str());
+		log->clear();
+		return;
+	}
+
 	log->append("{");
 
-	mach_msg_bits_t bits = msg->msgh_bits;
+	mach_msg_bits_t bits = header.msgh_bits;
 	if (MACH_MSGH_BITS_HAS_REMOTE(bits))
-		log->append_format("remote = %s %u, ", xtrace_msg_type_to_str(MACH_MSGH_BITS_REMOTE(bits), 0), msg->msgh_remote_port);
+		log->append_format("remote = %s %u, ", xtrace_msg_type_to_str(MACH_MSGH_BITS_REMOTE(bits), 0), header.msgh_remote_port);
 	if (MACH_MSGH_BITS_HAS_LOCAL(bits))
-		log->append_format("local = %s %u, ", xtrace_msg_type_to_str(MACH_MSGH_BITS_LOCAL(bits), 0), msg->msgh_local_port);
+		log->append_format("local = %s %u, ", xtrace_msg_type_to_str(MACH_MSGH_BITS_LOCAL(bits), 0), header.msgh_local_port);
 	if (MACH_MSGH_BITS_HAS_VOUCHER(bits))
-		log->append_format("voucher = %s %u, ", xtrace_msg_type_to_str(MACH_MSGH_BITS_VOUCHER(bits), 0), msg->msgh_voucher_port);
+		log->append_format("voucher = %s %u, ", xtrace_msg_type_to_str(MACH_MSGH_BITS_VOUCHER(bits), 0), header.msgh_voucher_port);
 	if (MACH_MSGH_BITS_IS_COMPLEX(bits))
 		log->append("complex, ");
 
-	log->append_format("id = %d}", msg->msgh_id);
+	log->append_format("id = %d}", header.msgh_id);
 
 	if (!MACH_MSGH_BITS_IS_COMPLEX(bits))
 	{
-		log->append_format(", %lu bytes of inline data", size - sizeof(mach_msg_header_t));
+		log->append_format(", %lu bytes of inline data", (unsigned long) (size - sizeof(mach_msg_header_t)));
 		if (size > sizeof(mach_msg_header_t))
 			print_inline_excerpt(log, (const char*) (msg + 1), size - sizeof(mach_msg_header_t));
 		xtrace_log("%s\n", log->c_str());
@@ -491,46 +569,93 @@ static void print_mach_msg(xtrace::String* log, const mach_msg_header_t* msg, ma
 		return;
 	}
 
-	mach_msg_body_t* body = (mach_msg_body_t*) (msg + 1);
-	mach_msg_size_t descriptor_count = body->msgh_descriptor_count;
-	mach_msg_descriptor_t* ptr = (mach_msg_descriptor_t*) (body + 1);
+	// THE DESCRIPTOR WALK IS CLAMPED TO THE DECLARED SIZE. `msgh_descriptor_count` comes from the message, so an
+	// unchecked walk reads whatever follows the buffer -- which is how an instrument faults on a message that is
+	// merely truncated. Every step below is bounded by `size` before it is taken, and the walk says where it stopped.
+	const char* base = (const char*) msg;
+	size_t offset = sizeof(mach_msg_header_t);
+	mach_msg_body_t body;
+	if (offset + sizeof(body) > (size_t) size
+		|| xtrace_safe_copy(&body, base + offset, sizeof(body), &err) != sizeof(body)) {
+		log->append_format(", DECODE-STOPPED: no descriptor count inside the declared %u byte(s)", (unsigned) size);
+		xtrace_log("%s\n", log->c_str());
+		log->clear();
+		return;
+	}
+	offset += sizeof(body);
+	const mach_msg_size_t descriptor_count = body.msgh_descriptor_count;
+
 	for (mach_msg_size_t i = 0; i < descriptor_count; i++)
 	{
-		mach_msg_descriptor_type_t type = ((mach_msg_type_descriptor_t*) ptr)->type;
+		// 4 bytes is the smallest descriptor (it begins with its type); read it through the safe path and check the
+		// declared bound BEFORE trusting anything the message says.
+		if (offset + sizeof(mach_msg_type_descriptor_t) > (size_t) size) {
+			log->append_format(", DECODE-STOPPED after %u of %u descriptor(s): offset %zu is past the declared msgh_size=%u",
+				(unsigned) i, (unsigned) descriptor_count, offset, (unsigned) size);
+			break;
+		}
+		mach_msg_type_descriptor_t type_desc;
+		if (xtrace_safe_copy(&type_desc, base + offset, sizeof(type_desc), &err) != sizeof(type_desc)) {
+			log->append_format(", DESCRIPTOR-UNREADABLE at offset %zu (errno %d)", offset, err);
+			break;
+		}
+		mach_msg_descriptor_type_t type = type_desc.type;
 		if (type == MACH_MSG_PORT_DESCRIPTOR)
 		{
-			mach_msg_port_descriptor_t* port = (mach_msg_port_descriptor_t*) ptr;
-			log->append_format(", %s %u", xtrace_msg_type_to_str(port->disposition, 0), port->name);
-			ptr = (mach_msg_descriptor_t*) (port + 1);
+			mach_msg_port_descriptor_t port;
+			if (offset + sizeof(port) > (size_t) size || xtrace_safe_copy(&port, base + offset, sizeof(port), &err) != sizeof(port)) {
+				log->append_format(", %s UNREADABLE at offset %zu (errno %d)", "port descriptor", offset, err);
+				break;
+			}
+			log->append_format(", %s %u", xtrace_msg_type_to_str(port.disposition, 0), port.name);
+			offset += sizeof(port);
 		}
 		else if (type == MACH_MSG_OOL_DESCRIPTOR || type == MACH_MSG_OOL_VOLATILE_DESCRIPTOR)
 		{
-			mach_msg_ool_descriptor_t* ool = (mach_msg_ool_descriptor_t*) ptr;
-			log->append_format(", ool [%p; %u]", ool->address, ool->size);
-			// REVERTED (follow-up 8): reading the descriptor's address here segfaulted a traced arm
-			// (jobs/oslogfwk-bs3, core /tmp/t4cores/core.2915140) -- the address is not the sender's
-			// live buffer on every path this formatter runs on. The name this was meant to reach is
-			// measured another way (tests/fcd_sync_send_park_guest.c).
-			ptr = (mach_msg_descriptor_t*) (ool + 1);
+			mach_msg_ool_descriptor_t ool;
+			if (offset + sizeof(ool) > (size_t) size || xtrace_safe_copy(&ool, base + offset, sizeof(ool), &err) != sizeof(ool)) {
+				log->append_format(", %s UNREADABLE at offset %zu (errno %d)", "ool descriptor", offset, err);
+				break;
+			}
+			log->append_format(", ool [%p; %u]", ool.address, ool.size);
+			// THE DESCRIPTOR'S CONTENT, now through the safe reader and bounded by the descriptor's OWN declared
+			// size. MEASURED (follow-up 8): a raw read here segfaulted a traced arm because `ool->address` is not
+			// the sender's live buffer on every path this formatter runs on. An unreadable one is now a printed
+			// record -- `unreadable: <reason>` -- which is the whole difference between a lost run and a fact.
+			//
+			// The 32-bit image does NOT read it: its safe reader is a plain copy (see safe_read.cpp), so attempting
+			// this there would re-introduce exactly the fault this arm is being fixed for. A guard that exists on
+			// one architecture must not be assumed on another.
+#if defined(__x86_64__)
+			if (ool.address != NULL && ool.size > 0)
+				print_inline_excerpt(log, (const char*) ool.address, ool.size);
+#else
+			log->append(" (ool content not read in the 32-bit image)");
+#endif
+			offset += sizeof(ool);
 		}
 		else if (type == MACH_MSG_OOL_PORTS_DESCRIPTOR)
 		{
-			mach_msg_ool_ports_descriptor_t* ool_ports = (mach_msg_ool_ports_descriptor_t*) ptr;
+			mach_msg_ool_ports_descriptor_t ool_ports;
+			if (offset + sizeof(ool_ports) > (size_t) size || xtrace_safe_copy(&ool_ports, base + offset, sizeof(ool_ports), &err) != sizeof(ool_ports)) {
+				log->append_format(", %s UNREADABLE at offset %zu (errno %d)", "ool ports descriptor", offset, err);
+				break;
+			}
 			log->append_format(", ool ports %s [%p; x%u]",
-				xtrace_msg_type_to_str(ool_ports->disposition, 0),
-				ool_ports->address, ool_ports->count);
-			ptr = (mach_msg_descriptor_t*) (ool_ports + 1);
+				xtrace_msg_type_to_str(ool_ports.disposition, 0),
+				ool_ports.address, ool_ports.count);
+			offset += sizeof(ool_ports);
 		}
 		else
 		{
-			log->append(", ???");
-			ptr++;
+			log->append_format(", ??? type=%u", (unsigned) type);
+			offset += sizeof(mach_msg_type_descriptor_t);
 		}
 	}
 
-	log->append_format(", %lu bytes of inline data", size - ((const char*) ptr - (const char*) msg));
-	if ((const char*) ptr <= (const char*) msg + size)
-		print_inline_excerpt(log, (const char*) ptr, size - (size_t) ((const char*) ptr - (const char*) msg));
+	log->append_format(", %lu bytes of inline data", (unsigned long) (size - offset));
+	if (offset < (size_t) size)
+		print_inline_excerpt(log, base + offset, (size_t) size - offset);
 	xtrace_log("%s\n", log->c_str());
 	log->clear();
 }

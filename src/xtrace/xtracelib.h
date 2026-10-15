@@ -27,6 +27,13 @@ XTRACE_DECLARATIONS_C_BEGIN
 
 extern int xtrace_no_color;
 
+/// The most bytes of a message's own payload this tracer will look at, and the ceiling for a single printed record.
+/// A payload's DECLARED length (a Mach message's `msgh_size`, an out-of-line descriptor's `size`) is what bounds a
+/// read; this ceiling only says how much of a very large declared payload is worth printing, and it is configurable
+/// because 512 bytes once cut the very buffer an abort message was in. When it does cut a record, the record SAYS
+/// SO (`...[truncated: printed N of M declared bytes]`) -- a silently shortened payload reads like a different one.
+extern unsigned long xtrace_max_payload_bytes;
+
 void xtrace_log(const char* format, ...) __attribute__((format(printf, 1, 2)));
 void xtrace_log_v(const char* format, va_list args) __attribute__((format(printf, 1, 0)));
 void xtrace_error(const char* format, ...) __attribute__((format(printf, 1, 2)));

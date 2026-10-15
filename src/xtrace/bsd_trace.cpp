@@ -12,6 +12,7 @@
 #include "xtracelib.h"
 #include "bsd_trace.h"
 #include "tls.h"
+#include "safe_read.h"
 
 static void print_errno(xtrace::String* log, int nr, uintptr_t rv);
 static void print_errno_num(xtrace::String* log, int nr, uintptr_t rv);
@@ -465,14 +466,31 @@ void xtrace_print_string_literal(xtrace::String* log, const char* str) {
 		return;
 	}
 
+	// THE STRING BELONGS TO THE TRACED PROGRAMME, so it is copied in through the fault-safe reader before a single
+	// byte is printed: a stale pointer used to be a SIGSEGV in the tracer -- killing the process being measured --
+	// and it is now a printed record. The read is bounded by XTRACE_STRING_MAX; a longer string says so, because a
+	// silently shortened string reads like a different string.
+	char* scratch = xtrace_safe_scratch();
+	if (scratch == NULL) {
+		log->append("<unreadable: the tracer's own scratch is unavailable>");
+		return;
+	}
+	int err = 0;
+	const size_t len = xtrace_safe_read_c_string(scratch, XTRACE_STRING_MAX, str, &err);
+	if (len == XTRACE_READ_UNREADABLE) {
+		log->append_format("<unreadable: %p is not mapped, or is not NUL-terminated within %d byte(s) (errno %d)>",
+			(const void*) str, (int) XTRACE_STRING_MAX, err);
+		return;
+	}
+
 	if (!xtrace_no_color)
 		log->append("\033[;1m"); // bold
 
 	log->append("\"");
 
-	for (; *str; str++)
+	for (size_t i = 0; i < len; i++)
 	{
-		switch (*str)
+		switch (scratch[i])
 		{
 			case '\\':
 				log->append("\\\\");
@@ -484,12 +502,17 @@ void xtrace_print_string_literal(xtrace::String* log, const char* str) {
 				log->append("\\t");
 				break;
 			default:
-				log->append_format("%c", *str);
+				log->append_format("%c", scratch[i]);
 				break;
 		}
 	}
 
 	log->append("\"");
+
+	if (len == XTRACE_STRING_MAX) {
+		log->append_format("...<truncated: longer than %d byte(s); raise XTRACE_STRING_MAX to see more>",
+			(int) XTRACE_STRING_MAX);
+	}
 
 	if (!xtrace_no_color)
 		log->append("\033[0m"); // reset
@@ -1041,95 +1064,119 @@ static const struct {
 	[521] = { 6, { print_arg_int, print_arg_int, print_arg_ptr, print_arg_int, print_arg_str, print_arg_int } }, // abort_with_payload
 };
 
-/* WRITE PAYLOAD, BOUNDED BY THE SYSCALL'S OWN LENGTH (follow-up 5, 2026-10-15).
+/* WRITE PAYLOAD, BOUNDED BY THE SYSCALL'S OWN LENGTH (follow-up 5, 2026-10-15; bound unified follow-up 9).
  * MEASURED NEED: the dying build service's own words -- `libc++abi: terminating with ... exception of type
  * ...` -- are written to its stderr, which xcodebuild owns through a pipe it never echoes; so they appear in
  * no console, no harness log and no server log (0 occurrences, measured across two runs), and the guest
  * cannot be straced in this configuration (ptrace_scope=1 with a daemonised run owner: PTRACE_SEIZE returns
  * EPERM, measured). This library is already the tree's in-guest instrument: it is inserted with
  * DYLD_INSERT_LIBRARIES and inherited by every child, which is how the service gets it too.
- * Safety: never read past the length the caller passed (a read past it could fault inside the traced
- * process and destroy the very record this exists for), cap at 512 bytes, stop at NUL, escape the rest. */
-static void print_write_payload(xtrace::String* log, void* arg, void* lenArg)
+ *
+ * THE BOUND IS THE CALLER'S OWN LENGTH (follow-up 9). It used to be a fixed 512 bytes, and that cap cut the
+ * very buffer the abort message was in: the message arrived truncated and the record that mattered read as a
+ * different one. `len` is what the syscall itself declared, `xtrace_max_payload_bytes` (64 KiB by default,
+ * XTRACE_MAX_PAYLOAD_BYTES to change) only limits how much of a huge payload is worth keeping, and a cut is
+ * PRINTED -- never silent.
+ *
+ * The bytes are read through the fault-safe reader, so a bad buffer prints `unreadable: <reason>` instead of
+ * killing the traced process (which is what an in-path read can otherwise do). */
+static void print_payload_bytes(xtrace::String* log, const void* address, size_t declared)
 {
-	const unsigned char* buf = (const unsigned char*)arg;
-	size_t len = (size_t)(uintptr_t)lenArg;
-	if (buf == NULL) { log->append("NULL"); return; }
-	size_t cap = len > 512 ? 512 : len;
+	const unsigned char* buf = (const unsigned char*) address;
+	if (buf == NULL) {
+		log->append("NULL");
+		return;
+	}
+	size_t cap = declared;
+	if (cap > (size_t) xtrace_max_payload_bytes) {
+		cap = (size_t) xtrace_max_payload_bytes;
+	}
+	// The scratch is ONE buffer per thread and it is also used by every other reader here, so the payload is copied
+	// in CHUNKS rather than in one piece; nothing nests (a reader copies, then prints, then returns).
+	char* scratch = xtrace_safe_scratch();
+	if (scratch == NULL) {
+		log->append("<unreadable: the tracer's own scratch is unavailable>");
+		return;
+	}
+
 	log->append("\"");
-	for (size_t i = 0; i < cap; ++i) {
-		unsigned char c = buf[i];
-		if (c == 0) { break; }
-		switch (c) {
-			case '\\': log->append("\\\\"); break;
-			case '"':  log->append("\\\""); break;
-			case '\n': log->append("\\n"); break;
-			case '\r': log->append("\\r"); break;
-			case '\t': log->append("\\t"); break;
-			default:
-				if (c < 0x20 || c == 0x7f) {
-					log->append_format("\\x%02x", c);
-				} else {
-					char s[2] = { (char)c, 0 };
-					log->append(s);
-				}
+	size_t printed = 0;
+	size_t unreadable_from = 0;
+	while (printed < cap) {
+		size_t chunk = cap - printed;
+		if (chunk > 4096) {
+			chunk = 4096;
+		}
+		int err = 0;
+		size_t have = xtrace_safe_copy(scratch, buf + printed, chunk, &err);
+		if (have == XTRACE_READ_UNREADABLE) {
+			unreadable_from = printed;
+			break;
+		}
+		if (have == 0) {
+			break;
+		}
+		bool stop = false;
+		for (size_t i = 0; i < have; ++i) {
+			unsigned char c = (unsigned char) scratch[i];
+			if (c == 0) { stop = true; break; }
+			switch (c) {
+				case '\\': log->append("\\\\"); break;
+				case '"':  log->append("\\\""); break;
+				case '\n': log->append("\\n"); break;
+				case '\r': log->append("\\r"); break;
+				case '\t': log->append("\\t"); break;
+				default:
+					if (c < 0x20 || c == 0x7f) {
+						log->append_format("\\x%02x", c);
+					} else {
+						char s[2] = { (char)c, 0 };
+						log->append(s);
+					}
+			}
+		}
+		printed += have;
+		if (stop || have < chunk) {
+			if (have < chunk) {
+				unreadable_from = printed;
+			}
+			break;
 		}
 	}
 	log->append("\"");
-	if (len > cap) { log->append_format("...(%zu bytes total)", len); }
+	if (unreadable_from != 0) {
+		log->append_format("...(%zu of %zu declared byte(s) printed; the rest is not readable)", unreadable_from, declared);
+	} else if (declared > cap) {
+		log->append_format("...(%zu of %zu declared byte(s) printed; raise XTRACE_MAX_PAYLOAD_BYTES to see more)",
+			cap, declared);
+	} else if (declared > printed) {
+		log->append_format("...(%zu of %zu declared byte(s) printed -- the payload is NUL-terminated)", printed, declared);
+	}
 }
 
-/* READ PAYLOAD, PRINTED AT RETURN (follow-up 5, 2026-10-15). The dying build service's own words are
- * consumed by xcodebuild through a pipe, so the READER's side is where they can still be seen: the entry hook
- * only has the pre-call buffer, the exit hook has the count, and neither has both -- so the entry hook stashes
- * the (buffer, length) pair per thread and the exit hook prints what the call actually returned. Nesting is
- * not an issue: the pair is re-stashed by the next read on the same thread and cleared after use. */
+static void print_write_payload(xtrace::String* log, void* arg, void* lenArg)
+{
+	print_payload_bytes(log, arg, (size_t)(uintptr_t)lenArg);
+}
+
+/* READ PAYLOAD, PRINTED AT RETURN (follow-up 5, 2026-10-15; bound unified follow-up 9). The dying build
+ * service's own words are consumed by xcodebuild through a pipe, so the READER's side is where they can still
+ * be seen: the entry hook only has the pre-call buffer, the exit hook has the count, and neither has both --
+ * so the entry hook stashes the (buffer, length) pair per thread and the exit hook prints what the call
+ * actually returned. Nesting is not an issue: the pair is re-stashed by the next read on the same thread and
+ * cleared after use.
+ *
+ * The count the READ RETURNED is the payload's own declared length, and that is what bounds the print (up to
+ * xtrace_max_payload_bytes); the fixed 512-byte print and the "does this buffer look interesting" heuristic
+ * that existed to work around it are both gone. MEASURED: the service's stderr pipe was read with a 1 MiB
+ * request whose buffer begins with the loader's own records, so a 512-byte print showed the beginning and hid
+ * the dying process's message -- which is exactly the record this instrument exists for. */
 static __thread const void* t_read_buf = NULL;
 static __thread size_t t_read_len = 0;
 
-/* A read that carries one of the strings this instrument exists for is printed IN FULL (up to 64 KiB);
- * every other read keeps the small bound, so the trace stays the size a run can afford. MEASURED: the
- * service's stderr pipe was read with a 1 MiB request whose buffer begins with the loader's own records, so a
- * fixed 512-byte print showed the beginning and hid whatever followed it -- which is exactly where the
- * dying process's message sits. */
-static bool read_payload_is_interesting(const unsigned char* buf, size_t have)
-{
-	static const char* needles[] = { "libc++abi", "terminating", "xception", "rror", NULL };
-	for (const char** n = needles; *n != NULL; ++n) {
-		const char* needle = *n;
-		size_t nl = 0; while (needle[nl]) { ++nl; }
-		if (have < nl) { continue; }
-		for (size_t i = 0; i + nl <= have; ++i) {
-			size_t j = 0;
-			while (j < nl && buf[i + j] == (unsigned char)needle[j]) { ++j; }
-			if (j == nl) { return true; }
-		}
-	}
-	return false;
-}
-
 static void print_read_payload(xtrace::String* log, size_t have)
 {
-	const unsigned char* buf = (const unsigned char*)t_read_buf;
-	size_t limit = read_payload_is_interesting(buf, have) ? 65536 : 512;
-	size_t cap = have > limit ? limit : have;
-	log->append("\"");
-	for (size_t i = 0; i < cap; ++i) {
-		unsigned char c = buf[i];
-		if (c == 0) { break; }
-		switch (c) {
-			case '\\': log->append("\\\\"); break;
-			case '"':  log->append("\\\""); break;
-			case '\n': log->append("\\n"); break;
-			case '\r': log->append("\\r"); break;
-			case '\t': log->append("\\t"); break;
-			default:
-				if (c < 0x20 || c == 0x7f) { log->append_format("\\x%02x", c); }
-				else { char s2[2] = { (char)c, 0 }; log->append(s2); }
-		}
-	}
-	log->append("\"");
-	if (have > cap) { log->append_format("...(%zu bytes)", have); }
+	print_payload_bytes(log, t_read_buf, have);
 }
 
 static void print_read_return(xtrace::String* log, int nr, uintptr_t rv)

@@ -16,6 +16,7 @@ set(xtrace_sources
 	mig_trace.cpp
 	tls.cpp
 	memory.cpp
+	safe_read.cpp
 	lock.cpp
 	posix_spawn_args.cpp
 	string.cpp
