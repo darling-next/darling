@@ -18,6 +18,7 @@ static void print_errno_num(xtrace::String* log, int nr, uintptr_t rv);
 static void print_errno_ptr(xtrace::String* log, int nr, uintptr_t rv);
 
 static void print_args(xtrace::String* log, int nr, void* args[]);
+static void print_read_return(xtrace::String* log, int nr, uintptr_t rv);
 
 static void print_kevent_return(xtrace::String* log, int nr, uintptr_t rv);
 static void print_kevent_args(xtrace::String* log, int nr, void* args[]);
@@ -36,7 +37,7 @@ static void print_timespec(xtrace::String* log, const struct timespec* timespec)
 static const struct calldef bsd_defs[600] = {
 	[1] = { "exit", print_args, print_errno_num },
 	[2] = { "fork", print_args, print_errno_num },
-	[3] = { "read", print_args, print_errno_num },
+	[3] = { "read", print_args, print_read_return },
 	[4] = { "write", print_args, print_errno_num },
 	[5] = { "open", print_args, print_errno_num },
 	[6] = { "close", print_args, print_errno_num },
@@ -337,7 +338,7 @@ static const struct calldef bsd_defs[600] = {
 	[390] = { "__mac_get_pid", print_args, print_errno_num },
 	[394] = { "pselect", print_args, print_errno_num },
 	[395] = { "pselect_nocancel", print_args, print_errno_num },
-	[396] = { "read_nocancel", print_args, print_errno_num },
+	[396] = { "read_nocancel", print_args, print_read_return },
 	[397] = { "write_nocancel", print_args, print_errno_num },
 	[398] = { "open_nocancel", print_args, print_errno_num },
 	[399] = { "close_nocancel", print_args, print_errno_num },
@@ -1078,6 +1079,74 @@ static void print_write_payload(xtrace::String* log, void* arg, void* lenArg)
 	if (len > cap) { log->append_format("...(%zu bytes total)", len); }
 }
 
+/* READ PAYLOAD, PRINTED AT RETURN (follow-up 5, 2026-10-15). The dying build service's own words are
+ * consumed by xcodebuild through a pipe, so the READER's side is where they can still be seen: the entry hook
+ * only has the pre-call buffer, the exit hook has the count, and neither has both -- so the entry hook stashes
+ * the (buffer, length) pair per thread and the exit hook prints what the call actually returned. Nesting is
+ * not an issue: the pair is re-stashed by the next read on the same thread and cleared after use. */
+static __thread const void* t_read_buf = NULL;
+static __thread size_t t_read_len = 0;
+
+/* A read that carries one of the strings this instrument exists for is printed IN FULL (up to 64 KiB);
+ * every other read keeps the small bound, so the trace stays the size a run can afford. MEASURED: the
+ * service's stderr pipe was read with a 1 MiB request whose buffer begins with the loader's own records, so a
+ * fixed 512-byte print showed the beginning and hid whatever followed it -- which is exactly where the
+ * dying process's message sits. */
+static bool read_payload_is_interesting(const unsigned char* buf, size_t have)
+{
+	static const char* needles[] = { "libc++abi", "terminating", "xception", "rror", NULL };
+	for (const char** n = needles; *n != NULL; ++n) {
+		const char* needle = *n;
+		size_t nl = 0; while (needle[nl]) { ++nl; }
+		if (have < nl) { continue; }
+		for (size_t i = 0; i + nl <= have; ++i) {
+			size_t j = 0;
+			while (j < nl && buf[i + j] == (unsigned char)needle[j]) { ++j; }
+			if (j == nl) { return true; }
+		}
+	}
+	return false;
+}
+
+static void print_read_payload(xtrace::String* log, size_t have)
+{
+	const unsigned char* buf = (const unsigned char*)t_read_buf;
+	size_t limit = read_payload_is_interesting(buf, have) ? 65536 : 512;
+	size_t cap = have > limit ? limit : have;
+	log->append("\"");
+	for (size_t i = 0; i < cap; ++i) {
+		unsigned char c = buf[i];
+		if (c == 0) { break; }
+		switch (c) {
+			case '\\': log->append("\\\\"); break;
+			case '"':  log->append("\\\""); break;
+			case '\n': log->append("\\n"); break;
+			case '\r': log->append("\\r"); break;
+			case '\t': log->append("\\t"); break;
+			default:
+				if (c < 0x20 || c == 0x7f) { log->append_format("\\x%02x", c); }
+				else { char s2[2] = { (char)c, 0 }; log->append(s2); }
+		}
+	}
+	log->append("\"");
+	if (have > cap) { log->append_format("...(%zu bytes)", have); }
+}
+
+static void print_read_return(xtrace::String* log, int nr, uintptr_t rv)
+{
+	if ((intptr_t)rv > 0 && t_read_buf != NULL) {
+		size_t have = (size_t)rv;
+		if (have > t_read_len) { have = t_read_len; }
+		print_read_payload(log, have);
+		t_read_buf = NULL;
+		t_read_len = 0;
+		return;
+	}
+	t_read_buf = NULL;
+	t_read_len = 0;
+	print_errno_num(log, nr, rv);
+}
+
 static void print_args(xtrace::String* log, int nr, void* args[])
 {
 	/* write/write_nocancel: fd, PAYLOAD, length -- the payload as text, not as a bare pointer */
@@ -1089,6 +1158,12 @@ static void print_args(xtrace::String* log, int nr, void* args[])
 		log->append(", ");
 		print_arg_int(log, args[2]);
 		return;
+	}
+	/* read/read_nocancel: stash the buffer for the exit hook, then print the arguments as before */
+	if (nr == 3 || nr == 396)
+	{
+		t_read_buf = args[1];
+		t_read_len = (size_t)(uintptr_t)args[2];
 	}
 
 	int cnt = args_info[nr].args_cnt;
