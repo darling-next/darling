@@ -3196,45 +3196,7 @@ static void mldr_do_pending_checkin(void) {
 	g_pending_checkin.needed = false;
 }
 
-// TEMPORARY DIAGNOSTIC (follow-up 33, diag branch, reverted before shipping). The child's descriptor table at
-// THIS moment, printed below the ~512-byte trace-record bound (which silently cuts the tail of the posix_spawn
-// record). Bounded: fds 0..31, one line each, target from /proc/self/fd, no other behaviour.
-static void mldr_fd_diag(const char* moment) {
-	if (!mldr_diag_on()) {
-		return;
-	}
-	for (int fd = 0; fd < 32; fd++) {
-		int fl = fcntl(fd, F_GETFD);
-		if (fl < 0) {
-			continue;
-		}
-		// hand-built path: no snprintf dependency
-		char path[32] = "/proc/self/fd/00";
-		if (fd >= 10) {
-			if (fd >= 20) {
-				path[14] = '0' + (fd / 10);
-			} else {
-				path[14] = '1';
-			}
-			path[15] = '0' + (fd % 10);
-			path[16] = '\0';
-		} else {
-			path[14] = '0' + fd;
-			path[15] = '\0';
-		}
-		char lb[192];
-		ssize_t r = readlink(path, lb, sizeof(lb) - 1);
-		if (r > 0) {
-			lb[r] = '\0';
-		} else {
-			lb[0] = '\0';
-		}
-		mldr_diagf("[fd-diag] %s pid=%d fd=%d fdflags=0x%x target=%s\n", moment, (int)getpid(), fd, fl, lb);
-	}
-}
-
 static void start_thread(struct load_results* lr) {
-	mldr_fd_diag("pre-guest-entry");
 #ifdef __x86_64__
 	__asm__ volatile(
 		"mov %1, %%rsp\n"
