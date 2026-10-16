@@ -39,6 +39,21 @@ struct load_results {
 // It is idempotent, so `main` may call it again before the dependent bootstrap traffic.
 void mldr_bootstrap_before_dylinker_load(struct load_results* lr);
 
-
+/* THE LOADER'S [tag ...] INSTRUMENT FAMILY, GATED OFF IN A PRODUCTION BUILD (DARLING_GUEST_STREAM_PROBES) --
+ * the same compile-time switch the syscall-layer probes (101bf85) and the workqueue markers (a3e4b36) use.
+ * MEASURED 2026-10-16 (evidence/ios-ci-rung/round43, round42): the loader writes these to the guest process's
+ * OWN fd 2, so a child started with `2>file` got loader diagnostics before its own output, and the registered
+ * contract `darling/startup_stream_purity_guest` fails on them ("SSP leak stderr=..."). Being thorough about
+ * one instrument family and leaving another ungated is what made the earlier gate incomplete: a marker on a
+ * stream that is DATA for another program is a product defect no matter which family emits it.
+ * Build with -DDARLING_GUEST_STREAM_PROBES=1 to re-enable; the default emits nothing and contains none of
+ * these strings. `fprintf` must already be in scope at each use (all callers include <stdio.h>). */
+#ifndef MLDR_TAG
+#if DARLING_GUEST_STREAM_PROBES
+#define MLDR_TAG(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define MLDR_TAG(...) ((void)0)
+#endif
+#endif
 
 #endif // _MLDR_LOADER_H_

@@ -729,7 +729,7 @@ int main(int argc, char** argv, char** envp)
 	}
 	{
 		void* seeded = __mldr_ring_lane_seed();
-		fprintf(stderr, "[mldr-seed] seeded pid=%d map=%p\n", (int)getpid(), seeded);
+		MLDR_TAG("[mldr-seed] seeded pid=%d map=%p\n", (int)getpid(), seeded);
 	}
 	if (mldr_diag_on()) {
 		mldr_diagf("[mldr-ctl] seq=%u after-seed pid=%d ready=%d image=%s\n", __mldr_diag_seq(), (int)getpid(), __mldr_process_control_ready(), __mldr_diag_image(argv[0]));
@@ -1580,7 +1580,7 @@ static int __mldr_fd_courier_send_envelope(int fd, uint64_t token, uint32_t kind
 			}
 			size_t bytes = 0;
 			for (size_t i = 0; i < (size_t)msg.msg_iovlen; ++i) { bytes += msg.msg_iov[i].iov_len; }
-			fprintf(stderr, "[courier-send] n=%u scm=%d fdcnt=%d payload=%zu direction=guest->server\n",
+			MLDR_TAG("[courier-send] n=%u scm=%d fdcnt=%d payload=%zu direction=guest->server\n",
 				g_courier_send_n, scm, fdcnt, bytes);
 			fflush(stderr);
 		}
@@ -1719,7 +1719,7 @@ int __mldr_process_control_create(void) {
 		// DECISIVE and GUEST-SIDE on purpose. The server's own diagnostics do not appear in the run log at all
 		// (measured), so "did the server send it in time" can only be answered here: this line separates "the server
 		// had not sent yet within the window" from "the descriptor never arrived at any point".
-		fprintf(stderr, "[plane-doorbell] drain attempts=%d adopted=%d\n", attempts, adoptedEarly);
+		MLDR_TAG("[plane-doorbell] drain attempts=%d adopted=%d\n", attempts, adoptedEarly);
 		fflush(stderr);
 	}
 	if (mldr_diag_on()) {
@@ -1913,7 +1913,7 @@ char wake = 0;
 						     [plane-wake] record collapsed into ONE log line -- any line-based count of them undercounts, which is
 						     exactly how a reader would conclude the wake path was quiet. */
 						  { static unsigned g_plane_wake_n = 0; if (__atomic_fetch_add(&g_plane_wake_n, 1, __ATOMIC_RELAXED) < 16) {
-							fprintf(stderr, "[plane-wake] n=%u via=%s scm=0 fdcnt=0 payload=0 db=%d\n", g_plane_wake_n, rang ? "doorbell" : "none", db); fflush(stderr); } } }
+							MLDR_TAG("[plane-wake] n=%u via=%s scm=0 fdcnt=0 payload=0 db=%d\n", g_plane_wake_n, rang ? "doorbell" : "none", db); fflush(stderr); } } }
 						(void)wake;
 		}
 	}
@@ -2062,7 +2062,7 @@ char wake = 0;
 		static int __mldr_held_1 = 0;
 		if (!__mldr_held_1) {
 			__mldr_held_1 = 1;
-			fprintf(stderr, "[mldr-release-held-claimed] site=mldr.c:1896 tid=%d op=%u state=%u rstate=%u\n",
+			MLDR_TAG("[mldr-release-held-claimed] site=mldr.c:1896 tid=%d op=%u state=%u rstate=%u\n",
 				(int)syscall(SYS_gettid),
 				(unsigned)__atomic_load_n(&(page)->request_op, __ATOMIC_ACQUIRE),
 				(unsigned)__atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE),
@@ -2163,7 +2163,7 @@ static int __mldr_fd_courier_recv_once(int sock) {
 		// indistinguishable from a bundle that never arrived -- which is why the server could be measured sending the
 		// doorbell (52 records in its own log) while the loader's windows expired empty. Name it, with the length that
 		// did not match, so the next run decides between "arrives malformed" and "never arrives on this connection".
-		fprintf(stderr, "[fd-courier-drop] got=%zd expect=%zu flags=0x%x\n", got, sizeof(envelope), (unsigned)msg.msg_flags);
+		MLDR_TAG("[fd-courier-drop] got=%zd expect=%zu flags=0x%x\n", got, sizeof(envelope), (unsigned)msg.msg_flags);
 		fflush(stderr);
 		for (struct cmsghdr* c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
 			if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
@@ -2181,7 +2181,7 @@ static int __mldr_fd_courier_recv_once(int sock) {
 	if (msg.msg_flags & MSG_CTRUNC) {
 		// Same reason as the length branch: a truncated control message drops the descriptor, and it used to do so
 		// without a word.
-		fprintf(stderr, "[fd-courier-drop] truncated control message flags=0x%x kind=%u\n", (unsigned)msg.msg_flags, envelope.kind);
+		MLDR_TAG("[fd-courier-drop] truncated control message flags=0x%x kind=%u\n", (unsigned)msg.msg_flags, envelope.kind);
 		fflush(stderr);
 		return 1;
 	}
@@ -2215,7 +2215,7 @@ static int __mldr_fd_courier_recv_once(int sock) {
 			__mldr_fd_courier_store(envelope.token, forToken);
 		}
 		int adopted = __mldr_ring_doorbell(fd);
-		fprintf(stderr, "[plane-doorbell] adopted=%d fd=%d stored_dup=%d token=%llu\n", adopted, fd, forToken, (unsigned long long)envelope.token);
+		MLDR_TAG("[plane-doorbell] adopted=%d fd=%d stored_dup=%d token=%llu\n", adopted, fd, forToken, (unsigned long long)envelope.token);
 		fflush(stderr);
 		return 1;
 	}
@@ -2301,7 +2301,7 @@ int __mldr_fd_courier_socket(void) {
 	{
 		struct stat connStat;
 		if (fstat(sock, &connStat) == 0) {
-			fprintf(stderr, "[fd-courier-conn] sock=%d ino=%llu\n", sock, (unsigned long long)connStat.st_ino);
+			MLDR_TAG("[fd-courier-conn] sock=%d ino=%llu\n", sock, (unsigned long long)connStat.st_ino);
 			fflush(stderr);
 		}
 	}
@@ -2350,7 +2350,7 @@ const void* __mldr_fd_courier_address(void) {
 			return NULL;
 		}
 		if (mldr_diag_on()) {
-			fprintf(stderr, "[mldr-courier] pid=%d prefix=%s name=%s\n", (int)getpid(), real, name);
+			MLDR_TAG("[mldr-courier] pid=%d prefix=%s name=%s\n", (int)getpid(), real, name);
 		}
 		memset(&__mldr_fd_courier_address_data, 0, sizeof(__mldr_fd_courier_address_data));
 		__mldr_fd_courier_address_data.sun_family = AF_UNIX;
@@ -2403,7 +2403,7 @@ void* __mldr_ring_lane_seed(void) {
 	cb->s2c_waiters = 0;
 	uint32_t reject = 0;
 	int wake_fd = -1;
-	fprintf(stderr, "[mldr-seed] attach pid=%d memfd=%d size=%llu\n", (int)getpid(), memfd, (unsigned long long)total);
+	MLDR_TAG("[mldr-seed] attach pid=%d memfd=%d size=%llu\n", (int)getpid(), memfd, (unsigned long long)total);
 	int rc = 0;
 	if (getenv("MLDR_SEED_NO_ATTACH") != NULL) {
 		rc = -1; // bisection: skip the negotiate entirely
@@ -2458,7 +2458,7 @@ char wake = 0;
 						     [plane-wake] record collapsed into ONE log line -- any line-based count of them undercounts, which is
 						     exactly how a reader would conclude the wake path was quiet. */
 						  { static unsigned g_plane_wake_n = 0; if (__atomic_fetch_add(&g_plane_wake_n, 1, __ATOMIC_RELAXED) < 16) {
-							fprintf(stderr, "[plane-wake] n=%u via=%s scm=0 fdcnt=0 payload=0 db=%d\n", g_plane_wake_n, rang ? "doorbell" : "none", db); fflush(stderr); } } }
+							MLDR_TAG("[plane-wake] n=%u via=%s scm=0 fdcnt=0 payload=0 db=%d\n", g_plane_wake_n, rang ? "doorbell" : "none", db); fflush(stderr); } } }
 						(void)wake;
 						}
 					}
@@ -2485,7 +2485,7 @@ char wake = 0;
 						static int __mldr_held_2 = 0;
 						if (!__mldr_held_2) {
 							__mldr_held_2 = 1;
-							fprintf(stderr, "[mldr-release-held-claimed] site=mldr.c:2303 tid=%d op=%u state=%u rstate=%u\n",
+							MLDR_TAG("[mldr-release-held-claimed] site=mldr.c:2303 tid=%d op=%u state=%u rstate=%u\n",
 								(int)syscall(SYS_gettid),
 								(unsigned)__atomic_load_n(&(page)->request_op, __ATOMIC_ACQUIRE),
 								(unsigned)__atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE),
@@ -2515,7 +2515,7 @@ char wake = 0;
 			rc = dserver_rpc_ring_attach(memfd, total, &reject, &wake_fd);
 		}
 	}
-	fprintf(stderr, "[mldr-seed] attach-rc pid=%d rc=%d reject=%u wake=%d\n", (int)getpid(), rc, reject, wake_fd);
+	MLDR_TAG("[mldr-seed] attach-rc pid=%d rc=%d reject=%u wake=%d\n", (int)getpid(), rc, reject, wake_fd);
 	if (getenv("MLDR_SEED_NO_ATTACH") != NULL) {
 		// keep the mapping + a registry record so the rest of the seed still runs
 		mldr_ring_lane_map = map;
@@ -2535,12 +2535,12 @@ char wake = 0;
 	// adoption of the lane by a later image, so the remaining suspect is this step). The lane keeps a
 	// non-owning reference semantics either way -- the FIRST RUNTIME ATTACH adopts the doorbell exactly
 	// as it does today.
-	fprintf(stderr, "[mldr-seed] doorbell-in pid=%d wake=%d mode=%s\n", (int)getpid(), wake_fd, getenv("MLDR_SEED_KEEP_DOORBELL") ? "adopt" : "close");
+	MLDR_TAG("[mldr-seed] doorbell-in pid=%d wake=%d mode=%s\n", (int)getpid(), wake_fd, getenv("MLDR_SEED_KEEP_DOORBELL") ? "adopt" : "close");
 	// The seed ALWAYS adopts the canonical doorbell: experiment C showed closing it changes nothing about
 	// the boot break, while leaving it closed left every later image (and therefore every borrowed view)
 	// with doorbell=-1 and no way to wake the server.
 	int doorbell = __mldr_ring_doorbell(wake_fd);
-	fprintf(stderr, "[mldr-seed] doorbell-out pid=%d fd=%d\n", (int)getpid(), doorbell);
+	MLDR_TAG("[mldr-seed] doorbell-out pid=%d fd=%d\n", (int)getpid(), doorbell);
 	if (doorbell < 0) { munmap(map, total); mldr_ring_lane_state = -1; return 0; }
 	for (uint32_t i = 0; i < MLDR_RING_LANE_SLOTS; ++i) {
 		uint32_t expected = 0;

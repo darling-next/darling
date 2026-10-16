@@ -476,7 +476,7 @@ char wake = 0;
 						   notices a plane publish on its own bounded epoll timeout, and the process doorbell (an eventfd, not
 						   AF_UNIX) is used when this process already holds one. No packet leaves here. */
 						{ static unsigned g_plane_wake_n = 0; if (__atomic_fetch_add(&g_plane_wake_n, 1, __ATOMIC_RELAXED) < 8) {
-							fprintf(stderr, "[plane-wake] n=%u via=%s scm=0 fdcnt=0 payload=0 db=%d\n", g_plane_wake_n, (__mldr_ring_doorbell(-1) >= 0) ? "doorbell" : "none", __mldr_ring_doorbell(-1)); fflush(stderr); } }
+							MLDR_TAG("[plane-wake] n=%u via=%s scm=0 fdcnt=0 payload=0 db=%d\n", g_plane_wake_n, (__mldr_ring_doorbell(-1) >= 0) ? "doorbell" : "none", __mldr_ring_doorbell(-1)); fflush(stderr); } }
 						{ extern int __mldr_ring_doorbell(int fd); int db = __mldr_ring_doorbell(-1);
 						  if (db >= 0) { uint64_t one = 1; (void)!write(db, &one, sizeof(one)); } }
 						(void)wake;
@@ -515,12 +515,12 @@ char wake = 0;
 					static int diagCount = 0;
 					if (diagCount < 4) {
 						++diagCount;
-						fprintf(stderr, "[checkin-diag] pid=%d tid=%d state=%u seq=%u mine=%u status=%d spins=%d\n",
+						MLDR_TAG("[checkin-diag] pid=%d tid=%d state=%u seq=%u mine=%u status=%d spins=%d\n",
 							(int)getpid(), (int)syscall(SYS_gettid), seenState, seenSeq, mine, (int)seenStatus, spins);
 					}
 				} else if (claimed || checkin_pubseq != 0) {
 					if (!claimed) {
-						fprintf(stderr, "[checkin-reply-unseen tid=%d pub=%u seen=%u seenstate=0x%x -- published, reply overtaken]\n",
+						MLDR_TAG("[checkin-reply-unseen tid=%d pub=%u seen=%u seenstate=0x%x -- published, reply overtaken]\n",
 							(int)syscall(SYS_gettid), (unsigned)checkin_pubseq, (unsigned)seenSeq, (unsigned)seenState);
 					}
 					// the server owns the checkin; it is the same operation, so treat a completion we could
@@ -541,7 +541,7 @@ char wake = 0;
 			extern void* __mldr_process_control_page(void);
 			struct dserver_process_control* pg = (struct dserver_process_control*)__mldr_process_control_page();
 			++pathCount;
-			fprintf(stderr, "[checkin-path] pid=%d tid=%d page=%p ready=%d -> no-transport (declined)\n",
+			MLDR_TAG("[checkin-path] pid=%d tid=%d page=%p ready=%d -> no-transport (declined)\n",
 				(int)getpid(), (int)syscall(SYS_gettid), (void*)pg,
 				(pg != NULL) ? (int)__atomic_load_n(&pg->transport_ready, __ATOMIC_ACQUIRE) : -1);
 		}
@@ -739,7 +739,7 @@ char wake = 0;
 						   notices a plane publish on its own bounded epoll timeout, and the process doorbell (an eventfd, not
 						   AF_UNIX) is used when this process already holds one. No packet leaves here. */
 						{ static unsigned g_plane_wake_n = 0; if (__atomic_fetch_add(&g_plane_wake_n, 1, __ATOMIC_RELAXED) < 8) {
-							fprintf(stderr, "[plane-wake] n=%u via=%s scm=0 fdcnt=0 payload=0 db=%d\n", g_plane_wake_n, (__mldr_ring_doorbell(-1) >= 0) ? "doorbell" : "none", __mldr_ring_doorbell(-1)); fflush(stderr); } }
+							MLDR_TAG("[plane-wake] n=%u via=%s scm=0 fdcnt=0 payload=0 db=%d\n", g_plane_wake_n, (__mldr_ring_doorbell(-1) >= 0) ? "doorbell" : "none", __mldr_ring_doorbell(-1)); fflush(stderr); } }
 						{ extern int __mldr_ring_doorbell(int fd); int db = __mldr_ring_doorbell(-1);
 						  if (db >= 0) { uint64_t one = 1; (void)!write(db, &one, sizeof(one)); } }
 						(void)wake;
@@ -785,14 +785,14 @@ char wake = 0;
 			struct dserver_process_control* pg = (struct dserver_process_control*)__mldr_process_control_page();
 			if (checkoutPathCount < 4) {
 				++checkoutPathCount;
-				fprintf(stderr, "[checkout-path] pid=%d tid=%d page=%p ready=%d main=%d\n",
+				MLDR_TAG("[checkout-path] pid=%d tid=%d page=%p ready=%d main=%d\n",
 					(int)getpid(), (int)syscall(SYS_gettid), (void*)pg,
 					(pg != NULL) ? (int)__atomic_load_n(&pg->transport_ready, __ATOMIC_ACQUIRE) : -1,
 					(int)(getpid() == syscall(SYS_gettid)));
 			}
 		}
 		if (getpid() == syscall(SYS_gettid)) {
-			fprintf(stderr, "[mldr-ctl] checkout-skipped tid=%d (main thread exit; plane not published)\n",
+			MLDR_TAG("[mldr-ctl] checkout-skipped tid=%d (main thread exit; plane not published)\n",
 				(int)syscall(SYS_gettid));
 			checkout_result = 0;
 		} else {
@@ -803,7 +803,7 @@ char wake = 0;
 			{
 				extern void* __mldr_process_control_page(void);
 				struct dserver_process_control* pg2 = (struct dserver_process_control*)__mldr_process_control_page();
-				fprintf(stderr, "[checkout-pubfail tid=%d req=0x%x rep=0x%x ready=%d pub=%u seen=%u seenstate=0x%x claimed=%d]\n",
+				MLDR_TAG("[checkout-pubfail tid=%d req=0x%x rep=0x%x ready=%d pub=%u seen=%u seenstate=0x%x claimed=%d]\n",
 					(int)syscall(SYS_gettid),
 					(unsigned)(pg2 != NULL ? __atomic_load_n(&pg2->request_state, __ATOMIC_ACQUIRE) : 0xffffffffu),
 					(unsigned)(pg2 != NULL ? __atomic_load_n(&pg2->reply_state, __ATOMIC_ACQUIRE) : 0xffffffffu),
@@ -822,7 +822,7 @@ char wake = 0;
 			 * published still carries the information the abort was written for (a live thread the server would keep),
 			 * so that case keeps the named hard failure below. */
 			if (checkout_pubseq != 0) {
-				fprintf(stderr, "[checkout-reply-unseen tid=%d pub=%u seen=%u seenstate=0x%x -- published, reply overtaken]\n",
+				MLDR_TAG("[checkout-reply-unseen tid=%d pub=%u seen=%u seenstate=0x%x -- published, reply overtaken]\n",
 					(int)syscall(SYS_gettid), (unsigned)checkout_pubseq, (unsigned)checkout_seenSeq,
 					(unsigned)checkout_seenState);
 				checkout_result = 0;
@@ -840,7 +840,7 @@ char wake = 0;
 		// it's not ideal, but it's not fatal.
 		// perf#30 REMOVAL STEP 3b: the notice is still observable, but it goes to the LOG: a kprintf on the datagram
 		// would be the same removed transport, and the log is where this run's evidence is read from.
-		fprintf(stderr, "[mldr-ctl] checkout-failed tid=%d status=%d\n", (int)syscall(SYS_gettid), checkout_result);
+		MLDR_TAG("[mldr-ctl] checkout-failed tid=%d status=%d\n", (int)syscall(SYS_gettid), checkout_result);
 	}
 
 	// perf#30 REMOVAL STEP 3b: there is no per-thread RPC FD to close, and no cached one to forget either. The only
@@ -880,7 +880,7 @@ extern int __dserver_main_thread_socket_fd;
 // plane could not publish has NO transport. It is NAMED -- through the very token the acceptance harness counts -- and
 // it fails hard. A silently created socket here is the migration artifact this work removes.
 static void __darling_no_datagram_transport(const char* what) {
-	fprintf(stderr, "[rpc-socket-DENIED] pid=%d tid=%d call=%s image=loader denied=1 (no per-thread transport)\n",
+	MLDR_TAG("[rpc-socket-DENIED] pid=%d tid=%d call=%s image=loader denied=1 (no per-thread transport)\n",
 		(int)getpid(), (int)syscall(SYS_gettid), what);
 	abort();
 }
