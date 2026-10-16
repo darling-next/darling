@@ -3085,6 +3085,39 @@ static void finish_space_after_checkin(struct load_results* lr) {
 // guard makes the second call a no-op, so the order is established once and cannot drift.
 static bool g_bootstrap_done = false;
 
+// TEMPORARY DIAGNOSTIC (follow-up 37, diag branch, reverted before shipping). Targets now, not just flags: the
+// question is IDENTITY (is fd 0 still the action-mapped pipe read end at mldr's handoff, or already /dev/null),
+// and only readlink can show that. Fixed-file sink (f34's lesson), bounded to fds 0..15, one line per fd, no
+// other behaviour. Runs late (the dylinker path), where libc is already active, so snprintf/write are ordinary.
+static void mldr_fd_diag_t(const char* moment) {
+	int dfd = open("/private/var/tmp/psfa-fd-diag.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+	if (dfd < 0) {
+		return;
+	}
+	for (int fd = 0; fd < 16; fd++) {
+		int fl = fcntl(fd, F_GETFD);
+		if (fl < 0) {
+			continue;
+		}
+		char path[32];
+		char tgt[256];
+		snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+		ssize_t r = readlink(path, tgt, sizeof(tgt) - 1);
+		if (r > 0) {
+			tgt[r] = '\0';
+		} else {
+			snprintf(tgt, sizeof(tgt), "?");
+		}
+		char buf[400];
+		int n = snprintf(buf, sizeof(buf), "[fd-diag] %s pid=%d fd=%d flags=0x%x target=%s\n", moment,
+			(int)getpid(), fd, fl, tgt);
+		if (n > 0) {
+			write(dfd, buf, n);
+		}
+	}
+	close(dfd);
+}
+
 void mldr_bootstrap_before_dylinker_load(struct load_results* lr) {
 	if (g_bootstrap_done) {
 		if (mldr_diag_on()) {
@@ -3121,6 +3154,7 @@ void mldr_bootstrap_before_dylinker_load(struct load_results* lr) {
 	// ORDER: the semantic checkin first (it registers the process), then the suffix that needs the registration.
 	mldr_do_pending_checkin();
 	finish_space_after_checkin(lr);
+	mldr_fd_diag_t("pre-dylinker");
 }
 
 // The deferred checkin, performed by `main` after the process-control establishment and before any dependent
@@ -3196,75 +3230,7 @@ static void mldr_do_pending_checkin(void) {
 	g_pending_checkin.needed = false;
 }
 
-// TEMPORARY DIAGNOSTIC (follow-up 34, diag branch, reverted before shipping): the child's descriptor table at
-// three moments, into a FIXED file so the sink cannot be missed (the f33 attempt used MLDR_DIAG_LOG and printed
-// nothing because run-workload.sh takes --env values from positional arguments, not from its environment).
-// Bounded: fds 0..31, fcntl(F_GETFD) flags, one line each, no other behaviour, no stdio (open/write only).
-static void mldr_fd_diag(const char* moment) {
-	int dfd = open("/private/var/tmp/psfa-fd-diag.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
-	if (dfd < 0) {
-		return;
-	}
-	char line[160];
-	int n = 0;
-	line[n++] = '[';
-	const char* p = "fd-diag";
-	while (*p) line[n++] = *p++;
-	line[n++] = ']';
-	line[n++] = ' ';
-	p = moment;
-	while (*p && n < (int)sizeof(line) - 24) line[n++] = *p++;
-	p = " pid=";
-	while (*p && n < (int)sizeof(line) - 16) line[n++] = *p++;
-	{
-		int v = (int)getpid();
-		char tmp[12];
-		int t = 0;
-		if (v == 0) tmp[t++] = '0';
-		while (v > 0) { tmp[t++] = (char)('0' + (v % 10)); v /= 10; }
-		while (t > 0) line[n++] = tmp[--t];
-	}
-	line[n++] = '\n';
-	write(dfd, line, n);
-	for (int fd = 0; fd < 32; fd++) {
-		int fl = fcntl(fd, F_GETFD);
-		if (fl < 0) {
-			continue;
-		}
-		n = 0;
-		p = "[fd-diag] ";
-		while (*p) line[n++] = *p++;
-		p = moment;
-		while (*p && n < (int)sizeof(line) - 40) line[n++] = *p++;
-		p = " fd=";
-		while (*p) line[n++] = *p++;
-		{
-			int v = fd;
-			char tmp[12];
-			int t = 0;
-			if (v == 0) tmp[t++] = '0';
-			while (v > 0) { tmp[t++] = (char)('0' + (v % 10)); v /= 10; }
-			while (t > 0) line[n++] = tmp[--t];
-		}
-		p = " fdflags=0x";
-		while (*p) line[n++] = *p++;
-		{
-			const char* hex = "0123456789abcdef";
-			int v = fl;
-			char tmp[12];
-			int t = 0;
-			if (v == 0) tmp[t++] = '0';
-			while (v > 0) { tmp[t++] = hex[v & 0xf]; v >>= 4; }
-			while (t > 0) line[n++] = tmp[--t];
-		}
-		line[n++] = '\n';
-		write(dfd, line, n);
-	}
-	close(dfd);
-}
-
 static void start_thread(struct load_results* lr) {
-	mldr_fd_diag("pre-guest-entry");
 #ifdef __x86_64__
 	__asm__ volatile(
 		"mov %1, %%rsp\n"
