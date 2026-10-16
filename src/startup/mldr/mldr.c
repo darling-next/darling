@@ -3196,75 +3196,7 @@ static void mldr_do_pending_checkin(void) {
 	g_pending_checkin.needed = false;
 }
 
-// TEMPORARY DIAGNOSTIC (follow-up 34, diag branch, reverted before shipping): the child's descriptor table at
-// three moments, into a FIXED file so the sink cannot be missed (the f33 attempt used MLDR_DIAG_LOG and printed
-// nothing because run-workload.sh takes --env values from positional arguments, not from its environment).
-// Bounded: fds 0..31, fcntl(F_GETFD) flags, one line each, no other behaviour, no stdio (open/write only).
-static void mldr_fd_diag(const char* moment) {
-	int dfd = open("/private/var/tmp/psfa-fd-diag.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
-	if (dfd < 0) {
-		return;
-	}
-	char line[160];
-	int n = 0;
-	line[n++] = '[';
-	const char* p = "fd-diag";
-	while (*p) line[n++] = *p++;
-	line[n++] = ']';
-	line[n++] = ' ';
-	p = moment;
-	while (*p && n < (int)sizeof(line) - 24) line[n++] = *p++;
-	p = " pid=";
-	while (*p && n < (int)sizeof(line) - 16) line[n++] = *p++;
-	{
-		int v = (int)getpid();
-		char tmp[12];
-		int t = 0;
-		if (v == 0) tmp[t++] = '0';
-		while (v > 0) { tmp[t++] = (char)('0' + (v % 10)); v /= 10; }
-		while (t > 0) line[n++] = tmp[--t];
-	}
-	line[n++] = '\n';
-	write(dfd, line, n);
-	for (int fd = 0; fd < 32; fd++) {
-		int fl = fcntl(fd, F_GETFD);
-		if (fl < 0) {
-			continue;
-		}
-		n = 0;
-		p = "[fd-diag] ";
-		while (*p) line[n++] = *p++;
-		p = moment;
-		while (*p && n < (int)sizeof(line) - 40) line[n++] = *p++;
-		p = " fd=";
-		while (*p) line[n++] = *p++;
-		{
-			int v = fd;
-			char tmp[12];
-			int t = 0;
-			if (v == 0) tmp[t++] = '0';
-			while (v > 0) { tmp[t++] = (char)('0' + (v % 10)); v /= 10; }
-			while (t > 0) line[n++] = tmp[--t];
-		}
-		p = " fdflags=0x";
-		while (*p) line[n++] = *p++;
-		{
-			const char* hex = "0123456789abcdef";
-			int v = fl;
-			char tmp[12];
-			int t = 0;
-			if (v == 0) tmp[t++] = '0';
-			while (v > 0) { tmp[t++] = hex[v & 0xf]; v >>= 4; }
-			while (t > 0) line[n++] = tmp[--t];
-		}
-		line[n++] = '\n';
-		write(dfd, line, n);
-	}
-	close(dfd);
-}
-
 static void start_thread(struct load_results* lr) {
-	mldr_fd_diag("pre-guest-entry");
 #ifdef __x86_64__
 	__asm__ volatile(
 		"mov %1, %%rsp\n"
