@@ -438,10 +438,42 @@ void xtrace_log_v(const char* format, va_list args) {
 		strlcpy(&real_format[0] + (sizeof("xtrace: ") - 1), format, sizeof(real_format) - (sizeof("xtrace: ") - 1));
 		__simple_vkprintf(real_format, args);
 	} else if (xtrace_use_logfile) {
+		// THE RECORD IS NOT CAPPED HERE (follow-up 30). This 512-byte buffer was the only bound on a record, so
+		// a longer record arrived cut in half -- measured on the posix_spawn record, whose file_actions list
+		// ends mid-path in the mrs2 trace, which is exactly where the answer to "which action leaves fd 0 as
+		// /dev/null" can hide. Growing the stack buffer is NOT the answer: an 8192-byte frame measured a hung
+		// run (mrs3, killed after 900 s) whose harness log ends in `dserver_rpc_interrupt_enter failed` with an
+		// `rpc-socket-DENIED` abort and left 10 prefix processes behind, so the frame was reverted. Instead the
+		// one format the tracer itself uses for records -- "%s\n" with the assembled record as its only
+		// argument -- is written straight from that string in bounded 4096-byte pieces; every other format
+		// keeps the old path and the old bound.
 		char output[512];
 		ensure_logfile();
+		int log_fd = get_xtrace_per_thread_logfile();
+		va_list copy;
+		va_copy(copy, args);
 		__simple_vsnprintf(output, sizeof(output), format, args);
-		__write_for_xtrace(get_xtrace_per_thread_logfile(), output, __simple_strlen(output));
+		if (format[0] == '%' && format[1] == 's' && format[2] == '\n' && format[3] == '\0') {
+			const char* record = va_arg(copy, const char*);
+			if (record) {
+				size_t len = __simple_strlen(record);
+				size_t off = 0;
+				while (off < len) {
+					size_t chunk = len - off;
+					if (chunk > 4096) {
+						chunk = 4096;
+					}
+					__write_for_xtrace(log_fd, record + off, chunk);
+					off += chunk;
+				}
+				// the format carries the record terminator; writing only `record` merges records into one line
+				// (measured in mrs5: records ran together with no newline between them)
+				__write_for_xtrace(log_fd, "\n", 1);
+			}
+		} else {
+			__write_for_xtrace(log_fd, output, __simple_strlen(output));
+		}
+		va_end(copy);
 	} else {
 		__simple_vprintf(format, args);
 	}
