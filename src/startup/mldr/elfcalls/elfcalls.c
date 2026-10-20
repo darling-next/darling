@@ -45,8 +45,14 @@ static int dlclose_fatal(void* handle)
 {
 	if (dlclose(handle) != 0)
 	{
-		fprintf(stderr, "Cannot dlclose library (ELF): %s\n", dlerror());
-		abort();
+		// The only caller is the destructor that wrapgen emits for a wrapped
+		// ELF library, and at process exit the host can legitimately refuse to
+		// unload a library that other handles still reference (measured:
+		// libEGL's wrapper at exit of a successful xcodebuild run, where the
+		// build had already printed BUILD SUCCEEDED and written the .app).
+		// Aborting there turns a harmless teardown into SIGABRT/SIGTRAP after
+		// the product exists, so report it and continue.
+		fprintf(stderr, "Warning: cannot dlclose library (ELF): %s\n", dlerror());
 	}
 	return 0;
 }
