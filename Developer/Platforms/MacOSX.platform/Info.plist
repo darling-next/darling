@@ -71,11 +71,11 @@
 
 	<!-- Build -->
 	<key>DTSDKBuild</key>
-	<string>17E158</string>
+	<string>23A344</string>
 
 	<!-- Platform that built this -->
 	<key>DTSDKName</key>
-	<string>macosx10.13internal</string>
+	<string>macosx14.0internal</string>
 
 	<!-- Xcode version -->
 	<key>DTXcode</key>

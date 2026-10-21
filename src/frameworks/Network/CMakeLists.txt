@@ -120,3 +120,40 @@ add_framework(Network
 )
 
 reexport(Network libnetwork ${CMAKE_BINARY_DIR}/src/external/libnetwork/libnetwork.dylib)
+
+# Apple's Network.framework binary IS the Swift Network: a client built against a macOS SDK binds its
+# Swift Network symbols to /System/Library/Frameworks/Network.framework/Versions/A/Network, not to
+# /usr/lib/swift/libswiftNetwork.dylib, and dyld resolves a two-level reference through the image's
+# re-export chain. Measured 2026-07: the SDK's own Network.tbd carries these names as
+# $ld$previous$/usr/lib/swift/libswiftNetwork.dylib$$1$10.15$14.0$_$s7Network... entries, i.e. Apple
+# moved them out of libswiftNetwork.dylib into the framework. Xcode 26.3's Notarization.framework
+# binds 138 of them, all eager and strong (decoded from its LC_DYLD_CHAINED_FIXUPS), against this
+# framework's ordinal 12. Darling's Network is Objective-C only, so the Swift half lives in the
+# payload's overlay image; re-exporting it here is what makes the framework path satisfy such a
+# client, and it is the same mechanism Foundation.framework uses for libswiftFoundation.dylib
+# (src/external/foundation/CMakeLists.txt) and this target already uses for libnetwork above. It is a
+# re-export, not a stub: the symbols are defined by that image, and the framework defines none of them
+# locally.
+# NOTE ON THE TARGET, measured 2026-10-13: this tree builds Network.framework through
+# add_framework(... FAT ...), so the target is `Network` (not Network_x86_64: build/verify14 has only
+# CMakeFiles/Network.dir) and make_fat appends `-arch i386 -arch x86_64` to ONE link
+# (cmake/darling_lib.cmake, make_fat). ld64 tolerates the mismatch and says so --
+#   ld: warning: ignoring file .../libswiftNetwork.dylib, building for macOS-i386 but attempting to
+#   link with file built for macOS-x86_64
+# -- and the link succeeds with the framework still universal (x86_64 + i386): the x86_64 slice
+# carries the re-export (llvm-objdump --macho --arch=x86_64 --dylibs-used shows
+# /usr/lib/swift/libswiftNetwork.dylib (… reexport)) and the i386 slice does not. That is exactly what
+# Foundation's explicit per-arch split (Foundation_x86_64 / Foundation_i386,
+# src/external/foundation/CMakeLists.txt) produces, so no split is needed here.
+if (TARGET_x86_64)
+	set(_network_swift_overlay "${CMAKE_SOURCE_DIR}/src/external/swift/libswiftNetwork.dylib")
+	if(NOT EXISTS "${_network_swift_overlay}")
+		message(FATAL_ERROR
+			"Network must re-export the Swift Network overlay, but "
+			"src/external/swift/libswiftNetwork.dylib is absent: materialise the git-lfs payload first")
+	endif()
+	set_property(
+		TARGET Network APPEND_STRING PROPERTY
+		LINK_FLAGS " -Wl,-reexport_library,${_network_swift_overlay}"
+	)
+endif (TARGET_x86_64)

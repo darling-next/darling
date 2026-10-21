@@ -118,6 +118,13 @@ extern void FSEventStreamInvalidate(FSEventStreamRef streamRef);
 
 extern void FSEventStreamRelease(FSEventStreamRef streamRef);
 
+/* Apple's FSEvents.h (MacOSX SDK), the two flush declarations at lines 1320 and 1347: the async
+ * flush answers the largest event id ever queued for the stream (0 when none), the sync one returns
+ * once the callback has been invoked for every event that had already occurred. */
+extern FSEventStreamEventId FSEventStreamFlushAsync(FSEventStreamRef streamRef);
+
+extern void FSEventStreamFlushSync(FSEventStreamRef streamRef);
+
 extern void FSEventStreamRetain(FSEventStreamRef streamRef);
 
 extern void FSEventStreamScheduleWithRunLoop(FSEventStreamRef streamRef, CFRunLoopRef runLoop, CFStringRef runLoopMode);

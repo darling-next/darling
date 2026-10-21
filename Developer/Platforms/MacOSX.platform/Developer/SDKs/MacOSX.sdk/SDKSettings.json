@@ -1,10 +1,10 @@
 {
-  "CanonicalName": "macosx11.3",
-  "DisplayName": "macOS 11.3",
-  "MinimalDisplayName": "11.3",
-  "Version": "11.3",
-  "MaximumDeploymentTarget": "11.3",
-  "DefaultDeploymentTarget": "11.3",
+  "CanonicalName": "macosx14.0",
+  "DisplayName": "macOS 14.0",
+  "MinimalDisplayName": "14.0",
+  "Version": "14.0",
+  "MaximumDeploymentTarget": "14.0",
+  "DefaultDeploymentTarget": "14.0",
   "DefaultProperties": {
     "PLATFORM_NAME": "macosx"
   }
