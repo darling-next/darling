@@ -5,7 +5,6 @@ if (COMPONENT_cli)
 
 	add_darling_executable(sw_vers sw_vers.c)
 	add_darling_executable(sudo sudo.c)
-	add_darling_executable(codesign codesign.c)
 	add_darling_executable(dsmemberutil dsmemberutil.c)
 	add_darling_executable(softwareupdate softwareupdate.c)
 	add_darling_executable(spctl spctl.c)
@@ -14,7 +13,7 @@ if (COMPONENT_cli)
 	# needs no compiler inside the prefix. Installed as a diagnostic, like the other tools here.
 	add_darling_executable(ring_mach_msg_test ring_mach_msg_test.c)
 
-	install(TARGETS sw_vers sudo codesign dsmemberutil DESTINATION libexec/darling/usr/bin)
+	install(TARGETS sw_vers sudo dsmemberutil DESTINATION libexec/darling/usr/bin)
 	install(TARGETS softwareupdate spctl DESTINATION libexec/darling/usr/sbin)
 	install(TARGETS ring_mach_msg_test DESTINATION libexec/darling/usr/bin)
 
