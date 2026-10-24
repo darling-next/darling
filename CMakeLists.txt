@@ -401,6 +401,11 @@ if(DARLING_ROOTLESS_HOMEBREW AND NOT DARLING_ROOTLESS_TOOLCHAIN)
 endif()
 set(DARLING_ROOTLESS_TOOLCHAIN_TARGETS
 	installer
+	# Standard guest /usr/bin/sudo, built from src/tools/sudo.c. It is the IN-GUEST
+	# sudo (setuid/setgid through guest RPC; the host UID/GID do not change), not a
+	# host privilege path. The toolchain needs it so tools that check for root --
+	# xcodebuild's license acceptance among them -- can run in a fresh prefix.
+	sudo
 	perl
 	perl5.18
 	perl5.28
@@ -1318,7 +1323,8 @@ if(DARLING_ROOTLESS_TOOLCHAIN)
     {\"target\": \"perl\", \"guest_path\": \"/usr/bin/perl\", \"host_path\": \"$<TARGET_FILE:perl>\"},
     {\"target\": \"perl5.18\", \"guest_path\": \"/usr/bin/perl5.18\", \"host_path\": \"$<TARGET_FILE:perl5.18>\"},
     {\"target\": \"perl5.28\", \"guest_path\": \"/usr/bin/perl5.28\", \"host_path\": \"$<TARGET_FILE:perl5.28>\"},
-    {\"target\": \"security\", \"guest_path\": \"/usr/bin/security\", \"host_path\": \"$<TARGET_FILE:securitytool_macos>\"}${_rootless_toolchain_extra_entrypoints}
+    {\"target\": \"security\", \"guest_path\": \"/usr/bin/security\", \"host_path\": \"$<TARGET_FILE:securitytool_macos>\"},
+    {\"target\": \"sudo\", \"guest_path\": \"/usr/bin/sudo\", \"host_path\": \"$<TARGET_FILE:sudo>\"}${_rootless_toolchain_extra_entrypoints}
   ],
   \"resources\": [
     {\"target\": \"installer_man\", \"guest_path\": \"/usr/share/man/man8/installer.8\", \"host_path\": \"${_rootless_toolchain_resource_dir}/usr/share/man/man8/installer.8\"},
