@@ -308,6 +308,7 @@ set(DARLING_ROOTLESS_BOOTSTRAP_TARGETS
 	system_loader
 	darlingserver
 	filecoordinationd
+	derq
 	system_kernel
 	objc
 	resolv-darwin
@@ -379,6 +380,7 @@ file(GENERATE
     {\"target\": \"system_loader\", \"guest_path\": \"/usr/lib/dyld\", \"host_path\": \"$<TARGET_FILE:system_loader>\"},
     {\"target\": \"darlingserver\", \"guest_path\": \"/bin/darlingserver\", \"host_path\": \"$<TARGET_FILE:darlingserver>\"},
     {\"target\": \"filecoordinationd\", \"guest_path\": \"/usr/sbin/filecoordinationd\", \"host_path\": \"$<TARGET_FILE:filecoordinationd>\"},
+    {\"target\": \"derq\", \"guest_path\": \"/usr/bin/derq\", \"host_path\": \"$<TARGET_FILE:derq>\"},
     {\"target\": \"bash\", \"guest_path\": \"/bin/bash\", \"host_path\": \"$<TARGET_FILE:bash>\"}
   ],
   \"resources\": [
