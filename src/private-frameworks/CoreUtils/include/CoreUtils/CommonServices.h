@@ -32,6 +32,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <libkern/OSByteOrder.h>
 
 #ifdef  __cplusplus
 extern "C" {
@@ -46,6 +47,12 @@ extern "C" {
 #if 0
 #pragma mark == Macros ==
 #endif
+
+// Read/write a host-order uint16_t from/to a two-byte big-endian wire field.
+// The field may be unaligned; callers must provide two accessible bytes.
+// Reuse XNU's byte-order primitives rather than requiring CoreUtils runtime code.
+#define ReadBig16(PTR)          OSReadBigInt16((PTR), 0)
+#define WriteBig16(PTR, VALUE)   OSWriteBigInt16((PTR), 0, (VALUE))
 
 //---------------------------------------------------------------------------------------------------------------------------
 /*!	@defined	kSizeCString
