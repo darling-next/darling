@@ -158,6 +158,31 @@ static void require_exact_file(const char* path, const char* content)
 		"rejected prefix path mutated its target");
 }
 
+static void require_provisioned_line(const char* path, const char* expected,
+	int fields)
+{
+	int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	require(fd >= 0, "open provisioned account file");
+	char content[4096] = {0};
+	ssize_t length = read(fd, content, sizeof(content) - 1);
+	require(close(fd) == 0, "close provisioned account file");
+	require(length > 0, "provisioned account file is empty");
+	char* line = strstr(content, expected);
+	require(line != NULL, "provisioned account line is missing");
+	int observed_fields = 1;
+	for (char* cursor = line; *cursor != '\0' && *cursor != '\n'; cursor++)
+		if (*cursor == ':')
+			observed_fields++;
+	require(observed_fields == fields,
+		"provisioned account line has the wrong field count");
+	int occurrences = 0;
+	for (char* cursor = content;
+			(cursor = strstr(cursor, "_trustd:")) != NULL;
+			cursor += strlen("_trustd:"))
+		occurrences++;
+	require(occurrences == 1, "trustd account record must be unique");
+}
+
 static int remove_fixture_entry(
 	const char* path,
 	const struct stat* status,
@@ -1714,6 +1739,54 @@ static void test_rootless_namespace_layout(void)
 	remove_fixture_tree(directory);
 }
 
+static void test_account_provisioning(void)
+{
+	char root[] = "/tmp/darling-prefix-accounts-test.XXXXXX";
+	char* directory = mkdtemp(root);
+	require(directory != NULL, "mkdtemp account provisioning fixture");
+	char path[2048];
+	snprintf(path, sizeof(path), "%s/prefix", directory);
+	darling_runtime_prefix handle = DARLING_RUNTIME_PREFIX_INITIALIZER;
+	struct darling_runtime_prefix_lifecycle_result result;
+	prepare_prefix_fixture(path, handle, &result);
+
+	char file[4096];
+	char host[512];
+	snprintf(file, sizeof(file), "%s/private/etc/passwd", path);
+	require_provisioned_line(file,
+		"root:*:0:0:System Administrator:/var/root:/bin/sh", 7);
+	snprintf(host, sizeof(host),
+		"tester:*:%u:%u:Darling User:/Users/tester:/bin/bash",
+		(unsigned)getuid(), (unsigned)getgid());
+	require_provisioned_line(file, host, 7);
+	require_provisioned_line(file,
+		"_trustd:*:282:282:trustd:/var/empty:/usr/bin/false", 7);
+
+	snprintf(file, sizeof(file), "%s/private/etc/master.passwd", path);
+	require_provisioned_line(file,
+		"root:*:0:0::0:0:System Administrator:/var/root:/bin/sh", 10);
+	snprintf(host, sizeof(host),
+		"tester:*:%u:%u::0:0:Darling User:/Users/tester:/bin/bash",
+		(unsigned)getuid(), (unsigned)getgid());
+	require_provisioned_line(file, host, 10);
+	require_provisioned_line(file,
+		"_trustd:*:282:282::0:0:trustd:/var/empty:/usr/bin/false", 10);
+
+	snprintf(file, sizeof(file), "%s/private/etc/group", path);
+	require_provisioned_line(file, "wheel:*:0:root,tester", 4);
+	snprintf(host, sizeof(host), "tester:*:%u:tester", (unsigned)getgid());
+	require_provisioned_line(file, host, 4);
+	require_provisioned_line(file, "_trustd:*:282:_trustd", 4);
+
+	snprintf(file, sizeof(file), "%s/private/var/empty", path);
+	struct stat home;
+	require(stat(file, &home) == 0 && S_ISDIR(home.st_mode),
+		"trustd home directory was not provisioned");
+
+	delete_prefix_fixture(handle);
+	remove_fixture_tree(directory);
+}
+
 int main(void)
 {
 	const char* selected = getenv("DARLING_RUNTIME_PREFIX_TEST_CASE");
@@ -1732,6 +1805,8 @@ int main(void)
 			test_prefix_marker();
 		else if (strcmp(selected, "namespace") == 0)
 			test_rootless_namespace_layout();
+		else if (strcmp(selected, "accounts") == 0)
+			test_account_provisioning();
 		else
 			require(0, "unknown focused lifecycle test case");
 		puts("DARLING_RUNTIME_MODE_CONTRACT_OK");
@@ -1748,6 +1823,7 @@ int main(void)
 	test_prefix_lifecycle();
 	test_prefix_marker();
 	test_rootless_namespace_layout();
+	test_account_provisioning();
 	puts("DARLING_RUNTIME_MODE_CONTRACT_OK");
 	return 0;
 }

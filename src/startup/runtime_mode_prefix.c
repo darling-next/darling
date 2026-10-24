@@ -941,6 +941,7 @@ int darling_runtime_mode_setup_prefix(
 		"usr/local/share",
 		"private",
 		"private/var",
+		"private/var/empty",
 		"private/var/log",
 		"private/var/db",
 		"private/var/run",
@@ -994,9 +995,15 @@ int darling_runtime_mode_setup_prefix(
 	if (etc_fd < 0)
 		return -1;
 	char content[2048];
+	/* The base service account records are part of the runtime prefix, with the
+	 * same formats the file lookup enforces: /etc/passwd is 7 fields for
+	 * unprivileged callers, /etc/master.passwd is 10 fields for root and
+	 * /etc/group is 4 fields. _trustd is the trustd role account (282:282) from
+	 * files/private/etc/{master.passwd,group}.iPhone; private/var/empty is above. */
 	int length = snprintf(content, sizeof(content),
 		"root:*:0:0:System Administrator:/var/root:/bin/sh\n"
-		"%s:*:%u:%u:Darling User:/Users/%s:/bin/bash\n",
+		"%s:*:%u:%u:Darling User:/Users/%s:/bin/bash\n"
+		"_trustd:*:282:282:trustd:/var/empty:/usr/bin/false\n",
 		user_name, (unsigned)user_id, (unsigned)group_id, user_name);
 	if (length < 0 || (size_t)length >= sizeof(content) ||
 		create_regular_file(etc_fd, "passwd", content,
@@ -1010,7 +1017,8 @@ int darling_runtime_mode_setup_prefix(
 
 	length = snprintf(content, sizeof(content),
 		"root:*:0:0::0:0:System Administrator:/var/root:/bin/sh\n"
-		"%s:*:%u:%u::0:0:Darling User:/Users/%s:/bin/bash\n",
+		"%s:*:%u:%u::0:0:Darling User:/Users/%s:/bin/bash\n"
+		"_trustd:*:282:282::0:0:trustd:/var/empty:/usr/bin/false\n",
 		user_name, (unsigned)user_id, (unsigned)group_id, user_name);
 	if (length < 0 || (size_t)length >= sizeof(content) ||
 		create_regular_file(etc_fd, "master.passwd", content,
@@ -1024,7 +1032,8 @@ int darling_runtime_mode_setup_prefix(
 
 	length = snprintf(content, sizeof(content),
 		"wheel:*:0:root,%s\n"
-		"%s:*:%u:%s\n",
+		"%s:*:%u:%s\n"
+		"_trustd:*:282:_trustd\n",
 		user_name, user_name, (unsigned)group_id, user_name);
 	if (length < 0 || (size_t)length >= sizeof(content) ||
 		create_regular_file(etc_fd, "group", content,
