@@ -57,6 +57,11 @@ int rootless_runtime_prepare(void)
 		mode_t mode;
 	} directories[] = {
 		{ "/private/var/db/launchd.db/com.apple.launchd", 0755 },
+		/* Standard guest preference store. Atomic preference writers create a temporary
+		 * file here and rename it (Xcode's license acceptance records through
+		 * NSMutableDictionary writeToFile:atomically:YES); open() does not create the
+		 * parent, and that failure is silent, so the directory must exist first. */
+		{ "/Library/Preferences", 0755 },
 		/* launchd's auxiliary log store (launchd_vsyslog() opens
 		 * /private/var/log/com.apple.launchd/launchd-{debug,perf,shutdown}.<username>.log there when
 		 * the corresponding /private/var/db/.launchd_log_* switch exists). fopen() does not create
