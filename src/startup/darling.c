@@ -325,6 +325,43 @@ int main(int argc, char ** argv)
 		}
 	}
 
+	/*
+	 * Publish the selected prefix on the common path, after the retained
+	 * directory, lifecycle and name checks and before either a cold init or
+	 * a warm shellspawn decision. setupShellspawnEnv copies this launcher's
+	 * environment, so a publication only in spawnInitProcess would miss every
+	 * warm command.
+	 */
+	if (darling_runtime_mode_verify_prefix_name(g_runtimePrefix,
+			runtimeModeError, sizeof(runtimeModeError)) != 0) {
+		fprintf(stderr, "Cannot verify Darling prefix name: %s\n",
+			runtimeModeError);
+		return 1;
+	}
+	char selectedPrefixPath[PATH_MAX];
+	char selectedPrefixFdPath[64];
+	ssize_t selectedPrefixLength;
+
+	snprintf(selectedPrefixFdPath, sizeof(selectedPrefixFdPath),
+		"/proc/self/fd/%d", g_runtimePrefix->directory_fd);
+	selectedPrefixLength = readlink(selectedPrefixFdPath,
+		selectedPrefixPath, sizeof(selectedPrefixPath) - 1);
+	if (selectedPrefixLength < 0 ||
+		selectedPrefixLength >= (ssize_t)sizeof(selectedPrefixPath) - 1) {
+		fprintf(stderr, "Cannot resolve the retained Darling prefix: %s\n",
+			selectedPrefixLength < 0 ? strerror(errno) : "path too long");
+		return 1;
+	}
+	selectedPrefixPath[selectedPrefixLength] = '\0';
+	if (selectedPrefixPath[0] != '/') {
+		fprintf(stderr, "Retained Darling prefix is not absolute\n");
+		return 1;
+	}
+	if (setenv("DARLING_PREFIX", selectedPrefixPath, 1) != 0) {
+		fprintf(stderr, "Cannot publish Darling prefix: %s\n", strerror(errno));
+		return 1;
+	}
+
 	pidInit = getInitProcess();
 
 	if (strcmp(argv[commandIndex], "shutdown") == 0)
@@ -1138,35 +1175,6 @@ pid_t spawnInitProcess(void)
 		fprintf(stderr,
 			"Cannot hand the retained Darling prefix to darlingserver: %s\n",
 			error[0] == '\0' ? "runtime workdir fd is missing" : error);
-		exit(1);
-	}
-
-	/*
-	 * The retained directory descriptor is the validated prefix identity.
-	 * Resolve it once at the last possible point, after verify_prefix_name
-	 * and before any child is spawned, so every child inherits one canonical
-	 * host-absolute DARLING_PREFIX rather than a caller spelling or a
-	 * /proc/self/fd path that will not survive descriptor closure.
-	 */
-	char prefixPath[PATH_MAX];
-	char prefixFdPath[64];
-	ssize_t prefixPathLength;
-
-	snprintf(prefixFdPath, sizeof(prefixFdPath), "/proc/self/fd/%d",
-		g_runtimePrefix->directory_fd);
-	prefixPathLength = readlink(prefixFdPath, prefixPath, sizeof(prefixPath) - 1);
-	if (prefixPathLength < 0 || prefixPathLength >= (ssize_t)sizeof(prefixPath) - 1) {
-		fprintf(stderr, "Cannot resolve the retained Darling prefix: %s\n",
-			prefixPathLength < 0 ? strerror(errno) : "path too long");
-		exit(1);
-	}
-	prefixPath[prefixPathLength] = '\0';
-	if (prefixPath[0] != '/') {
-		fprintf(stderr, "Retained Darling prefix is not absolute\n");
-		exit(1);
-	}
-	if (setenv("DARLING_PREFIX", prefixPath, 1) != 0) {
-		fprintf(stderr, "Cannot publish Darling prefix: %s\n", strerror(errno));
 		exit(1);
 	}
 
