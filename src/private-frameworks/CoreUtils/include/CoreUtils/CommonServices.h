@@ -22,6 +22,7 @@
 
 #include <os/base_private.h>
 #include <TargetConditionals.h>
+#include <AssertMacros.h>
 #include <stddef.h>
 #include <sys/types.h>
 #include <netinet/in.h>
@@ -32,6 +33,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <libkern/OSByteOrder.h>
 
 #ifdef  __cplusplus
@@ -48,11 +50,27 @@ extern "C" {
 #pragma mark == Macros ==
 #endif
 
-// Read/write a host-order uint16_t from/to a two-byte big-endian wire field.
-// The field may be unaligned; callers must provide two accessible bytes.
+// Wire fields may be unaligned; callers must provide the indicated byte width.
 // Reuse XNU's byte-order primitives rather than requiring CoreUtils runtime code.
+#define Read8(PTR)              (*(const uint8_t *)(PTR))
 #define ReadBig16(PTR)          OSReadBigInt16((PTR), 0)
-#define WriteBig16(PTR, VALUE)   OSWriteBigInt16((PTR), 0, (VALUE))
+#define ReadBig32(PTR)          OSReadBigInt32((PTR), 0)
+#define Write8(PTR, VALUE)      (*(uint8_t *)(PTR) = (uint8_t)(VALUE))
+#define WriteBig16(PTR, VALUE)  OSWriteBigInt16((PTR), 0, (VALUE))
+#define WriteBig32(PTR, VALUE)  OSWriteBigInt32((PTR), 0, (VALUE))
+
+#define STATIC_INLINE static inline
+#define FreeNullSafe(PTR) free(PTR)
+
+// Match mdns_forget: release a non-NULL object, then clear its owning slot.
+// Capture the slot once so an indexed/pointer expression is not evaluated twice.
+#define ForgetCustom(PTR, RELEASE) do { \
+    __typeof__(PTR) __cu_forget_slot = (PTR); \
+    if (*__cu_forget_slot) { \
+        RELEASE(*__cu_forget_slot); \
+        *__cu_forget_slot = NULL; \
+    } \
+} while (0)
 
 //---------------------------------------------------------------------------------------------------------------------------
 /*!	@defined	kSizeCString
@@ -69,6 +87,7 @@ extern "C" {
  */
 
 #define sizeof_array( X )       ( sizeof( X ) / sizeof( X[ 0 ] ) )
+#define countof(X) sizeof_array(X)
 
 //---------------------------------------------------------------------------------------------------------------------------
 /*!	@defined	sizeof_element
