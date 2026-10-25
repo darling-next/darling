@@ -19,9 +19,12 @@ add_framework(ServiceManagement
 
 	SOURCES
 	  ServiceManagement.c
+	  SMUserJobs.c
+	  SMSystemJobs.c
 
 	DEPENDENCIES
 		system
+		launch
 		CoreFoundation
 		Security
 		CoreServices

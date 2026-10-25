@@ -1,4 +1,6 @@
 #include <ServiceManagement/ServiceManagement.h>
+#include "SMJobPrivate.h"
+#include <errno.h>
 
 #define STUB() (printf("STUB CALLED: %s:%i\n\t\t%s\n", __FILE__, __LINE__, __PRETTY_FUNCTION__))
 
@@ -23,13 +25,31 @@ CFArrayRef SMCopyAllJobDictionaries(CFStringRef domain) {
 }
 
 Boolean SMJobSubmit(CFStringRef domain, CFDictionaryRef job, AuthorizationRef auth, CFErrorRef *outError) {
-  STUB();
-  return 1;
+  if (outError)
+    *outError = NULL;
+  if (domain && CFGetTypeID(domain) == CFStringGetTypeID()) {
+    if (CFEqual(domain, kSMDomainSystemLaunchd))
+      return _SMJobSubmitSystem(job, auth, outError);
+    if (CFEqual(domain, kSMDomainUserLaunchd))
+      return _SMJobSubmitUser(job, outError);
+  }
+  if (outError)
+    *outError = CFErrorCreate(kCFAllocatorDefault, kCFErrorDomainPOSIX, EINVAL, NULL);
+  return false;
 }
 
 Boolean SMJobRemove(CFStringRef domain, CFStringRef jobLabel, AuthorizationRef auth, Boolean wait, CFErrorRef *outError) {
-  STUB();
-  return 1;
+  if (outError)
+    *outError = NULL;
+  if (domain && CFGetTypeID(domain) == CFStringGetTypeID()) {
+    if (CFEqual(domain, kSMDomainSystemLaunchd))
+      return _SMJobRemoveSystem(jobLabel, auth, wait, outError);
+    if (CFEqual(domain, kSMDomainUserLaunchd))
+      return _SMJobRemoveUser(jobLabel, wait, outError);
+  }
+  if (outError)
+    *outError = CFErrorCreate(kCFAllocatorDefault, kCFErrorDomainPOSIX, EINVAL, NULL);
+  return false;
 }
 
 #if !(TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR)

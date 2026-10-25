@@ -51,6 +51,59 @@ If you wish your service to run as a certain user, in that user's environment, m
 agent is the ONLY supported means of accomplishing this on Mac OS X. In other words, it is not sufficient to perform a
 .Xr setuid 2
 to become a user in the truest sense on Mac OS X.
+.Ss Darling private user-domain clients
+The private liblaunch entry points
+.Fn _launch_msg_user
+and
+.Fn _launch_remove_user_wait
+select the caller's effective-UID launchd explicitly: obtain the root bootstrap
+send right and then use
+.Fn bootstrap_look_up_per_user
+with a NULL service name.
+They never change the process bootstrap port or environment.
+The message entry point obtains that selected launchd's socket using its
+.Fn vproc_mig_getsocket
+RPC, rejects the system socket, and owns a separate connection for each call.
+It does not use the process-wide launch_msg connection cache or trusted check-in
+descriptor. Exchanges reuse liblaunch's serialization, send/receive and real
+security-session attachment code; no session grant is fabricated when an audit
+session port or the attachment RPC is unavailable.
+The request tree is borrowed and may be enriched with security-session UUIDs;
+the returned tree is owned by the caller.
+NULL with errno denotes a client or IPC failure, while an owned errno reply
+preserves launchd's result. Client bootstrap-to-errno categories are not a
+byte-exact native ServiceManagement error mapping.
+.Pp
+The wait entry point sends
+.Dv VPROC_MAGIC_UNLOAD_SIGNAL
+through
+.Fn vproc_mig_send_signal
+on the selected user bootstrap port and preserves its raw kernel/bootstrap
+status. The existing server holds the MIG reply until removal finishes for a
+running job; polling for a missing label is not completion evidence.
+All acquired bootstrap send rights and per-request connection state are released.
+The private declarations have default visibility in launch_priv.h; the existing
+CMake target is
+.Li launch
+and the installed image is
+.Pa /usr/lib/system/liblaunch.dylib .
+.Pp
+Reuse provenance: these are extensions of Apple's existing 2005-2012
+Apache-2.0 liblaunch.c implementation, retaining its license header.
+Current Darling upstream
+.Li 60ba801decee7a00782f74f6be4c8ffb013f79ff
+and VibeDarling
+.Li e76e5ed862e79656d02266a3608d89d5fd914557
+were inspected at their exact src/launchd/liblaunch/liblaunch.c paths:
+their launch_client_init, launch_msg_internal and reply callback bodies retain
+the implicit global/environment-selected connection; neither supplies these
+explicit-domain helpers.
+The bootstrap_look_up_per_user body in upstream libbootstrap.c and
+_vproc_send_signal_by_label body in Vibe libvproc.c were also inspected.
+Vibe is a read-only implementation reference, not a build authority.
+The existing legacy_ipc_request Mach server supports CheckIn only, so it is not
+a submit/remove transport. No server or authorization-provider expansion is
+implied by these client additions.
 .Sh FILES
 .Bl -tag -width "/System/Library/LaunchDaemons" -compact
 .It Pa ~/Library/LaunchAgents

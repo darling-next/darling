@@ -165,6 +165,26 @@ mpm_uncork_fork(mach_port_t ajob);
 launch_data_t
 launch_socket_service_check_in(void);
 
+/*
+ * Explicit effective-UID launchd context; ignores LAUNCHD_SOCKET, inherited
+ * check-in descriptors and system-launchd environment overrides. Each request
+ * owns its connection and bootstrap send rights. No process bootstrap switch.
+ *
+ * The request is borrowed and may be enriched with security-session UUIDs as
+ * by launch_msg(); callers must first construct an owned launch_data tree.
+ * Returns an owned reply, or NULL with errno for a client/IPC failure.
+ */
+launch_data_t
+_launch_msg_user(launch_data_t request);
+
+/*
+ * Waits for launchd's actual unload-completion MIG reply, not disappearance
+ * from job lookup. Returns the raw bootstrap/kernel status. Invalid labels
+ * (NULL, empty or too long for name_t) return KERN_INVALID_ARGUMENT locally.
+ */
+kern_return_t
+_launch_remove_user_wait(const char *label);
+
 __END_DECLS
 
 #pragma GCC visibility pop

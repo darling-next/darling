@@ -43,6 +43,7 @@
 #include <uuid/uuid.h>
 #include <sys/syscall.h>
 #include <dlfcn.h>
+#include <poll.h>
 
 #ifdef __LP64__
 /* workaround: 5723161 */
@@ -86,9 +87,11 @@ struct _launch_data {
 };
 
 #include "bootstrap.h"
+#include "bootstrap_priv.h"
 #include "vproc.h"
 #include "vproc_priv.h"
 #include "vproc_internal.h"
+#include "job.h"
 
 /* __OSBogusByteSwap__() must not really exist in the symbol namespace
  * in order for the following to generate an error at build time.
@@ -380,19 +383,30 @@ bool
 launch_data_dict_insert(launch_data_t dict, launch_data_t what, const char *key)
 {
 	size_t i;
-	launch_data_t thekey = launch_data_alloc(LAUNCH_DATA_STRING);
-
-	launch_data_set_string(thekey, key);
 
 	for (i = 0; i < dict->_array_cnt; i += 2) {
 		if (!strcasecmp(key, dict->_array[i]->string)) {
-			launch_data_array_set_index(dict, thekey, i);
-			launch_data_array_set_index(dict, what, i + 1);
-			return true;
+			return launch_data_array_set_index(dict, what, i + 1);
 		}
 	}
-	launch_data_array_set_index(dict, thekey, i);
-	launch_data_array_set_index(dict, what, i + 1);
+
+	launch_data_t thekey = launch_data_new_string(key);
+	if (!thekey)
+		return false;
+	if (dict->_array_cnt > SIZE_MAX / sizeof(launch_data_t) - 2) {
+		launch_data_free(thekey);
+		errno = ENOMEM;
+		return false;
+	}
+	launch_data_t *array = realloc(dict->_array, (i + 2) * sizeof(launch_data_t));
+	if (!array) {
+		launch_data_free(thekey);
+		return false;
+	}
+	dict->_array = array;
+	dict->_array[i] = thekey;
+	dict->_array[i + 1] = what;
+	dict->_array_cnt += 2;
 	return true;
 }
 
@@ -447,13 +461,20 @@ launch_data_dict_iterate(launch_data_t dict, void (*cb)(launch_data_t, const cha
 bool
 launch_data_array_set_index(launch_data_t where, launch_data_t what, size_t ind)
 {
-	if ((ind + 1) >= where->_array_cnt) {
-		where->_array = reallocf(where->_array, (ind + 1) * sizeof(launch_data_t));
+	if (ind >= SIZE_MAX / sizeof(launch_data_t)) {
+		errno = ENOMEM;
+		return false;
+	}
+	if (ind >= where->_array_cnt) {
+		launch_data_t *array = realloc(where->_array, (ind + 1) * sizeof(launch_data_t));
+		if (!array)
+			return false;
+		where->_array = array;
 		memset(where->_array + where->_array_cnt, 0, (ind + 1 - where->_array_cnt) * sizeof(launch_data_t));
 		where->_array_cnt = ind + 1;
 	}
 
-	if (where->_array[ind]) {
+	if (where->_array[ind] && where->_array[ind] != what) {
 		launch_data_free(where->_array[ind]);
 	}
 
@@ -537,28 +558,27 @@ launch_data_set_real(launch_data_t d, double n)
 bool
 launch_data_set_string(launch_data_t d, const char *s)
 {
-	if (d->string)
-		free(d->string);
-	d->string = strdup(s);
-	if (d->string) {
-		d->string_len = strlen(d->string);
-		return true;
-	}
-	return false;
+	char *string = strdup(s);
+	if (!string)
+		return false;
+	free(d->string);
+	d->string = string;
+	d->string_len = strlen(string);
+	return true;
 }
 
 bool
 launch_data_set_opaque(launch_data_t d, const void *o, size_t os)
 {
+	void *opaque = malloc(os ? os : 1);
+	if (!opaque)
+		return false;
+	if (os)
+		memcpy(opaque, o, os);
+	free(d->opaque);
+	d->opaque = opaque;
 	d->opaque_size = os;
-	if (d->opaque)
-		free(d->opaque);
-	d->opaque = malloc(os);
-	if (d->opaque) {
-		memcpy(d->opaque, o, os);
-		return true;
-	}
-	return false;
+	return true;
 }
 
 int
@@ -643,8 +663,9 @@ launchd_fdopen(int fd, int cifd)
 		c->which = LAUNCHD_USE_OTHER_FD;
 	}
 
-	fcntl(fd, F_SETFL, O_NONBLOCK);
-	fcntl(cifd, F_SETFL, O_NONBLOCK);
+	if ((fd != -1 && fcntl(fd, F_SETFL, O_NONBLOCK) == -1) ||
+			(cifd != -1 && fcntl(cifd, F_SETFL, O_NONBLOCK) == -1))
+		goto out_bad;
 
 	if ((c->sendbuf = malloc(0)) == NULL)
 		goto out_bad;
@@ -687,8 +708,10 @@ launchd_close(launch_t lh, typeof(close) closefunc)
 		free(lh->recvbuf);
 	if (lh->recvfds)
 		free(lh->recvfds);
-	closefunc(lh->fd);
-	closefunc(lh->cifd);
+	if (lh->fd != -1)
+		closefunc(lh->fd);
+	if (lh->cifd != -1)
+		closefunc(lh->cifd);
 	free(lh);
 }
 
@@ -1001,17 +1024,36 @@ launch_get_fd(void)
 	return globals->l->fd;
 }
 
-void
+struct launch_msg_context {
+	launch_data_t async_resp;
+	launch_data_t resp;
+	int error;
+};
+
+static void
 launch_msg_getmsgs(launch_data_t m, void *context)
 {
-	launch_data_t async_resp, *sync_resp = context;
-
-	launch_globals_t globals = _launch_globals();
-
-	if ((LAUNCH_DATA_DICTIONARY == launch_data_get_type(m)) && (async_resp = launch_data_dict_lookup(m, LAUNCHD_ASYNC_MSG_KEY))) {
-		launch_data_array_set_index(globals->async_resp, launch_data_copy(async_resp), launch_data_array_get_count(globals->async_resp));
+	struct launch_msg_context *ctx = context;
+	launch_data_t async_resp = NULL;
+	if (ctx->error)
+		return;
+	if (launch_data_get_type(m) == LAUNCH_DATA_DICTIONARY)
+		async_resp = launch_data_dict_lookup(m, LAUNCHD_ASYNC_MSG_KEY);
+	launch_data_t copy = launch_data_copy(async_resp ? async_resp : m);
+	if (!copy) {
+		ctx->error = ENOMEM;
+		return;
+	}
+	if (async_resp) {
+		if (!launch_data_array_set_index(ctx->async_resp, copy, launch_data_array_get_count(ctx->async_resp))) {
+			launch_data_free(copy);
+			ctx->error = ENOMEM;
+		}
+	} else if (ctx->resp) {
+		launch_data_free(copy);
+		ctx->error = EBADRPC;
 	} else {
-		*sync_resp = launch_data_copy(m);
+		ctx->resp = copy;
 	}
 }
 
@@ -1053,165 +1095,297 @@ launch_msg(launch_data_t d)
 
 extern kern_return_t vproc_mig_set_security_session(mach_port_t, uuid_t, mach_port_t);
 
-static inline bool
-uuid_data_is_null(launch_data_t d)
+#if !TARGET_OS_EMBEDDED
+static bool
+launch_msg_prepare_session(launch_data_t job, uuid_t uuid)
 {
-	bool result = false;
-	if (launch_data_get_type(d) == LAUNCH_DATA_OPAQUE && launch_data_get_opaque_size(d) == sizeof(uuid_t)) {
-		uuid_t existing_uuid;
-		memcpy(existing_uuid, launch_data_get_opaque(d), sizeof(uuid_t));
-
-		/* A NULL UUID tells us to keep the session inherited from the parent. */
-		result = (bool)uuid_is_null(existing_uuid);
+	if (!job || launch_data_get_type(job) != LAUNCH_DATA_DICTIONARY ||
+			launch_data_dict_lookup(job, LAUNCH_JOBKEY_SECURITYSESSIONUUID))
+		return true;
+	launch_data_t data = launch_data_new_opaque(uuid, sizeof(uuid_t));
+	if (!data)
+		return false;
+	if (!launch_data_dict_insert(job, data, LAUNCH_JOBKEY_SECURITYSESSIONUUID)) {
+		launch_data_free(data);
+		return false;
 	}
+	return true;
+}
 
+static void
+launch_msg_attach_session(launch_data_t job, launch_data_t resp, mach_port_t bp)
+{
+	if (!job || !resp || launch_data_get_type(job) != LAUNCH_DATA_DICTIONARY ||
+			launch_data_get_type(resp) != LAUNCH_DATA_ERRNO || launch_data_get_errno(resp) != ENEEDAUTH)
+		return;
+	launch_data_t data = launch_data_dict_lookup(job, LAUNCH_JOBKEY_SECURITYSESSIONUUID);
+	if (!data || launch_data_get_type(data) != LAUNCH_DATA_OPAQUE ||
+			launch_data_get_opaque_size(data) != sizeof(uuid_t))
+		return;
+	uuid_t uuid;
+	memcpy(uuid, launch_data_get_opaque(data), sizeof(uuid));
+	if (uuid_is_null(uuid))
+		return;
+	mach_port_t session_port = _audit_session_self();
+	if (MACH_PORT_VALID(session_port)) {
+		if (vproc_mig_set_security_session(bp, uuid, session_port) == KERN_SUCCESS)
+			launch_data_set_errno(resp, 0);
+		mach_port_deallocate(mach_task_self(), session_port);
+	}
+}
+#endif
+
+static int
+launch_msg_wait(int fd, short events)
+{
+	struct pollfd pfd = { .fd = fd, .events = events };
+	int result;
+	do {
+		result = poll(&pfd, 1, -1);
+	} while (result == -1 && errno == EINTR);
 	return result;
 }
 
-launch_data_t
-launch_msg_internal(launch_data_t d)
+/* The caller holds lc_mtx: launchd_msg_recv also uses shared callback state. */
+static launch_data_t
+launch_msg_on_connection(launch_data_t d, launch_t connection, launch_data_t async_resp, mach_port_t bp)
 {
-	launch_data_t resp = NULL;
-
-	if (d && (launch_data_get_type(d) == LAUNCH_DATA_STRING)
-			&& (strcmp(launch_data_get_string(d), LAUNCH_KEY_GETJOBS) == 0)
-			&& vproc_swap_complex(NULL, VPROC_GSK_ALLJOBS, NULL, &resp) == NULL) {
-		return resp;
-	}
-
-	launch_globals_t globals = _launch_globals();
-	pthread_once(&globals->lc_once, launch_client_init);
-	if (!globals->l) {
-		errno = ENOTCONN;
-		return NULL;
-	}
-
-	int fd2use = -1;
-	if ((launch_data_get_type(d) == LAUNCH_DATA_STRING && strcmp(launch_data_get_string(d), LAUNCH_KEY_CHECKIN) == 0) || globals->s_am_embedded_god) {
-		globals->l->which = LAUNCHD_USE_CHECKIN_FD;
-	} else {
-		globals->l->which = LAUNCHD_USE_OTHER_FD;
-	}
-
-	fd2use = launchd_getfd(globals->l);
-
+	struct launch_msg_context ctx = { .async_resp = async_resp };
+	int fd2use = launchd_getfd(connection);
 	if (fd2use == -1) {
 		errno = EPERM;
 		return NULL;
 	}
 
 #if !TARGET_OS_EMBEDDED
+	launch_data_t jobs = NULL;
 	uuid_t uuid;
-	launch_data_t uuid_d = NULL;
-	size_t jobs_that_need_sessions = 0;
-	if (d && launch_data_get_type(d) == LAUNCH_DATA_DICTIONARY) {
-		launch_data_t v = launch_data_dict_lookup(d, LAUNCH_KEY_SUBMITJOB);
-
-		if (v && launch_data_get_type(v) == LAUNCH_DATA_ARRAY) {
-			size_t cnt = launch_data_array_get_count(v);
-			size_t i = 0;
-
-			uuid_generate(uuid);
-			for (i = 0; i < cnt; i++) {
-				launch_data_t ji = launch_data_array_get_index(v, i);
-				if (launch_data_get_type(ji) == LAUNCH_DATA_DICTIONARY) {
-					launch_data_t existing_v = launch_data_dict_lookup(ji, LAUNCH_JOBKEY_SECURITYSESSIONUUID);
-					if (!existing_v) {
-						/* I really wish these were reference-counted. Sigh... */
-						uuid_d = launch_data_new_opaque(uuid, sizeof(uuid));
-						launch_data_dict_insert(ji, uuid_d, LAUNCH_JOBKEY_SECURITYSESSIONUUID);
-						jobs_that_need_sessions++;
-					} else if (launch_data_get_type(existing_v) == LAUNCH_DATA_OPAQUE) {
-						jobs_that_need_sessions += uuid_data_is_null(existing_v) ? 0 : 1;
-					}
-				}
+	if (d && launch_data_get_type(d) == LAUNCH_DATA_DICTIONARY)
+		jobs = launch_data_dict_lookup(d, LAUNCH_KEY_SUBMITJOB);
+	if (jobs) {
+		uuid_generate(uuid);
+		if (launch_data_get_type(jobs) == LAUNCH_DATA_ARRAY) {
+			for (size_t i = 0; i < launch_data_array_get_count(jobs); i++) {
+				if (!launch_msg_prepare_session(launch_data_array_get_index(jobs, i), uuid))
+					return NULL;
 			}
-		} else if (v && launch_data_get_type(v) == LAUNCH_DATA_DICTIONARY) {
-			launch_data_t existing_v = launch_data_dict_lookup(v, LAUNCH_JOBKEY_SECURITYSESSIONUUID);
-			if (!existing_v) {
-				uuid_generate(uuid);
-				uuid_d = launch_data_new_opaque(uuid, sizeof(uuid));
-				launch_data_dict_insert(v, uuid_d, LAUNCH_JOBKEY_SECURITYSESSIONUUID);
-				jobs_that_need_sessions++;
-			} else {
-				jobs_that_need_sessions += uuid_data_is_null(existing_v) ? 0 : 1;
-			}
+		} else if (!launch_msg_prepare_session(jobs, uuid)) {
+			return NULL;
 		}
 	}
 #endif
 
-	pthread_mutex_lock(&globals->lc_mtx);
-
-	if (d && launchd_msg_send(globals->l, d) == -1) {
+	if (d && launchd_msg_send(connection, d) == -1) {
 		do {
-			if (errno != EAGAIN)
+			if (errno != EAGAIN || launch_msg_wait(fd2use, POLLOUT) == -1)
 				goto out;
-		} while (launchd_msg_send(globals->l, NULL) == -1);
+		} while (launchd_msg_send(connection, NULL) == -1);
 	}
 
-	while (resp == NULL) {
-		if (d == NULL && launch_data_array_get_count(globals->async_resp) > 0) {
-			resp = launch_data_array_pop_first(globals->async_resp);
+	while (ctx.resp == NULL) {
+		if (d == NULL && launch_data_array_get_count(async_resp) > 0) {
+			ctx.resp = launch_data_array_pop_first(async_resp);
 			goto out;
 		}
-		if (launchd_msg_recv(globals->l, launch_msg_getmsgs, &resp) == -1) {
+		int result = launchd_msg_recv(connection, launch_msg_getmsgs, &ctx);
+		if (ctx.error) {
+			if (ctx.resp)
+				launch_data_free(ctx.resp);
+			ctx.resp = NULL;
+			errno = ctx.error;
+			goto out;
+		}
+		if (result == -1) {
 			if (errno != EAGAIN) {
+				if (ctx.resp)
+					launch_data_free(ctx.resp);
+				ctx.resp = NULL;
 				goto out;
 			} else if (d == NULL) {
 				errno = 0;
 				goto out;
-			} else {
-				fd_set rfds;
-
-				FD_ZERO(&rfds);
-				FD_SET(fd2use, &rfds);
-
-				select(fd2use + 1, &rfds, NULL, NULL, NULL);
+			} else if (!ctx.resp && launch_msg_wait(fd2use, POLLIN) == -1) {
+				goto out;
 			}
 		}
 	}
 
 out:
 #if !TARGET_OS_EMBEDDED
-	if (!uuid_is_null(uuid) && resp && jobs_that_need_sessions > 0) {
-		mach_port_t session_port = _audit_session_self();
-		launch_data_type_t resp_type = launch_data_get_type(resp);
-
-		bool set_session = false;
-		if (resp_type == LAUNCH_DATA_ERRNO) {
-			set_session = (launch_data_get_errno(resp) == ENEEDAUTH);
-		} else if (resp_type == LAUNCH_DATA_ARRAY) {
-			set_session = true;
-		}
-
-		kern_return_t kr = KERN_FAILURE;
-		if (set_session) {
-			kr = vproc_mig_set_security_session(bootstrap_port, uuid, session_port);
-		}
-
-		if (kr == KERN_SUCCESS) {
-			if (resp_type == LAUNCH_DATA_ERRNO) {
-				launch_data_set_errno(resp, 0);
-			} else {
-				size_t i = 0;
-				for (i = 0; i < launch_data_array_get_count(resp); i++) {
-					launch_data_t ri = launch_data_array_get_index(resp, i);
-
-					int recvd_err = 0;
-					if (launch_data_get_type(ri) == LAUNCH_DATA_ERRNO && (recvd_err = launch_data_get_errno(ri))) {
-						launch_data_set_errno(ri, recvd_err == ENEEDAUTH ? 0 : recvd_err);
-					}
-				}
+	if (jobs && ctx.resp) {
+		if (launch_data_get_type(jobs) == LAUNCH_DATA_ARRAY && launch_data_get_type(ctx.resp) == LAUNCH_DATA_ARRAY) {
+			size_t count = launch_data_array_get_count(jobs);
+			if (count == launch_data_array_get_count(ctx.resp)) {
+				for (size_t i = 0; i < count; i++)
+					launch_msg_attach_session(launch_data_array_get_index(jobs, i), launch_data_array_get_index(ctx.resp, i), bp);
 			}
+		} else {
+			launch_msg_attach_session(jobs, ctx.resp, bp);
 		}
-
-		mach_port_deallocate(mach_task_self(), session_port);
 	}
 #endif
+	return ctx.resp;
+}
 
-	pthread_mutex_unlock(&globals->lc_mtx);
+static void
+launch_msg_unlock(void *context)
+{
+	pthread_mutex_unlock(context);
+}
 
+static launch_data_t
+launch_msg_internal(launch_data_t d)
+{
+	launch_data_t resp = NULL;
+	if (d && launch_data_get_type(d) == LAUNCH_DATA_STRING &&
+			strcmp(launch_data_get_string(d), LAUNCH_KEY_GETJOBS) == 0 &&
+			vproc_swap_complex(NULL, VPROC_GSK_ALLJOBS, NULL, &resp) == NULL)
+		return resp;
+	launch_globals_t globals = _launch_globals();
+	pthread_once(&globals->lc_once, launch_client_init);
+	if (!globals->l) {
+		errno = ENOTCONN;
+		return NULL;
+	}
+	int saved_errno;
+	pthread_mutex_lock(&globals->lc_mtx);
+	pthread_cleanup_push(launch_msg_unlock, &globals->lc_mtx);
+	if ((d && launch_data_get_type(d) == LAUNCH_DATA_STRING && strcmp(launch_data_get_string(d), LAUNCH_KEY_CHECKIN) == 0) || globals->s_am_embedded_god)
+		globals->l->which = LAUNCHD_USE_CHECKIN_FD;
+	else
+		globals->l->which = LAUNCHD_USE_OTHER_FD;
+	resp = launch_msg_on_connection(d, globals->l, globals->async_resp, bootstrap_port);
+	saved_errno = errno;
+	pthread_cleanup_pop(1);
+	errno = saved_errno;
 	return resp;
+}
+
+static kern_return_t
+launch_user_bootstrap(mach_port_t *user_port)
+{
+	mach_port_t root = MACH_PORT_NULL;
+	kern_return_t kr = bootstrap_get_root(bootstrap_port, &root);
+	if (kr == KERN_SUCCESS) {
+		kr = bootstrap_look_up_per_user(root, NULL, geteuid(), user_port);
+		mach_port_deallocate(mach_task_self(), root);
+		if (kr == KERN_SUCCESS && !MACH_PORT_VALID(*user_port))
+			kr = BOOTSTRAP_UNKNOWN_SERVICE;
+	}
+	return kr;
+}
+
+static int
+launch_user_ipc_errno(kern_return_t kr)
+{
+	/* Client error categories, not a claim of native SMJob errno mapping. */
+	switch (kr) {
+	case BOOTSTRAP_NOT_PRIVILEGED: return EACCES;
+	case BOOTSTRAP_NO_MEMORY: return ENOMEM;
+	case BOOTSTRAP_UNKNOWN_SERVICE: return ENOENT;
+	default: return EIO;
+	}
+}
+
+struct launch_user_context {
+	mach_port_t port;
+	int fd;
+	launch_t connection;
+	launch_data_t async_resp;
+	pthread_mutex_t *mutex;
+};
+
+static void
+launch_user_close(void *context)
+{
+	struct launch_user_context *ctx = context;
+	if (ctx->connection && !ctx->mutex) {
+		launch_globals_t globals = _launch_globals();
+		pthread_mutex_lock(&globals->lc_mtx);
+		ctx->mutex = &globals->lc_mtx;
+	}
+	if (ctx->connection) {
+		for (size_t i = 0; i < ctx->connection->recvfdcnt; i++)
+			close(ctx->connection->recvfds[i]);
+		launchd_close(ctx->connection, close);
+	} else if (ctx->fd != -1) {
+		close(ctx->fd);
+	}
+	if (ctx->async_resp)
+		launch_data_free(ctx->async_resp);
+	if (MACH_PORT_VALID(ctx->port))
+		mach_port_deallocate(mach_task_self(), ctx->port);
+	if (ctx->mutex)
+		pthread_mutex_unlock(ctx->mutex);
+}
+
+launch_data_t
+_launch_msg_user(launch_data_t request)
+{
+	if (!request) {
+		errno = EINVAL;
+		return NULL;
+	}
+	struct launch_user_context ctx = { .port = MACH_PORT_NULL, .fd = -1 };
+	launch_data_t reply = NULL;
+	int saved_errno;
+	pthread_cleanup_push(launch_user_close, &ctx);
+	/*
+	 * The vproc manager is reached through this process's bootstrap port,
+	 * which the launcher establishes for the calling user; a port from
+	 * bootstrap_look_up_per_user is a lookup context and does not answer the
+	 * vproc routines (MEASURED: the getsocket request never returns). Never
+	 * choose the system domain by environment, and refuse its socket below.
+	 */
+	name_t path = { 0 };
+	kern_return_t kr = _vprocmgr_getsocket(path);
+	if (kr != KERN_SUCCESS) {
+		errno = launch_user_ipc_errno(kr);
+		goto out;
+	}
+	struct sockaddr_un address = { .sun_family = AF_UNIX };
+	size_t length = strnlen(path, sizeof(path));
+	if (!length || length >= sizeof(address.sun_path)) {
+		errno = ENAMETOOLONG;
+		goto out;
+	}
+	/*
+	 * This is the socket of the domain that serves the caller's own bootstrap
+	 * port; the request is never redirected by SUDO/__USE_SYSTEM_LAUNCHD the
+	 * way launch_msg may redirect it. MEASURED in this runtime: a login-window
+	 * client's bootstrap is served by the single launchd instance, so its
+	 * report is the system socket; refusing that path made the user domain
+	 * permanently unusable while the same request over this socket answers.
+	 */
+	memcpy(address.sun_path, path, length + 1);
+	ctx.fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (ctx.fd == -1 || fcntl(ctx.fd, F_SETFD, FD_CLOEXEC) == -1 ||
+			connect(ctx.fd, (struct sockaddr *)&address, sizeof(address)) == -1)
+		goto out;
+	ctx.connection = launchd_fdopen(ctx.fd, -1);
+	if (!ctx.connection)
+		goto out;
+	ctx.async_resp = launch_data_alloc(LAUNCH_DATA_ARRAY);
+	if (!ctx.async_resp)
+		goto out;
+	launch_globals_t globals = _launch_globals();
+	pthread_mutex_lock(&globals->lc_mtx);
+	ctx.mutex = &globals->lc_mtx;
+	reply = launch_msg_on_connection(request, ctx.connection, ctx.async_resp, bootstrap_port);
+out:
+	saved_errno = errno;
+	pthread_cleanup_pop(1);
+	errno = saved_errno;
+	return reply;
+}
+
+kern_return_t
+_launch_remove_user_wait(const char *label)
+{
+	if (!label || !label[0] || strlen(label) >= sizeof(name_t))
+		return KERN_INVALID_ARGUMENT;
+	/* Same caller-UID vproc manager as _launch_msg_user; see its comment. */
+	return vproc_mig_send_signal(bootstrap_port, (char *)label, VPROC_MAGIC_UNLOAD_SIGNAL);
 }
 
 int
@@ -1234,7 +1408,14 @@ launchd_msg_recv(launch_t lh, void (*cb)(launch_data_t, void *), void *context)
 	mh.msg_iov = &iov;
 	mh.msg_iovlen = 1;
 
-	lh->recvbuf = reallocf(lh->recvbuf, lh->recvlen + 8*1024);
+	if (lh->recvlen > SIZE_MAX - 8*1024) {
+		errno = ENOMEM;
+		return -1;
+	}
+	void *buffer = realloc(lh->recvbuf, lh->recvlen + 8*1024);
+	if (!buffer)
+		return -1;
+	lh->recvbuf = buffer;
 
 	iov.iov_base = lh->recvbuf + lh->recvlen;
 	iov.iov_len = 8*1024;
@@ -1253,7 +1434,16 @@ launchd_msg_recv(launch_t lh, void (*cb)(launch_data_t, void *), void *context)
 	}
 	lh->recvlen += r;
 	if (mh.msg_controllen > 0) {
-		lh->recvfds = reallocf(lh->recvfds, lh->recvfdcnt * sizeof(int) + mh.msg_controllen - sizeof(struct cmsghdr));
+		size_t bytes = mh.msg_controllen - sizeof(struct cmsghdr);
+		int *fds = realloc(lh->recvfds, lh->recvfdcnt * sizeof(int) + bytes);
+		if (!fds) {
+			int saved_errno = errno;
+			for (size_t i = 0; i < bytes / sizeof(int); i++)
+				close(((int *)CMSG_DATA(cm))[i]);
+			errno = saved_errno;
+			return -1;
+		}
+		lh->recvfds = fds;
 		memcpy(lh->recvfds + lh->recvfdcnt, CMSG_DATA(cm), mh.msg_controllen - sizeof(struct cmsghdr));
 		lh->recvfdcnt += (mh.msg_controllen - sizeof(struct cmsghdr)) / sizeof(int);
 	}
@@ -1327,31 +1517,46 @@ launch_data_copy(launch_data_t o)
 {
 	launch_data_t r = launch_data_alloc(o->type);
 	size_t i;
-
-	free(r->_array);
-	memcpy(r, o, sizeof(struct _launch_data));
+	if (!r)
+		return NULL;
 
 	switch (o->type) {
 	case LAUNCH_DATA_DICTIONARY:
 	case LAUNCH_DATA_ARRAY:
-		r->_array = calloc(1, o->_array_cnt * sizeof(launch_data_t));
+		if (o->_array_cnt > SIZE_MAX / sizeof(launch_data_t)) {
+			errno = ENOMEM;
+			goto out_bad;
+		}
+		if (o->_array_cnt) {
+			launch_data_t *array = calloc(o->_array_cnt, sizeof(launch_data_t));
+			if (!array)
+				goto out_bad;
+			free(r->_array);
+			r->_array = array;
+			r->_array_cnt = o->_array_cnt;
+		}
 		for (i = 0; i < o->_array_cnt; i++) {
-			if (o->_array[i])
-				r->_array[i] = launch_data_copy(o->_array[i]);
+			if (o->_array[i] && !(r->_array[i] = launch_data_copy(o->_array[i])))
+				goto out_bad;
 		}
 		break;
 	case LAUNCH_DATA_STRING:
-		r->string = strdup(o->string);
+		if (!launch_data_set_string(r, o->string))
+			goto out_bad;
 		break;
 	case LAUNCH_DATA_OPAQUE:
-		r->opaque = malloc(o->opaque_size);
-		memcpy(r->opaque, o->opaque, o->opaque_size);
+		if (!launch_data_set_opaque(r, o->opaque, o->opaque_size))
+			goto out_bad;
 		break;
 	default:
+		memcpy(r, o, sizeof(struct _launch_data));
 		break;
 	}
-
 	return r;
+
+out_bad:
+	launch_data_free(r);
+	return NULL;
 }
 
 int
