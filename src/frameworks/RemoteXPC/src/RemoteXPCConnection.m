@@ -1,0 +1,732 @@
+/*
+ * RemoteXPC.framework -- the low-level remote XPC connection.
+ *
+ * WHAT THIS IMAGE IS. /System/Library/PrivateFrameworks/RemoteXPC.framework, the provider of the
+ * xpc_remote_connection_* family. Its consumers in this tree are measured, not assumed:
+ *
+ *   CoreDevice: create_with_connected_fd, set_event_handler, activate, send_message,
+ *               send_message_with_reply, send_message_with_reply_sync
+ *   Mercury   : the same six plus cancel, create_connected_pair, create_remote_service_listener,
+ *               create_with_remote_service, get_version_flags, set_target_queue,
+ *               __xpc_type_remote_connection and the class OS_xpc_remote_connection
+ *
+ * The exported connected-fd entry is four arguments, as disassembled from the real provider:
+ *
+ *   id xpc_remote_connection_create_with_connected_fd(int fd, dispatch_queue_t queue,
+ *                                                      uint64_t version_flags,
+ *                                                      uint64_t endpoint_flags)
+ *
+ * and it returns OWNED/+1 (the pair constructor autoreleases each of its own returns; the export does
+ * not). The fd is stored as given -- no dup -- and endpoint_flags bit 0 selects the even-numbered
+ * listener role and starts the message counter at 2 instead of 1.
+ *
+ * WHAT IS IMPLEMENTED HERE, AND WHAT IS NOT YET. The transport is implemented over the two verified
+ * layers: xr_wire (XPC wrapper codec) and xr_h2 (HTTP/2 framing), both cross-checked byte for byte
+ * against the real provider's captured streams. create_with_remote_service and
+ * create_remote_service_listener are NOT implemented in this revision: their argument lists and
+ * semantics are being measured from the native provider, and a guessed body would be worse than an
+ * absent one. This image must not be deployed as a complete provider until they are present.
+ *
+ * Identity: this is a genuine libxpc object. The class below subclasses libxpc's OS_xpc_object and
+ * defines __xpc_type_remote_connection as the class object, so xpc_get_type() on a connection returns
+ * the type Mercury compares against.
+ */
+
+#import <xpc/objects/base.h>
+#import <xpc/util.h>
+
+#include <dispatch/dispatch.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <Block.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "RemoteXPCConnection.h"
+#include "xr_h2.h"
+#include "xr_wire.h"
+
+#include <pthread.h>
+#include <xpc/xpc.h>
+
+/* The version flags the real provider reports (-get_version_flags) and the RSD peers use. */
+#define REMOTE_XPC_VERSION_FLAGS 0x0100000000000006ULL
+/* endpoint_flags bit 0: this endpoint is the listener (even message ids). */
+#define REMOTE_XPC_ENDPOINT_LISTENER 0x1ULL
+
+struct xpc_remote_connection_s {
+	struct xpc_object_s base;
+	int fd;
+	dispatch_queue_t target_queue;
+	dispatch_queue_t handler_queue;
+	dispatch_queue_t reply_queue;
+	void *event_handler;
+	void *pending_replies; /* CFMutableDictionary keyed by message id, or NULL */
+	dispatch_source_t read_source;
+	uint64_t version_flags;
+	uint64_t endpoint_flags;
+	uint64_t next_message_id;
+	bool activated;
+	bool cancelled;
+};
+
+XPC_CLASS_DECL(remote_connection);
+
+@interface XPC_CLASS_INTERFACE(remote_connection)
+- (int)fileDescriptor;
+- (void)setFileDescriptor: (int)fd;
+- (uint64_t)versionFlags;
+- (uint64_t)endpointFlags;
+- (void)setVersionFlags: (uint64_t)flags;
+- (void)setEndpointFlags: (uint64_t)flags;
+@end
+
+XPC_CLASS_SYMBOL_DECL(remote_connection);
+
+OS_OBJECT_NONLAZY_CLASS
+@implementation XPC_CLASS(remote_connection)
+
+XPC_CLASS_HEADER(remote_connection);
+
+- (char*)xpcDescription
+{
+	char* output = NULL;
+	asprintf(&output, "<remote connection: fd %d>", XPC_THIS(remote_connection)->fd);
+	return output;
+}
+
+- (void)dealloc
+{
+	XPC_THIS_DECL(remote_connection);
+	if (this->read_source) {
+		dispatch_source_cancel(this->read_source);
+		this->read_source = NULL;
+	}
+	if (!this->cancelled && this->fd >= 0) {
+		close(this->fd);
+		this->fd = -1;
+	}
+	if (this->target_queue) {
+		dispatch_release(this->target_queue);
+		this->target_queue = NULL;
+	}
+	if (this->handler_queue) {
+		dispatch_release(this->handler_queue);
+		this->handler_queue = NULL;
+	}
+	if (this->event_handler) {
+		Block_release(this->event_handler);
+		this->event_handler = NULL;
+	}
+	[super dealloc];
+}
+
+- (int)fileDescriptor { return XPC_THIS(remote_connection)->fd; }
+- (void)setFileDescriptor: (int)fd { XPC_THIS(remote_connection)->fd = fd; }
+- (uint64_t)versionFlags { return XPC_THIS(remote_connection)->version_flags; }
+- (uint64_t)endpointFlags { return XPC_THIS(remote_connection)->endpoint_flags; }
+- (void)setVersionFlags: (uint64_t)flags { XPC_THIS(remote_connection)->version_flags = flags; }
+- (void)setEndpointFlags: (uint64_t)flags { XPC_THIS(remote_connection)->endpoint_flags = flags; }
+
+@end
+
+/* ---------------------------------------------------------------------------------------------
+ * Value conversion between libxpc objects and the wire value tree.
+ *
+ * The wire codec (xr_wire) is the single authority for encoding; this file only walks an xpc object
+ * into xr_value nodes and back, so no second copy of the encoding rules exists.
+ * ------------------------------------------------------------------------------------------- */
+
+static xr_value* xr_value_new(xr_kind kind)
+{
+	xr_value* value = calloc(1, sizeof(*value));
+	if (value) {
+		value->kind = kind;
+	}
+	return value;
+}
+
+static bool xr_value_from_xpc(xpc_object_t object, xr_value** out);
+
+static bool xr_value_from_xpc_container(xpc_object_t object, xr_value* out, bool dictionary)
+{
+	const size_t count = dictionary ? xpc_dictionary_get_count(object) : xpc_array_get_count(object);
+	if (dictionary) {
+		const char** keys = calloc(count ? count : 1, sizeof(*keys));
+		const xr_value** values = calloc(count ? count : 1, sizeof(*values));
+		if (!keys || !values) {
+			free(keys);
+			free(values);
+			return false;
+		}
+		out->u.dict.count = (uint32_t)count;
+		out->u.dict.keys = keys;
+		out->u.dict.values = values;
+		__block size_t index = 0;
+		__block bool ok = true;
+		xpc_dictionary_apply(object, ^bool(const char* key, xpc_object_t value) {
+			xr_value* child = NULL;
+			if (!xr_value_from_xpc(value, &child)) {
+				ok = false;
+				return false;
+			}
+			keys[index] = strdup(key);
+			((xr_value**)values)[index] = child;
+			index++;
+			return true;
+		});
+		return ok;
+	}
+	const xr_value** items = calloc(count ? count : 1, sizeof(*items));
+	if (!items) {
+		return false;
+	}
+	out->u.array.count = (uint32_t)count;
+	out->u.array.items = items;
+	for (size_t i = 0; i < count; i++) {
+		xr_value* child = NULL;
+		if (!xr_value_from_xpc(xpc_array_get_value(object, i), &child)) {
+			return false;
+		}
+		((xr_value**)items)[i] = child;
+	}
+	return true;
+}
+
+static bool xr_value_from_xpc(xpc_object_t object, xr_value** out)
+{
+	const xpc_type_t type = xpc_get_type(object);
+	xr_value* value = NULL;
+	if (type == XPC_TYPE_DICTIONARY) {
+		value = xr_value_new(XR_DICTIONARY);
+		if (!value || !xr_value_from_xpc_container(object, value, true)) {
+			xr_value_free(value);
+			return false;
+		}
+	} else if (type == XPC_TYPE_ARRAY) {
+		value = xr_value_new(XR_ARRAY);
+		if (!value || !xr_value_from_xpc_container(object, value, false)) {
+			xr_value_free(value);
+			return false;
+		}
+	} else if (type == XPC_TYPE_STRING) {
+		const char* string = xpc_string_get_string_ptr(object);
+		value = xr_value_new(XR_STRING);
+		if (!value) {
+			return false;
+		}
+		const size_t len = strlen(string) + 1;
+		unsigned char* copy = malloc(len);
+		if (!copy) {
+			free(value);
+			return false;
+		}
+		memcpy(copy, string, len);
+		value->u.bytes.bytes = copy;
+		value->u.bytes.len = (uint32_t)len;
+	} else if (type == XPC_TYPE_BOOL) {
+		value = xr_value_new(XR_BOOL);
+		if (value) {
+			value->u.boolean = xpc_bool_get_value(object) ? 1 : 0;
+		}
+	} else if (type == XPC_TYPE_UINT64) {
+		value = xr_value_new(XR_UINT64);
+		if (value) {
+			value->u.u64 = xpc_uint64_get_value(object);
+		}
+	} else if (type == XPC_TYPE_INT64) {
+		value = xr_value_new(XR_INT64);
+		if (value) {
+			value->u.i64 = xpc_int64_get_value(object);
+		}
+	} else if (type == XPC_TYPE_DOUBLE) {
+		value = xr_value_new(XR_DOUBLE);
+		if (value) {
+			value->u.f64 = xpc_double_get_value(object);
+		}
+	} else if (type == XPC_TYPE_DATA) {
+		const void* bytes = xpc_data_get_bytes_ptr(object);
+		const size_t len = xpc_data_get_length(object);
+		value = xr_value_new(XR_DATA);
+		if (!value) {
+			return false;
+		}
+		unsigned char* copy = malloc(len ? len : 1);
+		if (!copy) {
+			free(value);
+			return false;
+		}
+		memcpy(copy, bytes, len);
+		value->u.bytes.bytes = copy;
+		value->u.bytes.len = (uint32_t)len;
+	} else if (type == XPC_TYPE_UUID) {
+		value = xr_value_new(XR_UUID);
+		if (!value) {
+			return false;
+		}
+		unsigned char* copy = malloc(16);
+		if (!copy) {
+			free(value);
+			return false;
+		}
+		memcpy(copy, xpc_uuid_get_bytes(object), 16);
+		value->u.bytes.bytes = copy;
+		value->u.bytes.len = 16;
+	} else if (type == XPC_TYPE_DATE) {
+		value = xr_value_new(XR_DATE);
+		if (value) {
+			value->u.i64 = (int64_t)xpc_date_get_value(object);
+		}
+	} else if (type == XPC_TYPE_NULL) {
+		value = xr_value_new(XR_NULL);
+	} else {
+		/* A type the measured codec has no encoding for. Refuse the message rather than emit a
+		 * frame the peer cannot parse. */
+		return false;
+	}
+	if (!value) {
+		return false;
+	}
+	*out = value;
+	return true;
+}
+
+static xpc_object_t xr_value_to_xpc(const xr_value* value)
+{
+	switch (value->kind) {
+	case XR_DICTIONARY: {
+		xpc_object_t dictionary = xpc_dictionary_create(NULL, NULL, 0);
+		for (uint32_t i = 0; i < value->u.dict.count; i++) {
+			xpc_object_t child = xr_value_to_xpc(value->u.dict.values[i]);
+			if (!child) {
+				continue;
+			}
+			xpc_dictionary_set_value(dictionary, value->u.dict.keys[i], child);
+			xpc_release(child);
+		}
+		return dictionary;
+	}
+	case XR_ARRAY: {
+		xpc_object_t array = xpc_array_create(NULL, 0);
+		for (uint32_t i = 0; i < value->u.array.count; i++) {
+			xpc_object_t child = xr_value_to_xpc(value->u.array.items[i]);
+			if (!child) {
+				continue;
+			}
+			xpc_array_append_value(array, child);
+			xpc_release(child);
+		}
+		return array;
+	}
+	case XR_STRING:
+		return xpc_string_create((const char*)value->u.bytes.bytes);
+	case XR_BOOL:
+		return xpc_bool_create(value->u.boolean != 0);
+	case XR_UINT64:
+		return xpc_uint64_create(value->u.u64);
+	case XR_INT64:
+		return xpc_int64_create(value->u.i64);
+	case XR_DOUBLE:
+		return xpc_double_create(value->u.f64);
+	case XR_DATA:
+		return xpc_data_create(value->u.bytes.bytes, value->u.bytes.len);
+	case XR_UUID:
+		return xpc_uuid_create(value->u.bytes.bytes);
+	case XR_DATE:
+		return xpc_date_create(value->u.i64);
+	case XR_FD:
+		return xpc_fd_create((int)value->u.fd);
+	case XR_NULL:
+	default:
+		return xpc_null_create();
+	}
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * Transport.
+ * ------------------------------------------------------------------------------------------- */
+
+static struct xpc_remote_connection_s* xr_state(id object)
+{
+	return (struct xpc_remote_connection_s*)object;
+}
+
+typedef struct pending_reply_s {
+	uint64_t message_id;
+	dispatch_queue_t queue;
+	void (^handler)(xpc_object_t);
+	void* semaphore;
+	xpc_object_t* slot;
+	struct pending_reply_s* next;
+} pending_reply_t;
+
+static pthread_mutex_t g_pending_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static bool write_all(int fd, const void* bytes, size_t len)
+{
+	const unsigned char* cursor = bytes;
+	while (len > 0) {
+		ssize_t written = write(fd, cursor, len);
+		if (written < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			return false;
+		}
+		cursor += written;
+		len -= (size_t)written;
+	}
+	return true;
+}
+
+static void connection_write_wrapper(id connection, uint32_t flags,
+	uint64_t message_id, const xr_value* payload, uint32_t stream)
+{
+	struct xpc_remote_connection_s* this = xr_state(connection);
+	unsigned char* wrapper = NULL;
+	const size_t wrapper_len = xr_frame_encode(flags, message_id, payload, &wrapper);
+	if (!wrapper_len) {
+		return;
+	}
+	xr_buffer frame = { 0 };
+	/* A single DATA frame per wrapper: the captured provider sends each wrapper whole, and these
+	 * messages are far below any window we advertise. */
+	xr_h2_write_frame(&frame, XR_H2_DATA, 0, stream, wrapper, wrapper_len);
+	if (!frame.failed) {
+		write_all(this->fd, frame.data, frame.len);
+	}
+	xr_buffer_free(&frame);
+	free(wrapper);
+}
+
+static void deliver_event(id connection, xpc_object_t event)
+{
+	struct xpc_remote_connection_s* this = xr_state(connection);
+	if (!this->event_handler || !this->handler_queue) {
+		return;
+	}
+	void (^handler)(xpc_object_t) = this->event_handler;
+	dispatch_async(this->handler_queue, ^{
+		handler(event);
+	});
+}
+
+static void dispatch_reply(id connection, uint64_t message_id, xpc_object_t reply)
+{
+	pthread_mutex_lock(&g_pending_lock);
+	pending_reply_t* entry = NULL;
+	/* The pending entries live in the connection's own list; the lock only guards list integrity
+	 * against the reader thread and senders. */
+	pending_reply_t** cursor = (pending_reply_t**)&xr_state(connection)->pending_replies;
+	while (*cursor) {
+		if ((*cursor)->message_id == message_id) {
+			entry = *cursor;
+			*cursor = entry->next;
+			break;
+		}
+		cursor = &(*cursor)->next;
+	}
+	pthread_mutex_unlock(&g_pending_lock);
+	if (!entry) {
+		return;
+	}
+	if (entry->slot) {
+		xpc_retain(reply);
+		*entry->slot = reply;
+	}
+	if (entry->semaphore) {
+		dispatch_semaphore_signal((dispatch_semaphore_t)entry->semaphore);
+	}
+	if (entry->handler) {
+		void (^handler)(xpc_object_t) = entry->handler;
+		dispatch_async(entry->queue, ^{
+			handler(reply);
+		});
+	}
+	free(entry);
+}
+
+static void connection_handle_data(id connection, const unsigned char* bytes, size_t len)
+{
+	size_t consumed = 0;
+	xr_frame frame = { 0 };
+	bool need_more = false;
+	if (!xr_frame_parse(bytes, len, &consumed, &frame, &need_more) || !frame.payload) {
+		return;
+	}
+	xpc_object_t object = xr_value_to_xpc(frame.payload);
+	const bool is_reply = (frame.flags & XR_FLAG_REPLY) != 0;
+	xr_value_free(frame.payload);
+	if (!object) {
+		return;
+	}
+	if (is_reply) {
+		dispatch_reply(connection, frame.message_id, object);
+	} else {
+		deliver_event(connection, object);
+	}
+	xpc_release(object);
+}
+
+static void connection_read_source(id connection, dispatch_source_t source)
+{
+	struct xpc_remote_connection_s* this = xr_state(connection);
+	for (;;) {
+		unsigned char chunk[8192];
+		ssize_t got = read(this->fd, chunk, sizeof(chunk));
+		if (got < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				return;
+			}
+			break;
+		}
+		if (got == 0) {
+			break;
+		}
+		/* Parse HTTP/2 frames; each DATA frame carries one whole wrapper in the measured
+		 * exchange, so the payload is parsed without a cross-frame assembly buffer. */
+		size_t pos = 0;
+		while (pos + XR_H2_FRAME_HEADER_SIZE <= (size_t)got) {
+			const size_t length = ((size_t)chunk[pos] << 16) | ((size_t)chunk[pos + 1] << 8)
+				| chunk[pos + 2];
+			const uint8_t type = chunk[pos + 3];
+			if (pos + XR_H2_FRAME_HEADER_SIZE + length > (size_t)got) {
+				break; /* a partial frame is not expected on these reads; do not guess */
+			}
+			if (type == XR_H2_DATA && length > 0) {
+				connection_handle_data(connection, chunk + pos + XR_H2_FRAME_HEADER_SIZE, length);
+			}
+			pos += XR_H2_FRAME_HEADER_SIZE + length;
+		}
+	}
+	dispatch_source_cancel(source);
+}
+
+@implementation XPC_CLASS(remote_connection) (Transport)
+
+- (void)activate
+{
+	XPC_THIS_DECL(remote_connection);
+	if (this->activated || this->cancelled) {
+		return;
+	}
+	this->activated = true;
+
+	xr_value empty = { .kind = XR_DICTIONARY };
+	unsigned char* initial = NULL;
+	unsigned char* handshake = NULL;
+	const size_t initial_len = xr_frame_encode(XR_FLAG_ALWAYS_SET, 0, &empty, &initial);
+	const size_t handshake_len = xr_frame_encode(XR_FLAG_ALWAYS_SET | XR_FLAG_INIT_HANDSHAKE, 0, NULL,
+		&handshake);
+	if (!initial_len || !handshake_len) {
+		free(initial);
+		free(handshake);
+		return;
+	}
+	xr_buffer frames = { 0 };
+	xr_h2_write_handshake(&frames, initial, initial_len, handshake, handshake_len);
+	free(initial);
+	free(handshake);
+	if (frames.failed || !write_all(this->fd, frames.data, frames.len)) {
+		xr_buffer_free(&frames);
+		deliver_event(self, XPC_ERROR_CONNECTION_INVALID);
+		return;
+	}
+	xr_buffer_free(&frames);
+
+	dispatch_queue_t queue = this->target_queue ? this->target_queue : dispatch_get_main_queue();
+	dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)this->fd, 0,
+		queue);
+	if (!source) {
+		return;
+	}
+	this->read_source = source;
+	dispatch_source_set_event_handler(source, ^{
+		connection_read_source(self, source);
+	});
+	dispatch_resume(source);
+}
+
+- (void)cancelConnection
+{
+	XPC_THIS_DECL(remote_connection);
+	if (this->cancelled) {
+		return;
+	}
+	this->cancelled = true;
+	/* Measured: RST_STREAM with code 5 on both channels, then one terminal error per handler
+	 * queue. The fd is released with the object, not synchronously here. */
+	unsigned char code[4] = { 0, 0, 0, XR_H2_REFUSED_STREAM };
+	xr_buffer frames = { 0 };
+	xr_h2_write_frame(&frames, XR_H2_RST_STREAM, 0, XR_H2_ROOT_STREAM, code, sizeof(code));
+	xr_h2_write_frame(&frames, XR_H2_RST_STREAM, 0, XR_H2_REPLY_STREAM, code, sizeof(code));
+	if (!frames.failed) {
+		write_all(this->fd, frames.data, frames.len);
+	}
+	xr_buffer_free(&frames);
+	if (this->read_source) {
+		dispatch_source_cancel(this->read_source);
+		this->read_source = NULL;
+	}
+	deliver_event(self, XPC_ERROR_CONNECTION_INVALID);
+}
+
+- (void)sendMessage: (xpc_object_t)message wantingReply: (BOOL)wanting_reply
+	handler: (void (^)(xpc_object_t))handler replyQueue: (dispatch_queue_t)reply_queue
+	semaphore: (void*)semaphore slot: (xpc_object_t*)slot
+{
+	XPC_THIS_DECL(remote_connection);
+	xr_value* payload = NULL;
+	if (!xr_value_from_xpc(message, &payload)) {
+		return;
+	}
+	const uint64_t message_id = this->next_message_id;
+	this->next_message_id += 2;
+	if (wanting_reply) {
+		pending_reply_t* entry = calloc(1, sizeof(*entry));
+		if (!entry) {
+			xr_value_free(payload);
+			return;
+		}
+		entry->message_id = message_id;
+		entry->handler = handler ? Block_copy(handler) : NULL;
+		if (reply_queue) {
+			dispatch_retain(reply_queue);
+			entry->queue = reply_queue;
+		}
+		entry->semaphore = semaphore;
+		entry->slot = slot;
+		pthread_mutex_lock(&g_pending_lock);
+		entry->next = this->pending_replies;
+		this->pending_replies = entry;
+		pthread_mutex_unlock(&g_pending_lock);
+	}
+	uint32_t flags = XR_FLAG_ALWAYS_SET | XR_FLAG_DATA_PRESENT;
+	if (wanting_reply) {
+		flags |= XR_FLAG_WANTING_REPLY;
+	}
+	connection_write_wrapper(self, flags, message_id, payload, XR_H2_ROOT_STREAM);
+	xr_value_free(payload);
+}
+
+@end
+
+/* ---------------------------------------------------------------------------------------------
+ * Exported C entry points.
+ * ------------------------------------------------------------------------------------------- */
+
+XPC_EXPORT
+xpc_object_t xpc_remote_connection_create_with_connected_fd(int fd, dispatch_queue_t queue,
+	uint64_t version_flags, uint64_t endpoint_flags)
+{
+	XPC_CLASS(remote_connection)* connection = [[XPC_CLASS(remote_connection) alloc] init];
+	struct xpc_remote_connection_s* this = xr_state(connection);
+	this->fd = fd;
+	if (queue) {
+		dispatch_retain(queue);
+		this->target_queue = queue;
+	}
+	this->version_flags = version_flags;
+	this->endpoint_flags = endpoint_flags;
+	this->next_message_id = (endpoint_flags & REMOTE_XPC_ENDPOINT_LISTENER) ? 2 : 1;
+	return connection;
+}
+
+XPC_EXPORT
+void xpc_remote_connection_set_target_queue(xpc_object_t connection, dispatch_queue_t queue)
+{
+	TO_OBJC_CHECKED(remote_connection, connection, object) {
+		struct xpc_remote_connection_s* this = xr_state(object);
+		dispatch_queue_t previous = this->target_queue;
+		if (queue) {
+			dispatch_retain(queue);
+		}
+		this->target_queue = queue;
+		if (previous) {
+			dispatch_release(previous);
+		}
+	}
+}
+
+XPC_EXPORT
+void xpc_remote_connection_set_event_handler(xpc_object_t connection, void (^handler)(xpc_object_t))
+{
+	TO_OBJC_CHECKED(remote_connection, connection, object) {
+		struct xpc_remote_connection_s* this = xr_state(object);
+		if (this->event_handler) {
+			Block_release(this->event_handler);
+		}
+		this->event_handler = handler ? Block_copy(handler) : NULL;
+		/* Events and replies are delivered on the target queue, which is what the measured
+		 * provider's endpoints were given. */
+		dispatch_queue_t handler_queue = this->target_queue ? this->target_queue
+			: dispatch_get_main_queue();
+		dispatch_retain(handler_queue);
+		if (this->handler_queue) {
+			dispatch_release(this->handler_queue);
+		}
+		this->handler_queue = handler_queue;
+	}
+}
+
+XPC_EXPORT
+void xpc_remote_connection_activate(xpc_object_t connection)
+{
+	TO_OBJC_CHECKED(remote_connection, connection, object) {
+		[object activate];
+	}
+}
+
+XPC_EXPORT
+void xpc_remote_connection_send_message(xpc_object_t connection, xpc_object_t message)
+{
+	TO_OBJC_CHECKED(remote_connection, connection, object) {
+		[object sendMessage: message wantingReply: NO handler: NULL replyQueue: NULL semaphore: NULL
+			slot: NULL];
+	}
+}
+
+XPC_EXPORT
+void xpc_remote_connection_send_message_with_reply(xpc_object_t connection, xpc_object_t message,
+	dispatch_queue_t reply_queue, void (^handler)(xpc_object_t reply))
+{
+	TO_OBJC_CHECKED(remote_connection, connection, object) {
+		[object sendMessage: message wantingReply: YES handler: handler replyQueue: reply_queue
+			semaphore: NULL slot: NULL];
+	}
+}
+
+XPC_EXPORT
+xpc_object_t xpc_remote_connection_send_message_with_reply_sync(xpc_object_t connection,
+	xpc_object_t message)
+{
+	__block xpc_object_t reply = NULL;
+	TO_OBJC_CHECKED(remote_connection, connection, object) {
+		dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+		[object sendMessage: message wantingReply: YES handler: NULL replyQueue: NULL
+			semaphore: semaphore slot: &reply];
+		dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+		dispatch_release(semaphore);
+	}
+	return reply;
+}
+
+XPC_EXPORT
+void xpc_remote_connection_cancel(xpc_object_t connection)
+{
+	TO_OBJC_CHECKED(remote_connection, connection, object) {
+		[object cancelConnection];
+	}
+}
+
+XPC_EXPORT
+uint64_t xpc_remote_connection_get_version_flags(void)
+{
+	return REMOTE_XPC_VERSION_FLAGS;
+}

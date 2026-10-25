@@ -12,6 +12,10 @@ endif()
 if (COMPONENT_cli OR COMPONENT_dev_gui_common)
 	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "cli_gui_common")
 
+	# RemoteXPC: the provider of the xpc_remote_connection family. Its consumers are CoreDevice and
+	# Mercury, both of which Xcode loads for every iOS build, so this belongs to the CLI tool set.
+	add_subdirectory(RemoteXPC)
+
 	add_subdirectory(CoreServices)
 
 	# these are also stubs, but they're needed for Security
