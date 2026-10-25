@@ -72,6 +72,23 @@ extern "C" {
     } \
 } while (0)
 
+#define ForgetMem(PTR) ForgetCustom((PTR), free)
+
+// Darwin IPv4/IPv6 storage used by the address consumers.
+typedef union {
+    struct sockaddr sa;
+    struct sockaddr_in v4;
+    struct sockaddr_in6 v6;
+} sockaddr_ip;
+
+#define SIN_LEN_SET(PTR) ((PTR)->sin_len = sizeof(*(PTR)))
+#define SIN6_LEN_SET(PTR) ((PTR)->sin6_len = sizeof(*(PTR)))
+
+static inline int isdigit_safe(int c)
+{
+    return (c >= '0') && (c <= '9');
+}
+
 //---------------------------------------------------------------------------------------------------------------------------
 /*!	@defined	kSizeCString
 
