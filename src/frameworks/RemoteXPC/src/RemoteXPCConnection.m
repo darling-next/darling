@@ -79,6 +79,9 @@ struct xpc_remote_connection_s {
 	size_t wrapper_len;
 	size_t wrapper_cap;
 	nghttp2_session* session;
+	bool is_server;
+	bool stream1_answered;
+	bool stream3_answered;
 	void* pending_sends;
 	bool preface_seen;
 	bool activated;
@@ -429,7 +432,7 @@ static void connection_release_source(struct xpc_remote_connection_s* this)
 
 static bool write_all(int fd, const void* bytes, size_t len);
 
-static void connection_handle_wrapper_bytes(id connection, const unsigned char* bytes, size_t length);
+static void connection_handle_wrapper_bytes(id connection, int32_t stream, const unsigned char* bytes, size_t length);
 
 static ssize_t session_send_callback(nghttp2_session* session, const uint8_t* data, size_t length,
 	int flags, void* user_data)
@@ -450,7 +453,49 @@ static int session_data_chunk_callback(nghttp2_session* session, uint8_t flags, 
 	(void)session;
 	(void)flags;
 	(void)stream_id;
-	connection_handle_wrapper_bytes((id)user_data, data, length);
+	connection_handle_wrapper_bytes((id)user_data, stream_id, data, length);
+	return 0;
+}
+
+static int session_frame_callback(nghttp2_session* session, const nghttp2_frame* frame,
+	void* user_data);
+
+static int session_invalid_frame_callback(nghttp2_session* session, const nghttp2_frame* frame,
+	int lib_error_code, void* user_data)
+{
+	(void)session;
+	(void)user_data;
+	xr_tracef("N-invalid-frame type=%d error=%d stream=%d", frame ? (int)frame->hd.type : -1,
+		lib_error_code, frame ? frame->hd.stream_id : -1);
+	return 0;
+}
+
+static int session_frame_send_callback(nghttp2_session* session, const nghttp2_frame* frame,
+	void* user_data)
+{
+	(void)session;
+	(void)user_data;
+	xr_tracef("N-frame-send type=%d stream=%d flags=0x%x len=%zu", (int)frame->hd.type,
+		frame->hd.stream_id, (unsigned)frame->hd.flags, (size_t)frame->hd.length);
+	return 0;
+}
+
+static int session_frame_not_send_callback(nghttp2_session* session, const nghttp2_frame* frame,
+	int lib_error_code, void* user_data)
+{
+	(void)session;
+	(void)user_data;
+	xr_tracef("N-frame-not-sent type=%d stream=%d code=%d", (int)frame->hd.type,
+		frame->hd.stream_id, lib_error_code);
+	return 0;
+}
+
+static int session_stream_close_callback(nghttp2_session* session, int32_t stream_id,
+	uint32_t error_code, void* user_data)
+{
+	(void)session;
+	(void)user_data;
+	xr_tracef("N-stream-close stream=%d error=%u", stream_id, error_code);
 	return 0;
 }
 
@@ -468,10 +513,49 @@ static ssize_t pending_read_callback(nghttp2_session* session, int32_t stream_id
 	memcpy(buf, pending->bytes + pending->offset, remaining);
 	pending->offset += remaining;
 	if (pending->offset == pending->length) {
-		*data_flags |= NGHTTP2_DATA_FLAG_EOF;
+		/* Channels 1 and 3 stay open: the measured native DATA frames carry no END_STREAM. EOF
+		 * alone would make nghttp2 close the stream after the body. */
+		*data_flags |= NGHTTP2_DATA_FLAG_EOF | NGHTTP2_DATA_FLAG_NO_END_STREAM;
 		pending->bytes = NULL; /* freed with the session's source by the connection */
 	}
 	return (ssize_t)remaining;
+}
+
+static void connection_submit_wrapper(id connection, uint32_t flags, uint64_t message_id,
+	const xr_value* payload, int32_t stream, bool flush);
+
+static int session_frame_callback(nghttp2_session* session, const nghttp2_frame* frame,
+	void* user_data)
+{
+	(void)session;
+	id connection = (id)user_data;
+	struct xpc_remote_connection_s* this = (struct xpc_remote_connection_s*)connection;
+	if (!this->is_server || !frame || frame->hd.type != NGHTTP2_HEADERS) {
+		return 0;
+	}
+	const int32_t stream = frame->hd.stream_id;
+	const uint32_t init_flags = (stream == XR_STREAM_REPLY)
+		? (XR_FLAG_ALWAYS_SET | XR_FLAG_INIT_HANDSHAKE) : XR_FLAG_ALWAYS_SET;
+	bool* answered = (stream == XR_STREAM_REPLY) ? &this->stream3_answered
+		: (stream == XR_STREAM_ROOT ? &this->stream1_answered : NULL);
+	if (!answered || *answered) {
+		return 0;
+	}
+	*answered = true;
+	/* The client opened this channel; the server answers with empty HEADERS and the channel's
+	 * initialization wrapper, which is the order the captured peer used. */
+	const int hrc = nghttp2_submit_headers(session, NGHTTP2_FLAG_END_HEADERS, stream, NULL, NULL, 0,
+		NULL);
+	xr_tracef("N-response-headers stream=%d rc=%d", stream, hrc);
+	if (stream == XR_STREAM_REPLY) {
+		connection_submit_wrapper(connection, init_flags, 0, NULL, stream, false);
+	} else {
+		xr_value empty = { .kind = XR_DICTIONARY };
+		connection_submit_wrapper(connection, init_flags, 0, &empty, stream, false);
+	}
+	const int src = nghttp2_session_send(session);
+	xr_tracef("N-frame-flush rc=%d", src);
+	return 0;
 }
 
 static struct xpc_remote_connection_s* xr_state(id object)
@@ -528,10 +612,44 @@ static void connection_submit_wrapper(id connection, uint32_t flags, uint64_t me
 	nghttp2_data_provider provider;
 	provider.source.ptr = pending;
 	provider.read_callback = pending_read_callback;
-	nghttp2_submit_data(this->session, NGHTTP2_FLAG_NONE, stream, &provider);
+	const int drc = nghttp2_submit_data(this->session, NGHTTP2_FLAG_NONE, stream, &provider);
+	xr_tracef("N-submit-data stream=%d rc=%d", stream, drc);
 	if (flush) {
-		nghttp2_session_send(this->session);
+		const int src = nghttp2_session_send(this->session);
+		xr_tracef("N-send rc=%d", src);
 	}
+}
+
+/* Opens a client channel with HEADERS and its first DATA in one submission: submit_data on a stream
+ * that exists only in the outbound queue returns NGHTTP2_ERR_STREAM_CLOSED (-510). */
+static int32_t connection_submit_request(id connection, uint32_t flags, uint64_t message_id,
+	const xr_value* payload, bool flush)
+{
+	struct xpc_remote_connection_s* this = xr_state(connection);
+	unsigned char* wrapper = NULL;
+	const size_t wrapper_len = xr_frame_encode(flags, message_id, payload, &wrapper);
+	if (!wrapper_len) {
+		return NGHTTP2_ERR_INVALID_ARGUMENT;
+	}
+	send_pending_t* pending = calloc(1, sizeof(*pending));
+	if (!pending) {
+		free(wrapper);
+		return NGHTTP2_ERR_NOMEM;
+	}
+	pending->bytes = wrapper;
+	pending->length = wrapper_len;
+	pending->next = this->pending_sends;
+	this->pending_sends = pending;
+	nghttp2_data_provider provider;
+	provider.source.ptr = pending;
+	provider.read_callback = pending_read_callback;
+	const int32_t stream = nghttp2_submit_request(this->session, NULL, NULL, 0, &provider, NULL);
+	xr_tracef("N-submit-request rc=%d", stream);
+	if (flush) {
+		const int src = nghttp2_session_send(this->session);
+		xr_tracef("N-send rc=%d", src);
+	}
+	return stream;
 }
 
 static void connection_write_wrapper(id connection, uint32_t flags, uint64_t message_id,
@@ -624,7 +742,7 @@ static void connection_handle_data(id connection, const unsigned char* bytes, si
 	xpc_release(object);
 }
 
-static void connection_handle_wrapper_bytes(id connection, const unsigned char* bytes, size_t length)
+static void connection_handle_wrapper_bytes(id connection, int32_t stream, const unsigned char* bytes, size_t length)
 {
 	struct xpc_remote_connection_s* this = xr_state(connection);
 	size_t available = this->wrapper_len + length;
@@ -653,6 +771,18 @@ static void connection_handle_wrapper_bytes(id connection, const unsigned char* 
 		this->wrapper_len -= consumed;
 		memmove(this->wrapper_bytes, this->wrapper_bytes + consumed, this->wrapper_len);
 		if (!frame_value.payload) {
+			continue;
+		}
+		/* Handshake wrappers carry neither INIT_HANDSHAKE nor DATA_PRESENT: they belong to the
+		 * connection, not to the application. A valid empty application dictionary does carry
+		 * DATA_PRESENT and is still delivered. */
+		xr_tracef("N-wrapper stream=%d flags=0x%x id=%llu", stream, frame_value.flags,
+			(unsigned long long)frame_value.message_id);
+		if ((frame_value.flags & XR_FLAG_INIT_HANDSHAKE)
+			|| !(frame_value.flags & XR_FLAG_DATA_PRESENT)) {
+			xr_tracef("N-handshake-wrapper flags=0x%x id=%llu", frame_value.flags,
+				(unsigned long long)frame_value.message_id);
+			xr_value_free(frame_value.payload);
 			continue;
 		}
 		xpc_object_t object = xr_value_to_xpc(frame_value.payload);
@@ -700,6 +830,7 @@ static void connection_read_source(id connection, dispatch_source_t source)
 			break;
 		}
 		const ssize_t consumed = nghttp2_session_mem_recv(this->session, chunk, (size_t)got);
+		xr_tracef("N-mem-recv got=%zd consumed=%zd", got, consumed);
 		if (consumed < 0) {
 			xr_tracef("R-session-error %zd", consumed);
 			break;
@@ -726,11 +857,23 @@ static void connection_read_source(id connection, dispatch_source_t source)
 	nghttp2_session_callbacks_new(&callbacks);
 	nghttp2_session_callbacks_set_send_callback(callbacks, session_send_callback);
 	nghttp2_session_callbacks_set_on_data_chunk_recv_callback(callbacks, session_data_chunk_callback);
+	nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks, session_frame_callback);
+	nghttp2_session_callbacks_set_on_invalid_frame_recv_callback(callbacks,
+		session_invalid_frame_callback);
+	nghttp2_session_callbacks_set_on_stream_close_callback(callbacks,
+		session_stream_close_callback);
+	nghttp2_session_callbacks_set_on_frame_send_callback(callbacks, session_frame_send_callback);
+	nghttp2_session_callbacks_set_on_frame_not_send_callback(callbacks,
+		session_frame_not_send_callback);
 	nghttp2_option_new(&option);
 	/* Documented for a non-HTTP binary protocol: the channels are empty HEADERS plus DATA. This
 	 * disables HTTP message semantics, not frame or TLS integrity. */
 	nghttp2_option_set_no_http_messaging(option, 1);
-	const int session_rc = nghttp2_session_client_new2(&this->session, callbacks, self, option);
+	struct xpc_remote_connection_s* state = xr_state(self);
+	state->is_server = (state->endpoint_flags & REMOTE_XPC_ENDPOINT_LISTENER) != 0;
+	const int session_rc = state->is_server
+		? nghttp2_session_server_new2(&this->session, callbacks, self, option)
+		: nghttp2_session_client_new2(&this->session, callbacks, self, option);
 	nghttp2_option_del(option);
 	nghttp2_session_callbacks_del(callbacks);
 	if (session_rc != 0 || !this->session) {
@@ -746,17 +889,10 @@ static void connection_read_source(id connection, dispatch_source_t source)
 		nghttp2_submit_settings(this->session, NGHTTP2_FLAG_NONE, settings, 2);
 	}
 	nghttp2_submit_window_update(this->session, NGHTTP2_FLAG_NONE, 0, 983041);
-	{
-		nghttp2_priority_spec priority;
-		nghttp2_priority_spec_default_init(&priority);
-		nghttp2_submit_headers(this->session, NGHTTP2_FLAG_END_HEADERS, XR_STREAM_ROOT, &priority,
-			NULL, 0, NULL);
+	if (!state->is_server) {
 		xr_value empty = { .kind = XR_DICTIONARY };
-		connection_submit_wrapper(self, XR_FLAG_ALWAYS_SET, 0, &empty, XR_STREAM_ROOT, false);
-		nghttp2_submit_headers(this->session, NGHTTP2_FLAG_END_HEADERS, XR_STREAM_REPLY, &priority,
-			NULL, 0, NULL);
-		connection_submit_wrapper(self, XR_FLAG_ALWAYS_SET | XR_FLAG_INIT_HANDSHAKE, 0, NULL,
-			XR_STREAM_REPLY, false);
+		connection_submit_request(self, XR_FLAG_ALWAYS_SET, 0, &empty, false);
+		connection_submit_request(self, XR_FLAG_ALWAYS_SET | XR_FLAG_INIT_HANDSHAKE, 0, NULL, false);
 	}
 	xr_trace("P2-activate-write");
 	nghttp2_session_send(this->session);
