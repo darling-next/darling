@@ -377,7 +377,9 @@ static xpc_object_t xr_value_to_xpc(const xr_value* value)
 	case XR_DATE:
 		return xpc_date_create(value->u.i64);
 	case XR_FD:
-		return xpc_fd_create((int)value->u.fd);
+		/* A wire FD number names a descriptor in the sender's namespace. Without a real descriptor
+		 * transfer mapping it must not become a local descriptor; reject rather than fabricate. */
+		return NULL;
 	case XR_NULL:
 	default:
 		return xpc_null_create();

@@ -196,6 +196,7 @@ typedef struct {
 	const unsigned char *data;
 	size_t len;
 	size_t pos;
+	size_t nodes;
 	bool truncated;
 	bool malformed;
 } reader;
@@ -271,6 +272,16 @@ static xr_value *read_blob(reader *r, size_t base, xr_kind kind)
 	}
 	memcpy(copy, r->data + r->pos, len);
 	r->pos += len;
+	if (kind == XR_STRING) {
+		/* The measured string encoding is length-prefixed including its NUL. A string without a
+		 * terminator must not reach xpc_string_create. */
+		if (len == 0 || copy[len - 1] != 0) {
+			free(copy);
+			free(v);
+			r->malformed = true;
+			return NULL;
+		}
+	}
 	align_reader(r, base, 4);
 	v->u.bytes.bytes = copy;
 	v->u.bytes.len = len;
@@ -279,6 +290,12 @@ static xr_value *read_blob(reader *r, size_t base, xr_kind kind)
 
 static xr_value *read_object(reader *r, size_t base)
 {
+	/* A bounded node budget keeps a hostile encoding from driving unbounded allocation or
+	 * recursion through container nesting. */
+	if (++r->nodes > 4096) {
+		r->malformed = true;
+		return NULL;
+	}
 	align_reader(r, base, 4); /* every object starts at a 4-byte boundary */
 	uint32_t tag = read_u32(r);
 	if (r->truncated) {
@@ -289,6 +306,10 @@ static xr_value *read_object(reader *r, size_t base)
 		return new_value(XR_NULL);
 	case XR_TYPE_BOOL: {
 		uint32_t raw = read_u32(r);
+		if (raw > 1) {
+			r->malformed = true;
+			return NULL;
+		}
 		xr_value *v = new_value(XR_BOOL);
 		if (v) {
 			v->u.boolean = raw;
@@ -359,6 +380,10 @@ static xr_value *read_object(reader *r, size_t base)
 		if (r->truncated) {
 			return NULL;
 		}
+		if (count > (r->len - r->pos) / 4) {
+			r->malformed = true;
+			return NULL;
+		}
 		xr_value *v = new_value(XR_ARRAY);
 		if (!v) {
 			r->malformed = true;
@@ -385,6 +410,10 @@ static xr_value *read_object(reader *r, size_t base)
 		(void)read_u32(r); /* content length; the entry count follows it */
 		uint32_t count = read_u32(r);
 		if (r->truncated) {
+			return NULL;
+		}
+		if (count > (r->len - r->pos) / 4) {
+			r->malformed = true;
 			return NULL;
 		}
 		xr_value *v = new_value(XR_DICTIONARY);
