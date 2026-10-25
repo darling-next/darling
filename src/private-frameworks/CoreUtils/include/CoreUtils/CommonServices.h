@@ -35,6 +35,21 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <libkern/OSByteOrder.h>
+#include <dispatch/dispatch.h>
+#include <Block.h>
+#include <ctype.h>
+#include <mach/mach_time.h>
+#include <dispatch/private.h>
+
+// The genuine managed-defaults implementation has an unsupported macOS branch.
+// Specify only this known platform; leave other platform predicates unresolved.
+#if TARGET_OS_OSX && !defined(TARGET_OS_IOS_LIKE_DEVICE)
+#define TARGET_OS_IOS_LIKE_DEVICE 0
+#endif
+
+// Darling's socket references are POSIX file descriptors, including descriptor 0.
+#define kInvalidSocketRef (-1)
+#define IsValidSocket(SOCKET) ((SOCKET) >= 0)
 
 #ifdef  __cplusplus
 extern "C" {
@@ -71,8 +86,63 @@ extern "C" {
         *__cu_forget_slot = NULL; \
     } \
 } while (0)
+#define xpc_forget(PTR) ForgetCustom((PTR), xpc_release)
+#define CFReleaseNullSafe(VALUE) do { \
+    __typeof__(VALUE) __cu_cf_object = (VALUE); \
+    if (__cu_cf_object) CFRelease(__cu_cf_object); \
+} while (0)
+
+#define increment_saturate(VALUE, MAXIMUM) do { \
+    __typeof__(&(VALUE)) __cu_counter = &(VALUE); \
+    __typeof__(MAXIMUM) __cu_maximum = (MAXIMUM); \
+    if (*__cu_counter < __cu_maximum) ++*__cu_counter; \
+} while (0)
 
 #define ForgetMem(PTR) ForgetCustom((PTR), free)
+
+#define ForgetCF(PTR) ForgetCustom((PTR), CFRelease)
+#define dispatch_forget(PTR) ForgetCustom((PTR), dispatch_release)
+#define BlockForget(PTR) ForgetCustom((PTR), Block_release)
+
+// C/MRC dispatch ownership: cancel a source before dropping its owning slot.
+#define dispatch_release_null_safe(VALUE) do { \
+    __typeof__(VALUE) __cu_dispatch_object = (VALUE); \
+    if (__cu_dispatch_object) dispatch_release(__cu_dispatch_object); \
+} while (0)
+#define dispatch_source_forget(PTR) do { \
+    __typeof__(PTR) __cu_source_slot = (PTR); \
+    if (*__cu_source_slot) { \
+        dispatch_source_cancel(*__cu_source_slot); \
+        dispatch_release(*__cu_source_slot); \
+        *__cu_source_slot = NULL; \
+    } \
+} while (0)
+#define ForgetCustomEx(PTR, INVALIDATE, RELEASE) do { \
+    __typeof__(PTR) __cu_forget_ex_slot = (PTR); \
+    if (*__cu_forget_ex_slot) { \
+        INVALIDATE(*__cu_forget_ex_slot); \
+        RELEASE(*__cu_forget_ex_slot); \
+        *__cu_forget_ex_slot = NULL; \
+    } \
+} while (0)
+
+#define CFIsType(VALUE, TYPE) ({ \
+    CFTypeRef __cu_cf_value = (CFTypeRef)(VALUE); \
+    __cu_cf_value && (CFGetTypeID(__cu_cf_value) == TYPE ## GetTypeID()); \
+})
+#define Clamp(VALUE, LOWER, UPPER) ({ \
+    __typeof__(VALUE) __cu_clamp_value = (VALUE); \
+    __typeof__(LOWER) __cu_clamp_lower = (LOWER); \
+    __typeof__(UPPER) __cu_clamp_upper = (UPPER); \
+    (__cu_clamp_value < __cu_clamp_lower) ? __cu_clamp_lower : \
+        ((__cu_clamp_value > __cu_clamp_upper) ? __cu_clamp_upper : __cu_clamp_value); \
+})
+
+#define INT64_C_safe(VALUE) ((int64_t)(VALUE))
+#define UINT64_C_safe(VALUE) ((uint64_t)(VALUE))
+// The observed CoreUtils offset for the uint32 Unix/RRSIG timestamp domain.
+// This does not specify its epoch-zero or negative calendar behavior.
+#define kDaysToUnixEpoch 719163
 
 // Darwin IPv4/IPv6 storage used by the address consumers.
 typedef union {
@@ -88,6 +158,27 @@ static inline int isdigit_safe(int c)
 {
     return (c >= '0') && (c <= '9');
 }
+
+static inline int tolower_safe(int c)
+{
+    return tolower((unsigned char)c);
+}
+
+static inline int _isprint_ascii(int c)
+{
+    return (c >= 0x20) && (c <= 0x7e);
+}
+
+// RFC 4034 NSEC bitmaps number each octet's bits from the most significant bit.
+#define BitArray_MaxBits(LENGTH) ((size_t)(LENGTH) * 8)
+static inline int BitArray_GetBit(const void *bytes, size_t length, size_t bit)
+{
+    const size_t octet = bit / 8;
+    return (octet < length) &&
+        ((((const uint8_t *)bytes)[octet] & (0x80U >> (bit % 8))) != 0);
+}
+
+static const uint8_t AllZeros16Bytes[16] = {0};
 
 //---------------------------------------------------------------------------------------------------------------------------
 /*!	@defined	kSizeCString
@@ -444,7 +535,10 @@ typedef int32_t OSStatus;
 #define kBackoffErr                 -6760
 #define kNoAddressAckErr            -6761
 #define kBusyErr                    -6762
+// Legacy CoreUtils API spelling; this numeric slot is also named kBusyErr.
+#define kInternalErr                -6762
 #define kNoSpaceErr                 -6763
+#define kCountErr                   -6764
 
 #define kGenericErrorEnd            -6779   // Last generic error code (inclusive)
 

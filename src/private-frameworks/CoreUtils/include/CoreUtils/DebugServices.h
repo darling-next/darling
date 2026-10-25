@@ -739,6 +739,34 @@ typedef uint32_t DebugPropertyTag;
     }   while( 0 )
 #endif
 
+// Return forms retain require's diagnostics and evaluate the condition once.
+#define require_return(X) do { \
+    if (!(X)) { \
+        debug_print_assert(0, #X, NULL, __FILE__, __LINE__, __ROUTINE__); \
+        return; \
+    } \
+} while (0)
+#define require_return_value(X, VALUE) do { \
+    if (!(X)) { \
+        debug_print_assert(0, #X, NULL, __FILE__, __LINE__, __ROUTINE__); \
+        return (VALUE); \
+    } \
+} while (0)
+#define require_return_action(X, ACTION) do { \
+    if (!(X)) { \
+        debug_print_assert(0, #X, NULL, __FILE__, __LINE__, __ROUTINE__); \
+        ACTION; \
+        return; \
+    } \
+} while (0)
+#define require_return_value_action(X, VALUE, ACTION) do { \
+    if (!(X)) { \
+        debug_print_assert(0, #X, NULL, __FILE__, __LINE__, __ROUTINE__); \
+        ACTION; \
+        return (VALUE); \
+    } \
+} while (0)
+
 //---------------------------------------------------------------------------------------------------------------------------
 /*!	@defined	require_string
 

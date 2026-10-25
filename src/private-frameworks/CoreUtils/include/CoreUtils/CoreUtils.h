@@ -28,7 +28,9 @@
 #include <AssertMacros.h>
 
 #include "CommonServices.h"
+#include <MacTypes.h>
 #include "DebugServices.h"
+#include "SoftLinking.h"
 
 #ifdef __OBJC__
 #import <Foundation/Foundation.h>
@@ -207,6 +209,28 @@
 #import <CoreUtils/TUTestState.h>
 #endif
 
+// Storage/call shapes used by the soft-linked DNSMessage client. The x86_64
+// layout is measured from CoreUtils 830.24, not a recovered historical typedef.
+// Declarations do not promise that an optional runtime symbol is implemented.
+typedef struct {
+    uint8_t *initialBuffer;
+    size_t initialCapacity;
+    size_t growthLimit;
+    uint8_t *buffer;
+    size_t length;
+    size_t capacity;
+    uint8_t ownsBuffer;
+    int32_t error;
+} DataBuffer;
+
+#if defined(__LP64__) && __LP64__
+typedef char CUDataBufferLayoutCheck[
+    (sizeof(DataBuffer) == 56 && offsetof(DataBuffer, buffer) == 24 &&
+     offsetof(DataBuffer, ownsBuffer) == 48 && offsetof(DataBuffer, error) == 52) ? 1 : -1];
+#endif
+
+enum { kBase64Flags_None = 0 };
+
 void* AES_CBCFrame_Final(void);
 void* AES_CBCFrame_Init(void);
 void* AES_CBCFrame_Update(void);
@@ -307,7 +331,8 @@ void* AudioStreamStop(void);
 void* AudioStreamTest(void);
 void* Base64Decode(void);
 void* Base64DecodeCopy(void);
-void* Base64EncodeCopyEx(void);
+OSStatus Base64EncodeCopyEx(const void *bytes, size_t length, uint32_t flags,
+                           char **outString, size_t *outLength);
 void* Base64EncodeEx(void);
 void* Base64EncodeLinesCopyEx(void);
 void* BitListString_Make(void);
@@ -598,14 +623,16 @@ void* DMAPContentBlock_GetNextChunk(void);
 void* DMAPContentBlock_Init(void);
 void* DMAPContentBlock_OpenContainer(void);
 void* DMAPFindEntryByContentCode(void);
-void* DataBuffer_Append(void);
-void* DataBuffer_AppendF(void);
+OSStatus DataBuffer_Append(DataBuffer *buffer, const void *bytes, size_t length);
+OSStatus DataBuffer_AppendF(DataBuffer *buffer, const char *format, ...);
 void* DataBuffer_AppendFile(void);
 void* DataBuffer_AppendIE(void);
 void* DataBuffer_Commit(void);
-void* DataBuffer_Detach(void);
-void* DataBuffer_Free(void);
-void* DataBuffer_Init(void);
+OSStatus DataBuffer_Detach(DataBuffer *buffer, uint8_t **outBytes, size_t *outLength);
+// The genuine 1310 client consumes Init/Free as void; no private return spelling
+// or historical header identity is asserted.
+void DataBuffer_Free(DataBuffer *buffer);
+void DataBuffer_Init(DataBuffer *buffer, void *storage, size_t capacity, size_t growthLimit);
 void* DataBuffer_RunProcessAndAppendOutput(void);
 void* DataToHexCStringEx(void);
 void* DebugGetErrorString(void);
@@ -1063,7 +1090,7 @@ void* SDPFindSessionSection(void);
 void* SDPFindType(void);
 void* SDPGetNext(void);
 void* SDPGetNextAttribute(void);
-void* SNPrintF(void);
+int SNPrintF(char *destination, size_t capacity, const char *format, ...);
 void* SNPrintF_Add(void);
 void* SNScanF(void);
 void* SRPClientStart_corecrypto(void);
@@ -1092,7 +1119,8 @@ void* ScreenStreamStart(void);
 void* ScreenStreamStop(void);
 void* SecondsToUpTicks(void);
 void* SecondsToUpTicksF(void);
-void* SecondsToYMD_HMS(void);
+void SecondsToYMD_HMS(int64_t seconds, int32_t *year, int32_t *month, int32_t *day,
+                     int32_t *hour, int32_t *minute, int32_t *second);
 void* SendSelfConnectedLoopbackMessage(void);
 void* SerialStreamCreate(void);
 void* SerialStreamGetTypeID(void);

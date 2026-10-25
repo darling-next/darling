@@ -21,6 +21,8 @@
 #ifndef _PowerLog_H_
 #define _PowerLog_H_
 
+#include <CoreFoundation/CoreFoundation.h>
+#ifdef __OBJC__
 #import <Foundation/Foundation.h>
 
 #import <PowerLog/PLCoreDuetEventInterval.h>
@@ -32,6 +34,7 @@
 #import <PowerLog/PLModelingUtilities.h>
 #import <PowerLog/PLClientLogAggregator.h>
 #import <PowerLog/PLClientLogger.h>
+#endif
 
 void* PLBatchDropMessages(void);
 void* PLBatteryGaugeGetSnapshot(void);

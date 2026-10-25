@@ -629,12 +629,6 @@ void* Base64DecodeCopy(void)
     return NULL;
 }
 
-void* Base64EncodeCopyEx(void)
-{
-    if (verbose) puts("STUB: Base64EncodeCopyEx called");
-    return NULL;
-}
-
 void* Base64EncodeEx(void)
 {
     if (verbose) puts("STUB: Base64EncodeEx called");
@@ -2375,18 +2369,6 @@ void* DMAPFindEntryByContentCode(void)
     return NULL;
 }
 
-void* DataBuffer_Append(void)
-{
-    if (verbose) puts("STUB: DataBuffer_Append called");
-    return NULL;
-}
-
-void* DataBuffer_AppendF(void)
-{
-    if (verbose) puts("STUB: DataBuffer_AppendF called");
-    return NULL;
-}
-
 void* DataBuffer_AppendFile(void)
 {
     if (verbose) puts("STUB: DataBuffer_AppendFile called");
@@ -2402,24 +2384,6 @@ void* DataBuffer_AppendIE(void)
 void* DataBuffer_Commit(void)
 {
     if (verbose) puts("STUB: DataBuffer_Commit called");
-    return NULL;
-}
-
-void* DataBuffer_Detach(void)
-{
-    if (verbose) puts("STUB: DataBuffer_Detach called");
-    return NULL;
-}
-
-void* DataBuffer_Free(void)
-{
-    if (verbose) puts("STUB: DataBuffer_Free called");
-    return NULL;
-}
-
-void* DataBuffer_Init(void)
-{
-    if (verbose) puts("STUB: DataBuffer_Init called");
     return NULL;
 }
 
@@ -5165,12 +5129,6 @@ void* SDPGetNextAttribute(void)
     return NULL;
 }
 
-void* SNPrintF(void)
-{
-    if (verbose) puts("STUB: SNPrintF called");
-    return NULL;
-}
-
 void* SNPrintF_Add(void)
 {
     if (verbose) puts("STUB: SNPrintF_Add called");
@@ -5336,12 +5294,6 @@ void* SecondsToUpTicks(void)
 void* SecondsToUpTicksF(void)
 {
     if (verbose) puts("STUB: SecondsToUpTicksF called");
-    return NULL;
-}
-
-void* SecondsToYMD_HMS(void)
-{
-    if (verbose) puts("STUB: SecondsToYMD_HMS called");
     return NULL;
 }
 
