@@ -75,9 +75,7 @@ struct xpc_remote_connection_s {
 	unsigned char* input;
 	size_t input_len;
 	size_t input_cap;
-	unsigned char* wrapper_bytes;
-	size_t wrapper_len;
-	size_t wrapper_cap;
+	xr_stream_assembler assembler;
 	nghttp2_session* session;
 	bool is_server;
 	bool stream1_answered;
@@ -159,7 +157,7 @@ XPC_CLASS_HEADER(remote_connection);
 		pending = next;
 	}
 	free(this->input);
-	free(this->wrapper_bytes);
+	xr_stream_assembler_free(&this->assembler);
 	[super dealloc];
 }
 
@@ -747,39 +745,28 @@ static void connection_handle_data(id connection, const unsigned char* bytes, si
 static void connection_handle_wrapper_bytes(id connection, int32_t stream, const unsigned char* bytes, size_t length)
 {
 	struct xpc_remote_connection_s* this = xr_state(connection);
-	size_t available = this->wrapper_len + length;
-	if (available > this->wrapper_cap) {
-		size_t cap = this->wrapper_cap ? this->wrapper_cap : 16384;
-		while (cap < available) {
-			cap *= 2;
-		}
-		unsigned char* grown = realloc(this->wrapper_bytes, cap);
-		if (!grown) {
-			return;
-		}
-		this->wrapper_bytes = grown;
-		this->wrapper_cap = cap;
+	if (!xr_stream_assembler_feed(&this->assembler, stream, bytes, length)) {
+		xr_tracef("N-assembler-reject stream=%d length=%zu", stream, length);
+		return;
 	}
-	memcpy(this->wrapper_bytes + this->wrapper_len, bytes, length);
-	this->wrapper_len += length;
-	size_t consumed = 0;
-	xr_frame frame_value = { 0 };
-	bool need_more = false;
 	for (;;) {
-		if (!xr_frame_parse(this->wrapper_bytes, this->wrapper_len, &consumed, &frame_value,
-			&need_more)) {
+		xr_frame frame_value = { 0 };
+		const int taken = xr_stream_assembler_take(&this->assembler, stream, &frame_value);
+		if (taken == 0) {
 			break;
 		}
-		this->wrapper_len -= consumed;
-		memmove(this->wrapper_bytes, this->wrapper_bytes + consumed, this->wrapper_len);
+		if (taken < 0) {
+			xr_tracef("N-assembler-malformed stream=%d", stream);
+			break;
+		}
+		xr_tracef("N-wrapper stream=%d flags=0x%x id=%llu", stream, frame_value.flags,
+			(unsigned long long)frame_value.message_id);
 		if (!frame_value.payload) {
 			continue;
 		}
 		/* Handshake wrappers carry neither INIT_HANDSHAKE nor DATA_PRESENT: they belong to the
 		 * connection, not to the application. A valid empty application dictionary does carry
 		 * DATA_PRESENT and is still delivered. */
-		xr_tracef("N-wrapper stream=%d flags=0x%x id=%llu", stream, frame_value.flags,
-			(unsigned long long)frame_value.message_id);
 		if ((frame_value.flags & XR_FLAG_INIT_HANDSHAKE)
 			|| !(frame_value.flags & XR_FLAG_DATA_PRESENT)) {
 			xr_tracef("N-handshake-wrapper flags=0x%x id=%llu", frame_value.flags,
@@ -791,6 +778,8 @@ static void connection_handle_wrapper_bytes(id connection, int32_t stream, const
 		const bool is_reply = (frame_value.flags & XR_FLAG_REPLY) != 0;
 		xr_value_free(frame_value.payload);
 		if (!object) {
+			xr_tracef("N-object-rejected flags=0x%x id=%llu", frame_value.flags,
+				(unsigned long long)frame_value.message_id);
 			continue;
 		}
 		if (is_reply) {

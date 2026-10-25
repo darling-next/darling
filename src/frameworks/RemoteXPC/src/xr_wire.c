@@ -239,6 +239,9 @@ static void align_reader(reader *r, size_t base, size_t align)
 }
 
 static xr_value *read_object(reader *r, size_t base);
+static xr_value *read_object_depth(reader *r, size_t base, unsigned depth);
+
+#define XR_MAX_DEPTH 128u
 
 static xr_value *new_value(xr_kind kind)
 {
@@ -247,6 +250,11 @@ static xr_value *new_value(xr_kind kind)
 		v->kind = kind;
 	}
 	return v;
+}
+
+static xr_value *read_object(reader *r, size_t base)
+{
+	return read_object_depth(r, base, 0);
 }
 
 static xr_value *read_blob(reader *r, size_t base, xr_kind kind)
@@ -288,10 +296,13 @@ static xr_value *read_blob(reader *r, size_t base, xr_kind kind)
 	return v;
 }
 
-static xr_value *read_object(reader *r, size_t base)
+static xr_value *read_object_depth(reader *r, size_t base, unsigned depth)
 {
-	/* A bounded node budget keeps a hostile encoding from driving unbounded allocation or
-	 * recursion through container nesting. */
+	/* Explicit nesting bound: the node budget alone bounds total work, not stack depth. */
+	if (depth > XR_MAX_DEPTH) {
+		r->malformed = true;
+		return NULL;
+	}
 	if (++r->nodes > 4096) {
 		r->malformed = true;
 		return NULL;
@@ -366,14 +377,12 @@ static xr_value *read_object(reader *r, size_t base)
 		v->u.bytes.len = 16;
 		return v;
 	}
-	case XR_TYPE_FD: {
-		uint32_t fd = read_u32(r);
-		xr_value *v = new_value(XR_FD);
-		if (v) {
-			v->u.fd = fd;
-		}
-		return v;
-	}
+	case XR_TYPE_FD:
+		/* A wire FD names a descriptor in the sender's namespace. This transport has no
+		 * descriptor-transfer mapping, so the object is rejected rather than delivered with the
+		 * FD silently missing. */
+		r->malformed = true;
+		return NULL;
 	case XR_TYPE_ARRAY: {
 		(void)read_u32(r); /* content length; the item count follows it */
 		uint32_t count = read_u32(r);
@@ -398,7 +407,7 @@ static xr_value *read_object(reader *r, size_t base)
 		v->u.array.items = (const xr_value *const *)items;
 		v->u.array.count = count;
 		for (uint32_t i = 0; i < count; i++) {
-			items[i] = read_object(r, base);
+			items[i] = read_object_depth(r, base, depth + 1);
 			if (!items[i]) {
 				xr_value_free(v);
 				return NULL;
@@ -453,7 +462,7 @@ static xr_value *read_object(reader *r, size_t base)
 			}
 			memcpy(keys[i], r->data + start, key_len + 1);
 			r->pos++;
-			values[i] = read_object(r, base);
+			values[i] = read_object_depth(r, base, depth + 1);
 			if (!values[i]) {
 				xr_value_free(v);
 				return NULL;
@@ -499,11 +508,79 @@ bool xr_frame_parse(const unsigned char *data, size_t len, size_t *consumed, xr_
 	size_t base = 24;
 	frame->payload = read_object(&r, base);
 	if (!frame->payload) {
-		*need_more = r.truncated;
+		/* The frame itself was complete (size <= available): an object that still runs past its
+		 * end is malformed input, not an incomplete read. */
+		*need_more = false;
 		return false;
 	}
 	*consumed = 24 + (size_t)size;
 	return true;
+}
+
+static int stream_index(int stream)
+{
+	if (stream == 1) {
+		return 0;
+	}
+	if (stream == 3) {
+		return 1;
+	}
+	return -1;
+}
+
+bool xr_stream_assembler_feed(xr_stream_assembler* assembler, int stream, const void* bytes,
+	size_t length)
+{
+	const int index = stream_index(stream);
+	if (index < 0) {
+		return false;
+	}
+	if (assembler->len[index] + length > assembler->cap[index]) {
+		size_t cap = assembler->cap[index] ? assembler->cap[index] : 16384;
+		while (cap < assembler->len[index] + length) {
+			cap *= 2;
+		}
+		unsigned char* grown = realloc(assembler->bytes[index], cap);
+		if (!grown) {
+			return false;
+		}
+		assembler->bytes[index] = grown;
+		assembler->cap[index] = cap;
+	}
+	memcpy(assembler->bytes[index] + assembler->len[index], bytes, length);
+	assembler->len[index] += length;
+	return true;
+}
+
+int xr_stream_assembler_take(xr_stream_assembler* assembler, int stream, xr_frame* frame)
+{
+	const int index = stream_index(stream);
+	if (index < 0) {
+		return -1;
+	}
+	size_t consumed = 0;
+	bool need_more = false;
+	if (!xr_frame_parse(assembler->bytes[index], assembler->len[index], &consumed, frame,
+		&need_more)) {
+		if (!need_more) {
+			assembler->len[index] = 0; /* malformed: do not leave the stream wedged */
+			return -1;
+		}
+		return 0;
+	}
+	assembler->len[index] -= consumed;
+	memmove(assembler->bytes[index], assembler->bytes[index] + consumed, assembler->len[index]);
+	return 1;
+}
+
+void xr_stream_assembler_free(xr_stream_assembler* assembler)
+{
+	for (int i = 0; i < 2; i++) {
+		free(assembler->bytes[i]);
+		assembler->bytes[i] = NULL;
+		assembler->len[i] = 0;
+		assembler->cap[i] = 0;
+	}
 }
 
 void xr_value_free(xr_value *value)

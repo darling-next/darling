@@ -141,6 +141,21 @@ size_t xr_frame_encode(uint32_t flags, uint64_t message_id, const xr_value *payl
 bool xr_frame_parse(const unsigned char *data, size_t len, size_t *consumed, xr_frame *frame,
 	bool *need_more);
 
+/* Per-stream wrapper assembly. The two channels of a connection (streams 1 and 3) carry
+ * independent wrapper byte sequences that may be delivered interleaved, so each stream owns its
+ * own remainder. feed() appends; take() returns 1 for a complete frame, 0 when more bytes are
+ * needed, and -1 for malformed input (the stream's remainder is then discarded). */
+typedef struct {
+	unsigned char* bytes[2];
+	size_t len[2];
+	size_t cap[2];
+} xr_stream_assembler;
+
+void xr_stream_assembler_free(xr_stream_assembler* assembler);
+bool xr_stream_assembler_feed(xr_stream_assembler* assembler, int stream, const void* bytes,
+	size_t length);
+int xr_stream_assembler_take(xr_stream_assembler* assembler, int stream, xr_frame* frame);
+
 void xr_value_free(xr_value *value);
 void xr_buffer_free(xr_buffer *buffer);
 
