@@ -474,7 +474,7 @@ static void connection_handle_data(id connection, const unsigned char* bytes, si
 		if ((frame.flags & XR_FLAG_WANTING_REPLY) && xpc_get_type(object) == XPC_TYPE_DICTIONARY) {
 			XPC_CLASS(dictionary)* dictionary = (XPC_CLASS(dictionary)*)object;
 			_xpc_dictionary_set_remote_connection(object, connection);
-			_xpc_dictionary_set_reply_msg_id(object, (mach_msg_id_t)frame.message_id);
+			_xpc_dictionary_set_remote_reply_msg_id(object, frame.message_id);
 			dictionary.remoteReplyExpected = true;
 		}
 		deliver_event(connection, object);
