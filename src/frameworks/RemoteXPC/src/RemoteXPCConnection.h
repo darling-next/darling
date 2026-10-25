@@ -21,8 +21,8 @@ extern "C" {
 
 xpc_object_t xpc_remote_connection_create_with_connected_fd(int fd,
 	dispatch_queue_t queue, uint64_t version_flags, uint64_t endpoint_flags);
-xpc_object_t xpc_remote_connection_create_connected_pair(uint64_t version_flags,
-	uint64_t endpoint_flags, xpc_object_t* first, xpc_object_t* second);
+void xpc_remote_connection_create_connected_pair(xpc_object_t* first, xpc_object_t* second,
+	dispatch_queue_t queue, uint64_t version_flags, uint64_t endpoint_flags);
 void xpc_remote_connection_set_target_queue(xpc_object_t connection,
 	dispatch_queue_t queue);
 void xpc_remote_connection_set_event_handler(xpc_object_t connection,
