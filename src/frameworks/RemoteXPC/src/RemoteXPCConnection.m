@@ -34,6 +34,8 @@
 
 #import <xpc/objects/base.h>
 #import <xpc/util.h>
+#import <xpc/objects/dictionary.h>
+#include <xpc/private.h>
 
 #include <dispatch/dispatch.h>
 #include <errno.h>
@@ -466,6 +468,15 @@ static void connection_handle_data(id connection, const unsigned char* bytes, si
 	if (is_reply) {
 		dispatch_reply(connection, frame.message_id, object);
 	} else {
+		/* A request that wants a reply carries no mach send-once right: record the connection it
+		 * arrived on and its message id, which is what xpc_dictionary_create_reply() and the reply
+		 * send path below need. */
+		if ((frame.flags & XR_FLAG_WANTING_REPLY) && xpc_get_type(object) == XPC_TYPE_DICTIONARY) {
+			XPC_CLASS(dictionary)* dictionary = (XPC_CLASS(dictionary)*)object;
+			_xpc_dictionary_set_remote_connection(object, connection);
+			_xpc_dictionary_set_reply_msg_id(object, (mach_msg_id_t)frame.message_id);
+			dictionary.remoteReplyExpected = true;
+		}
 		deliver_event(connection, object);
 	}
 	xpc_release(object);
@@ -586,7 +597,22 @@ static void connection_read_source(id connection, dispatch_source_t source)
 	if (!xr_value_from_xpc(message, &payload)) {
 		return;
 	}
-	const uint64_t message_id = this->next_message_id;
+	uint64_t message_id = this->next_message_id;
+	uint32_t stream = XR_H2_ROOT_STREAM;
+	/* A dictionary created by xpc_dictionary_create_reply() carries the connection the request
+	 * arrived on and that request's message id: send it back as a REPLY on the reply channel with
+	 * the same id, exactly as the measured provider did. */
+	if (xpc_get_type(message) == XPC_TYPE_DICTIONARY) {
+		XPC_CLASS(dictionary)* dictionary = (XPC_CLASS(dictionary)*)message;
+		if ((xpc_object_t)dictionary.associatedConnection == self && dictionary.remoteIsReply) {
+			message_id = dictionary.replyMsgId;
+			stream = XR_H2_REPLY_STREAM;
+			uint32_t reply_flags = XR_FLAG_ALWAYS_SET | XR_FLAG_DATA_PRESENT | XR_FLAG_REPLY;
+			connection_write_wrapper(self, reply_flags, message_id, payload, stream);
+			xr_value_free(payload);
+			return;
+		}
+	}
 	this->next_message_id += 2;
 	if (wanting_reply) {
 		pending_reply_t* entry = calloc(1, sizeof(*entry));
@@ -611,7 +637,7 @@ static void connection_read_source(id connection, dispatch_source_t source)
 	if (wanting_reply) {
 		flags |= XR_FLAG_WANTING_REPLY;
 	}
-	connection_write_wrapper(self, flags, message_id, payload, XR_H2_ROOT_STREAM);
+	connection_write_wrapper(self, flags, message_id, payload, stream);
 	xr_value_free(payload);
 }
 
