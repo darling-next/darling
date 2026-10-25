@@ -48,10 +48,11 @@
 #include <unistd.h>
 
 #include "RemoteXPCConnection.h"
-#include "xr_h2.h"
 #include "xr_wire.h"
 
 #include <pthread.h>
+#include <nghttp2/nghttp2.h>
+#include <sys/socket.h>
 #include <xpc/xpc.h>
 
 /* The version flags the real provider reports (-get_version_flags) and the RSD peers use. */
@@ -71,9 +72,30 @@ struct xpc_remote_connection_s {
 	uint64_t version_flags;
 	uint64_t endpoint_flags;
 	uint64_t next_message_id;
+	unsigned char* input;
+	size_t input_len;
+	size_t input_cap;
+	unsigned char* wrapper_bytes;
+	size_t wrapper_len;
+	size_t wrapper_cap;
+	nghttp2_session* session;
+	void* pending_sends;
+	bool preface_seen;
 	bool activated;
 	bool cancelled;
 };
+
+#define XR_STREAM_ROOT 1
+#define XR_STREAM_REPLY 3
+
+typedef struct send_pending_s {
+	unsigned char* bytes;
+	size_t length;
+	size_t offset;
+	struct send_pending_s* next;
+} send_pending_t;
+
+static void connection_release_source(struct xpc_remote_connection_s* this);
 
 XPC_CLASS_DECL(remote_connection);
 
@@ -103,11 +125,12 @@ XPC_CLASS_HEADER(remote_connection);
 - (void)dealloc
 {
 	XPC_THIS_DECL(remote_connection);
-	if (this->read_source) {
-		dispatch_source_cancel(this->read_source);
-		this->read_source = NULL;
-	}
-	if (!this->cancelled && this->fd >= 0) {
+	/* The measured provider keeps the descriptor open immediately after cancel and releases it
+	 * with the connection, so the single close belongs here, on the owning object's teardown. The
+	 * source is torn down first: no handler may run while the descriptor is being closed, and the
+	 * block's reference to this object is what kept the source alive. */
+	connection_release_source(this);
+	if (this->fd >= 0) {
 		close(this->fd);
 		this->fd = -1;
 	}
@@ -123,6 +146,17 @@ XPC_CLASS_HEADER(remote_connection);
 		Block_release(this->event_handler);
 		this->event_handler = NULL;
 	}
+	nghttp2_session_del(this->session);
+	this->session = NULL;
+	send_pending_t* pending = this->pending_sends;
+	while (pending) {
+		send_pending_t* next = pending->next;
+		free(pending->bytes);
+		free(pending);
+		pending = next;
+	}
+	free(this->input);
+	free(this->wrapper_bytes);
 	[super dealloc];
 }
 
@@ -351,6 +385,95 @@ static xpc_object_t xr_value_to_xpc(const xr_value* value)
  * Transport.
  * ------------------------------------------------------------------------------------------- */
 
+#include <stdarg.h>
+
+static int g_trace_enabled = -1;
+static int g_trace_lines;
+static void xr_tracef(const char* format, ...) __attribute__((format(printf, 1, 2)));
+static void xr_tracef(const char* format, ...)
+{
+	if (g_trace_enabled < 0) {
+		g_trace_enabled = getenv("XRP_TRACE") != NULL;
+	}
+	if (!g_trace_enabled) {
+		return;
+	}
+	if (__sync_fetch_and_add(&g_trace_lines, 1) >= 200) {
+		return;
+	}
+	char buffer[192];
+	va_list args;
+	va_start(args, format);
+	const int length = vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+	if (length > 0) {
+		write(2, buffer, (size_t)(length < (int)sizeof(buffer) ? length : (int)sizeof(buffer) - 1));
+		write(2, "\n", 1); /* one bounded line; the newline is part of the same probe record */
+	}
+}
+#define xr_trace(text) xr_tracef("%s", (text))
+
+/* Releases the read source and the reference its event block holds on the connection. After this the
+ * source can never invoke the handler again, so no read is in flight when the fd is closed. */
+static void connection_release_source(struct xpc_remote_connection_s* this)
+{
+	if (!this->read_source) {
+		return;
+	}
+	dispatch_source_t source = this->read_source;
+	this->read_source = NULL;
+	dispatch_source_set_event_handler(source, NULL);
+	dispatch_source_cancel(source);
+	dispatch_release(source);
+}
+
+static bool write_all(int fd, const void* bytes, size_t len);
+
+static void connection_handle_wrapper_bytes(id connection, const unsigned char* bytes, size_t length);
+
+static ssize_t session_send_callback(nghttp2_session* session, const uint8_t* data, size_t length,
+	int flags, void* user_data)
+{
+	(void)session;
+	(void)flags;
+	id connection = (id)user_data;
+	struct xpc_remote_connection_s* this = (struct xpc_remote_connection_s*)connection;
+	if (!write_all(this->fd, data, length)) {
+		return NGHTTP2_ERR_CALLBACK_FAILURE;
+	}
+	return (ssize_t)length;
+}
+
+static int session_data_chunk_callback(nghttp2_session* session, uint8_t flags, int32_t stream_id,
+	const uint8_t* data, size_t length, void* user_data)
+{
+	(void)session;
+	(void)flags;
+	(void)stream_id;
+	connection_handle_wrapper_bytes((id)user_data, data, length);
+	return 0;
+}
+
+static ssize_t pending_read_callback(nghttp2_session* session, int32_t stream_id, uint8_t* buf,
+	size_t length, uint32_t* data_flags, nghttp2_data_source* source, void* user_data)
+{
+	(void)session;
+	(void)stream_id;
+	(void)user_data;
+	send_pending_t* pending = source->ptr;
+	size_t remaining = pending->length - pending->offset;
+	if (remaining > length) {
+		remaining = length;
+	}
+	memcpy(buf, pending->bytes + pending->offset, remaining);
+	pending->offset += remaining;
+	if (pending->offset == pending->length) {
+		*data_flags |= NGHTTP2_DATA_FLAG_EOF;
+		pending->bytes = NULL; /* freed with the session's source by the connection */
+	}
+	return (ssize_t)remaining;
+}
+
 static struct xpc_remote_connection_s* xr_state(id object)
 {
 	return (struct xpc_remote_connection_s*)object;
@@ -384,8 +507,8 @@ static bool write_all(int fd, const void* bytes, size_t len)
 	return true;
 }
 
-static void connection_write_wrapper(id connection, uint32_t flags,
-	uint64_t message_id, const xr_value* payload, uint32_t stream)
+static void connection_submit_wrapper(id connection, uint32_t flags, uint64_t message_id,
+	const xr_value* payload, int32_t stream, bool flush)
 {
 	struct xpc_remote_connection_s* this = xr_state(connection);
 	unsigned char* wrapper = NULL;
@@ -393,26 +516,45 @@ static void connection_write_wrapper(id connection, uint32_t flags,
 	if (!wrapper_len) {
 		return;
 	}
-	xr_buffer frame = { 0 };
-	/* A single DATA frame per wrapper: the captured provider sends each wrapper whole, and these
-	 * messages are far below any window we advertise. */
-	xr_h2_write_frame(&frame, XR_H2_DATA, 0, stream, wrapper, wrapper_len);
-	if (!frame.failed) {
-		write_all(this->fd, frame.data, frame.len);
+	send_pending_t* pending = calloc(1, sizeof(*pending));
+	if (!pending) {
+		free(wrapper);
+		return;
 	}
-	xr_buffer_free(&frame);
-	free(wrapper);
+	pending->bytes = wrapper;
+	pending->length = wrapper_len;
+	pending->next = this->pending_sends;
+	this->pending_sends = pending;
+	nghttp2_data_provider provider;
+	provider.source.ptr = pending;
+	provider.read_callback = pending_read_callback;
+	nghttp2_submit_data(this->session, NGHTTP2_FLAG_NONE, stream, &provider);
+	if (flush) {
+		nghttp2_session_send(this->session);
+	}
+}
+
+static void connection_write_wrapper(id connection, uint32_t flags, uint64_t message_id,
+	const xr_value* payload, uint32_t stream)
+{
+	connection_submit_wrapper(connection, flags, message_id, payload, (int32_t)stream, true);
 }
 
 static void deliver_event(id connection, xpc_object_t event)
 {
 	struct xpc_remote_connection_s* this = xr_state(connection);
 	if (!this->event_handler || !this->handler_queue) {
+		xr_trace("P6-deliver-missing");
 		return;
 	}
 	void (^handler)(xpc_object_t) = this->event_handler;
+	/* The caller releases its reference after this call returns; the delivered block must own one
+	 * of its own for as long as it holds the object. */
+	xpc_retain(event);
+	xr_trace("P6-deliver-queued");
 	dispatch_async(this->handler_queue, ^{
 		handler(event);
+		xpc_release(event);
 	});
 }
 
@@ -482,12 +624,68 @@ static void connection_handle_data(id connection, const unsigned char* bytes, si
 	xpc_release(object);
 }
 
+static void connection_handle_wrapper_bytes(id connection, const unsigned char* bytes, size_t length)
+{
+	struct xpc_remote_connection_s* this = xr_state(connection);
+	size_t available = this->wrapper_len + length;
+	if (available > this->wrapper_cap) {
+		size_t cap = this->wrapper_cap ? this->wrapper_cap : 16384;
+		while (cap < available) {
+			cap *= 2;
+		}
+		unsigned char* grown = realloc(this->wrapper_bytes, cap);
+		if (!grown) {
+			return;
+		}
+		this->wrapper_bytes = grown;
+		this->wrapper_cap = cap;
+	}
+	memcpy(this->wrapper_bytes + this->wrapper_len, bytes, length);
+	this->wrapper_len += length;
+	size_t consumed = 0;
+	xr_frame frame_value = { 0 };
+	bool need_more = false;
+	for (;;) {
+		if (!xr_frame_parse(this->wrapper_bytes, this->wrapper_len, &consumed, &frame_value,
+			&need_more)) {
+			break;
+		}
+		this->wrapper_len -= consumed;
+		memmove(this->wrapper_bytes, this->wrapper_bytes + consumed, this->wrapper_len);
+		if (!frame_value.payload) {
+			continue;
+		}
+		xpc_object_t object = xr_value_to_xpc(frame_value.payload);
+		const bool is_reply = (frame_value.flags & XR_FLAG_REPLY) != 0;
+		xr_value_free(frame_value.payload);
+		if (!object) {
+			continue;
+		}
+		if (is_reply) {
+			dispatch_reply(connection, frame_value.message_id, object);
+		} else {
+			if ((frame_value.flags & XR_FLAG_WANTING_REPLY)
+				&& xpc_get_type(object) == XPC_TYPE_DICTIONARY) {
+				XPC_CLASS(dictionary)* dictionary = (XPC_CLASS(dictionary)*)object;
+				_xpc_dictionary_set_remote_connection(object, connection);
+				_xpc_dictionary_set_remote_reply_msg_id(object, frame_value.message_id);
+				dictionary.remoteReplyExpected = true;
+			}
+			deliver_event(connection, object);
+		}
+		xpc_release(object);
+	}
+}
+
 static void connection_read_source(id connection, dispatch_source_t source)
 {
 	struct xpc_remote_connection_s* this = xr_state(connection);
+	xr_tracef("R-enter fd=%d flags=0x%x", this->fd, fcntl(this->fd, F_GETFL, 0));
 	for (;;) {
-		unsigned char chunk[8192];
-		ssize_t got = read(this->fd, chunk, sizeof(chunk));
+		unsigned char chunk[16384];
+		errno = 0;
+		ssize_t got = recv(this->fd, chunk, sizeof(chunk), MSG_DONTWAIT);
+		xr_tracef("R-ret got=%zd errno=%d", got, errno);
 		if (got < 0) {
 			if (errno == EINTR) {
 				continue;
@@ -495,27 +693,21 @@ static void connection_read_source(id connection, dispatch_source_t source)
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
 				return;
 			}
+			xr_tracef("R-error errno=%d", errno);
 			break;
 		}
 		if (got == 0) {
 			break;
 		}
-		/* Parse HTTP/2 frames; each DATA frame carries one whole wrapper in the measured
-		 * exchange, so the payload is parsed without a cross-frame assembly buffer. */
-		size_t pos = 0;
-		while (pos + XR_H2_FRAME_HEADER_SIZE <= (size_t)got) {
-			const size_t length = ((size_t)chunk[pos] << 16) | ((size_t)chunk[pos + 1] << 8)
-				| chunk[pos + 2];
-			const uint8_t type = chunk[pos + 3];
-			if (pos + XR_H2_FRAME_HEADER_SIZE + length > (size_t)got) {
-				break; /* a partial frame is not expected on these reads; do not guess */
-			}
-			if (type == XR_H2_DATA && length > 0) {
-				connection_handle_data(connection, chunk + pos + XR_H2_FRAME_HEADER_SIZE, length);
-			}
-			pos += XR_H2_FRAME_HEADER_SIZE + length;
+		const ssize_t consumed = nghttp2_session_mem_recv(this->session, chunk, (size_t)got);
+		if (consumed < 0) {
+			xr_tracef("R-session-error %zd", consumed);
+			break;
 		}
+		/* Flush whatever the session now wants to send (SETTINGS ACK, window updates, replies). */
+		nghttp2_session_send(this->session);
 	}
+	xr_tracef("R-exit fd=%d", this->fd);
 	dispatch_source_cancel(source);
 }
 
@@ -529,27 +721,45 @@ static void connection_read_source(id connection, dispatch_source_t source)
 	}
 	this->activated = true;
 
-	xr_value empty = { .kind = XR_DICTIONARY };
-	unsigned char* initial = NULL;
-	unsigned char* handshake = NULL;
-	const size_t initial_len = xr_frame_encode(XR_FLAG_ALWAYS_SET, 0, &empty, &initial);
-	const size_t handshake_len = xr_frame_encode(XR_FLAG_ALWAYS_SET | XR_FLAG_INIT_HANDSHAKE, 0, NULL,
-		&handshake);
-	if (!initial_len || !handshake_len) {
-		free(initial);
-		free(handshake);
-		return;
-	}
-	xr_buffer frames = { 0 };
-	xr_h2_write_handshake(&frames, initial, initial_len, handshake, handshake_len);
-	free(initial);
-	free(handshake);
-	if (frames.failed || !write_all(this->fd, frames.data, frames.len)) {
-		xr_buffer_free(&frames);
+	nghttp2_session_callbacks* callbacks = NULL;
+	nghttp2_option* option = NULL;
+	nghttp2_session_callbacks_new(&callbacks);
+	nghttp2_session_callbacks_set_send_callback(callbacks, session_send_callback);
+	nghttp2_session_callbacks_set_on_data_chunk_recv_callback(callbacks, session_data_chunk_callback);
+	nghttp2_option_new(&option);
+	/* Documented for a non-HTTP binary protocol: the channels are empty HEADERS plus DATA. This
+	 * disables HTTP message semantics, not frame or TLS integrity. */
+	nghttp2_option_set_no_http_messaging(option, 1);
+	const int session_rc = nghttp2_session_client_new2(&this->session, callbacks, self, option);
+	nghttp2_option_del(option);
+	nghttp2_session_callbacks_del(callbacks);
+	if (session_rc != 0 || !this->session) {
+		xr_tracef("P2-session-failed rc=%d", session_rc);
 		deliver_event(self, XPC_ERROR_CONNECTION_INVALID);
 		return;
 	}
-	xr_buffer_free(&frames);
+	{
+		nghttp2_settings_entry settings[2] = {
+			{ NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100 },
+			{ NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE, 1048576 },
+		};
+		nghttp2_submit_settings(this->session, NGHTTP2_FLAG_NONE, settings, 2);
+	}
+	nghttp2_submit_window_update(this->session, NGHTTP2_FLAG_NONE, 0, 983041);
+	{
+		nghttp2_priority_spec priority;
+		nghttp2_priority_spec_default_init(&priority);
+		nghttp2_submit_headers(this->session, NGHTTP2_FLAG_END_HEADERS, XR_STREAM_ROOT, &priority,
+			NULL, 0, NULL);
+		xr_value empty = { .kind = XR_DICTIONARY };
+		connection_submit_wrapper(self, XR_FLAG_ALWAYS_SET, 0, &empty, XR_STREAM_ROOT, false);
+		nghttp2_submit_headers(this->session, NGHTTP2_FLAG_END_HEADERS, XR_STREAM_REPLY, &priority,
+			NULL, 0, NULL);
+		connection_submit_wrapper(self, XR_FLAG_ALWAYS_SET | XR_FLAG_INIT_HANDSHAKE, 0, NULL,
+			XR_STREAM_REPLY, false);
+	}
+	xr_trace("P2-activate-write");
+	nghttp2_session_send(this->session);
 
 	dispatch_queue_t queue = this->target_queue ? this->target_queue : dispatch_get_main_queue();
 	dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)this->fd, 0,
@@ -559,7 +769,7 @@ static void connection_read_source(id connection, dispatch_source_t source)
 	}
 	this->read_source = source;
 	dispatch_source_set_event_handler(source, ^{
-		connection_read_source(self, source);
+		connection_read_source(self, NULL);
 	});
 	dispatch_resume(source);
 }
@@ -573,18 +783,14 @@ static void connection_read_source(id connection, dispatch_source_t source)
 	this->cancelled = true;
 	/* Measured: RST_STREAM with code 5 on both channels, then one terminal error per handler
 	 * queue. The fd is released with the object, not synchronously here. */
-	unsigned char code[4] = { 0, 0, 0, XR_H2_REFUSED_STREAM };
-	xr_buffer frames = { 0 };
-	xr_h2_write_frame(&frames, XR_H2_RST_STREAM, 0, XR_H2_ROOT_STREAM, code, sizeof(code));
-	xr_h2_write_frame(&frames, XR_H2_RST_STREAM, 0, XR_H2_REPLY_STREAM, code, sizeof(code));
-	if (!frames.failed) {
-		write_all(this->fd, frames.data, frames.len);
+	if (this->session) {
+		nghttp2_submit_rst_stream(this->session, NGHTTP2_FLAG_NONE, XR_STREAM_ROOT,
+			NGHTTP2_REFUSED_STREAM);
+		nghttp2_submit_rst_stream(this->session, NGHTTP2_FLAG_NONE, XR_STREAM_REPLY,
+			NGHTTP2_REFUSED_STREAM);
+		nghttp2_session_send(this->session);
 	}
-	xr_buffer_free(&frames);
-	if (this->read_source) {
-		dispatch_source_cancel(this->read_source);
-		this->read_source = NULL;
-	}
+	connection_release_source(this);
 	deliver_event(self, XPC_ERROR_CONNECTION_INVALID);
 }
 
@@ -598,15 +804,17 @@ static void connection_read_source(id connection, dispatch_source_t source)
 		return;
 	}
 	uint64_t message_id = this->next_message_id;
-	uint32_t stream = XR_H2_ROOT_STREAM;
+	uint32_t stream = XR_STREAM_ROOT;
 	/* A dictionary created by xpc_dictionary_create_reply() carries the connection the request
 	 * arrived on and that request's message id: send it back as a REPLY on the reply channel with
 	 * the same id, exactly as the measured provider did. */
 	if (xpc_get_type(message) == XPC_TYPE_DICTIONARY) {
 		XPC_CLASS(dictionary)* dictionary = (XPC_CLASS(dictionary)*)message;
-		if ((xpc_object_t)dictionary.associatedConnection == self && dictionary.remoteIsReply) {
-			message_id = dictionary.replyMsgId;
-			stream = XR_H2_REPLY_STREAM;
+		const uint64_t reply_id = _xpc_dictionary_get_remote_reply_msg_id(message);
+		if ((xpc_object_t)dictionary.associatedConnection == self && dictionary.remoteIsReply
+			&& reply_id != 0) {
+			message_id = reply_id;
+			stream = XR_STREAM_REPLY;
 			uint32_t reply_flags = XR_FLAG_ALWAYS_SET | XR_FLAG_DATA_PRESENT | XR_FLAG_REPLY;
 			connection_write_wrapper(self, reply_flags, message_id, payload, stream);
 			xr_value_free(payload);
@@ -661,6 +869,7 @@ xpc_object_t xpc_remote_connection_create_with_connected_fd(int fd, dispatch_que
 	this->version_flags = version_flags;
 	this->endpoint_flags = endpoint_flags;
 	this->next_message_id = (endpoint_flags & REMOTE_XPC_ENDPOINT_LISTENER) ? 2 : 1;
+	xr_trace("P1-created");
 	return connection;
 }
 
@@ -689,6 +898,7 @@ void xpc_remote_connection_set_event_handler(xpc_object_t connection, void (^han
 			Block_release(this->event_handler);
 		}
 		this->event_handler = handler ? Block_copy(handler) : NULL;
+		xr_trace(this->event_handler ? "P0-handler-set" : "P0-handler-null");
 		/* Events and replies are delivered on the target queue, which is what the measured
 		 * provider's endpoints were given. */
 		dispatch_queue_t handler_queue = this->target_queue ? this->target_queue

@@ -14,12 +14,12 @@ add_framework(RemoteXPC
     SOURCES
         src/RemoteXPCConnection.m
         src/xr_wire.c
-        src/xr_h2.c
 
     DEPENDENCIES
         system
         objc
         xpc
+        nghttp2
 )
 
 # libxpc's public object model is declared in its internal headers, the same ones libxpc itself uses
@@ -27,4 +27,9 @@ add_framework(RemoteXPC
 target_include_directories(RemoteXPC PRIVATE
     ${CMAKE_SOURCE_DIR}/src/external/libxpc/internal-include
     ${CMAKE_SOURCE_DIR}/src/external/libxpc/include
+    # The vendored HTTP/2 implementation already in this configuration: its source headers and the
+    # generated version header in the build tree. The transport uses its session state; only the XPC
+    # wrapper codec stays ours.
+    ${CMAKE_SOURCE_DIR}/src/external/nghttp2/lib/includes
+    ${CMAKE_BINARY_DIR}/src/external/nghttp2/lib/includes
 )
