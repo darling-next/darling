@@ -32,14 +32,23 @@ CFTypeRef IOPPFGetProperty(CFStringRef key) {
     if (!key) return NULL;
 
     /*
-     * The native framework exposes a platform property.  Ask the platform
-     * expert for it; a guest without that property reports absence (NULL),
-     * which is also what CoreSimulator's caller handles as its default.
+     * Native IOPlatformPluginFamily (x86_64 UUID 75739A55-083B-3998-AEBC-9D79ADEAC825)
+     * selects the service class "IOPlatformPluginFamily", then reads the requested
+     * property with IORegistryEntryCreateCFProperty and returns that owned value.
+     * The selector and return ownership are the measured native ABI.
+     *
+     * This tree cannot perform that lookup yet: iokitd's single-service matching
+     * RPCs (is_io_service_get_matching_service, _bin and _ool) return
+     * KERN_NOT_SUPPORTED, and IOServiceGetMatchingService converts the failure to
+     * MACH_PORT_NULL.  A property request therefore reports absence (NULL), not a
+     * positive platform value.  The VibeDarling iokitd donor has a newer
+     * firstMatchingService implementation, but it is not ported here and no
+     * platform service is fabricated to hide the gap.
      */
     io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault,
-                                                       IOServiceMatching("IOPlatformExpertDevice"));
+                                                       IOServiceMatching("IOPlatformPluginFamily"));
     if (MACH_PORT_NULL == service) {
-        if (verbose) puts("IOPPFGetProperty: no IOPlatformExpertDevice");
+        if (verbose) puts("IOPPFGetProperty: no IOPlatformPluginFamily service (matching unsupported)");
         return NULL;
     }
 
