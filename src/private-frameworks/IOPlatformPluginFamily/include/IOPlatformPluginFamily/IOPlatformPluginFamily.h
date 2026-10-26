@@ -18,11 +18,12 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #import <Foundation/Foundation.h>
+#include <CoreFoundation/CFString.h>
 
 void* IOPPFGetDiagProperty(void);
 void* IOPPFGetDiagPropertyFromDict(void);
 void* IOPPFGetHandler(void);
-void* IOPPFGetProperty(void);
+CFTypeRef IOPPFGetProperty(CFStringRef key);
 void* IOPPFPrintTest(void);
 void* IOPPFSetFanThrottleMode(void);
 void* IOPPFSetProperties(void);

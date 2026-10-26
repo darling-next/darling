@@ -14,6 +14,7 @@ CONST_STRING_DECL(kDADiskDescriptionVolumeMountableKey, "kDADiskDescriptionVolum
 CONST_STRING_DECL(kDADiskDescriptionVolumeNameKey, "kDADiskDescriptionVolumeNameKey");
 CONST_STRING_DECL(kDADiskDescriptionVolumeNetworkKey, "kDADiskDescriptionVolumeNetworkKey");
 CONST_STRING_DECL(kDADiskDescriptionVolumePathKey, "kDADiskDescriptionVolumePathKey");
+CONST_STRING_DECL(kDADiskDescriptionVolumeTypeKey, "kDADiskDescriptionVolumeTypeKey");
 CONST_STRING_DECL(kDADiskDescriptionVolumeUUIDKey, "kDADiskDescriptionVolumeUUIDKey");
 
 CONST_STRING_DECL(kDADiskDescriptionMediaBlockSizeKey, "kDADiskDescriptionMediaBlockSizeKey");

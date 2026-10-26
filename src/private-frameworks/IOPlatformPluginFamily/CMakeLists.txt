@@ -28,4 +28,6 @@ add_framework(IOPlatformPluginFamily
 
 	DEPENDENCIES
 		system
+		CoreFoundation
+		IOKit
 )
