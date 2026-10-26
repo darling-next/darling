@@ -1,0 +1,30 @@
+AppServerSupport -- scoped launchd client
+
+This framework supplies only the surface measured from the
+CoreDeviceUtilities consumer: OSLaunchdDomain, OSLaunchdJob,
+OSLaunchdJobInfo and OSLaunchdJobExitStatus.
+
+Submission and removal use the existing ServiceManagement user-launchd
+client. StartJob and job lookup use liblaunch's existing caller-UID
+connection. Job state, PID, spawn error and wait4 status come from
+fields the loaded launchd job actually reports; a failed lookup is
+reported as an error, never as a zero-status exit.
+
+Deliberate limits:
+
+- The system domain is refused with ENOTSUP before submission. This
+  client has no domain-correct system StartJob/GetJob route, so it does
+  not submit into one domain and then query another.
+- User and role-account domains for a different UID are refused with
+  EPERM. They are not silently substituted with the caller's domain.
+- StartJob-failure rollback is source-reviewed; no launcher failure
+  injection was available, so it has no runtime injection claim.
+- This is not a full native AppServerSupport implementation. It makes
+  no native-equivalence claim and no claim that an application build
+  succeeds. OSLaunchdJobProperties is not part of the measured surface
+  and is not implemented.
+
+The dylib carries its own current/compatibility version 1.0.0. The
+consumer's LC_LOAD_DYLIB records current 3089.40.16 and compatibility
+1.0.0; the SDK tbd's 3089.60.7 is metadata, not measured native runtime
+provenance.

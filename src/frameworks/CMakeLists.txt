@@ -16,6 +16,11 @@ if (COMPONENT_cli OR COMPONENT_dev_gui_common)
 	# Mercury, both of which Xcode loads for every iOS build, so this belongs to the CLI tool set.
 	add_subdirectory(RemoteXPC)
 
+	# AppServerSupport: the measured OSLaunchdDomain/OSLaunchdJob client used by
+	# CoreDeviceUtilities. It is backed by the existing launchd/ServiceManagement
+	# stack, not by a loader-only class shim.
+	add_subdirectory(AppServerSupport)
+
 	add_subdirectory(CoreServices)
 
 	# these are also stubs, but they're needed for Security
