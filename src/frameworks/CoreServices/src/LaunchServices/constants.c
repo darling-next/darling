@@ -49,6 +49,7 @@ const CFStringRef _kLSOpenOptionStopProcessKey = CFSTR("LSOpenOptionStopProcess"
 const CFStringRef _kLSOpenOptionWaitForApplicationToCheckInKey = CFSTR("LSOpenOptionWaitForApplicationToCheckIn");
 
 const CFStringRef _kLSASNKey = CFSTR("LSASN");
+const CFStringRef _kLSAuditTokenKey = CFSTR("LSAuditToken");
 
 const CFStringRef kLSItemContentType = CFSTR("LSItemContentType");
 

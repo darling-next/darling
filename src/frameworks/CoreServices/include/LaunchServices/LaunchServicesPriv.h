@@ -3,6 +3,7 @@
 #include <LaunchServices/LaunchServices.h>
 #include <CoreFoundation/CFDictionary.h>
 #include <CoreFoundation/CFString.h>
+#include <mach/message.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -67,6 +68,10 @@ extern const CFStringRef _kLSApplicationTypeKey;
 
 extern const CFStringRef _kLSASNKey;
 
+/* CoreDeviceUtilities binds this data symbol eagerly and uses it as the audit-token dictionary key.
+ * The string follows this file's existing key convention; no separate native value was available. */
+extern const CFStringRef _kLSAuditTokenKey;
+
 extern const CFStringRef _kLSApplicationForegroundTypeKey;
 extern const CFStringRef _kLSApplicationBackgroundOnlyTypeKey;
 
@@ -123,6 +128,10 @@ CFTypeRef _LSCopyApplicationInformationItem(LSSessionID sessionID, CFTypeRef asn
 CFDictionaryRef _LSCopyApplicationInformation(LSSessionID sessionID, CFTypeRef asn, int);
 
 LSASNRef _LSASNCreateWithPid(CFAllocatorRef allocator, pid_t pid);
+
+/* The audit-token form used by CoreDeviceUtilities.  The token's own pid is the identity this
+ * guest can resolve; there is no launchservicesd registration to consult for a stronger ASN. */
+LSASNRef _LSCopyLSASNForAuditToken(LSSessionID sessionID, audit_token_t token);
 
 // The running applications whose application-information items (the _kLS*Key families above) match
 // `count` key/value pairs. NULL when there are none to match against: this guest registers no

@@ -167,6 +167,21 @@ LSASNRef _LSASNCreateWithPid(CFAllocatorRef allocator, pid_t pid)
 }
 
 /*
+ * CoreDeviceUtilities binds this CoreServices name eagerly.  The measured call site passes
+ * kLSDefaultSessionID and an audit_token_t (its pid is token.val[5], the same field libbsm's
+ * audit_token_to_pid reads).  This guest has no launchservicesd registry; the token's real pid is
+ * the identity it can resolve, and the existing _LSASNCreateWithPid representation is this tree's
+ * ASN object.  This is the scoped current-user/pid mapping, not a claim of a full native ASN.
+ */
+LSASNRef _LSCopyLSASNForAuditToken(LSSessionID sessionID, audit_token_t token)
+{
+	(void)sessionID;
+	pid_t pid = (pid_t)token.val[5];
+	fprintf(stderr, "LaunchServices: audit-token ASN pid=%d\n", pid);
+	return _LSASNCreateWithPid(NULL, pid);
+}
+
+/*
  * _LSASNCreate -- the LSASN factory behind a synchronous application launch, and the second C
  * CoreServices import Xcode 26.3's iOS plug-in binds and this image did not carry.
  *
