@@ -1,8 +1,9 @@
 /*
  * RemoteXPCConnection.h -- opaque connection type and the exported entry points.
  *
- * Only the measured signatures are declared here. The two remote-service entry points are absent on
- * purpose until their native contracts are measured.
+ * The measured signatures are declared here. The two remote-service constructors implement the
+ * measured native constructor bodies; the RSD service/listener transport is resolved from the
+ * tracked RemoteServiceDiscovery image rather than replaced locally.
  */
 
 #ifndef REMOTEXPC_CONNECTION_H
@@ -21,6 +22,10 @@ extern "C" {
 
 xpc_object_t xpc_remote_connection_create_with_connected_fd(int fd,
 	dispatch_queue_t queue, uint64_t version_flags, uint64_t endpoint_flags);
+xpc_object_t xpc_remote_connection_create_with_remote_service(const void* service,
+	dispatch_queue_t queue, uint64_t flags);
+xpc_object_t xpc_remote_connection_create_remote_service_listener(const char* name,
+	dispatch_queue_t queue, uint64_t flags);
 void xpc_remote_connection_create_connected_pair(xpc_object_t* first, xpc_object_t* second,
 	dispatch_queue_t queue, uint64_t version_flags, uint64_t endpoint_flags);
 void xpc_remote_connection_set_target_queue(xpc_object_t connection,

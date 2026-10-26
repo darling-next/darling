@@ -1,7 +1,7 @@
 project(RemoteXPC)
 
-# The SDK ships no RemoteXPC; the image is supplied here. Do not claim a full provider until the
-# remote-service entry points exist.
+# The SDK ships no RemoteXPC; the image is supplied here. The measured remote-service constructors
+# are present; the listener's accepted-connection handoff remains explicitly unimplemented.
 set(DYLIB_COMPAT_VERSION "1.0.0")
 set(DYLIB_CURRENT_VERSION "1.0.0")
 set(FRAMEWORK_VERSION "A")
@@ -32,4 +32,11 @@ target_include_directories(RemoteXPC PRIVATE
     # wrapper codec stays ours.
     ${CMAKE_SOURCE_DIR}/src/external/nghttp2/lib/includes
     ${CMAKE_BINARY_DIR}/src/external/nghttp2/lib/includes
+)
+
+
+# The native provider imports the RSD service accessors. Link the tracked RSD substitute so the
+# two-level imports resolve to the same installed image the consumer loads; no local fake is added.
+target_link_libraries(RemoteXPC PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/external/swift/substitutes/System/Library/PrivateFrameworks/RemoteServiceDiscovery.framework/Versions/A/RemoteServiceDiscovery
 )

@@ -20,12 +20,13 @@
  * not). The fd is stored as given -- no dup -- and endpoint_flags bit 0 selects the even-numbered
  * listener role and starts the message counter at 2 instead of 1.
  *
- * WHAT IS IMPLEMENTED HERE, AND WHAT IS NOT YET. The transport is implemented over the two verified
- * layers: xr_wire (XPC wrapper codec) and xr_h2 (HTTP/2 framing), both cross-checked byte for byte
- * against the real provider's captured streams. create_with_remote_service and
- * create_remote_service_listener are NOT implemented in this revision: their argument lists and
- * semantics are being measured from the native provider, and a guessed body would be worse than an
- * absent one. This image must not be deployed as a complete provider until they are present.
+ * WHAT IS IMPLEMENTED HERE. The transport is implemented over the two verified layers: xr_wire
+ * (XPC wrapper codec) and xr_h2 (HTTP/2 framing), both cross-checked byte for byte against the real
+ * provider's captured streams. The remote-service constructors implement the measured native
+ * constructor bodies: create_with_remote_service retains the RSD service and defers its real
+ * connect_socket call on activation; create_remote_service_listener copies the name, sets type 2
+ * and registers the real RSD listener. The accepted-device-to-connection handoff is not measured,
+ * so the listener reports that failure instead of fabricating an accepted connection.
  *
  * Identity: this is a genuine libxpc object. The class below subclasses libxpc's OS_xpc_object and
  * defines __xpc_type_remote_connection as the class object, so xpc_get_type() on a connection returns
@@ -49,6 +50,14 @@
 
 #include "RemoteXPCConnection.h"
 #include "xr_wire.h"
+
+/* RemoteServiceDiscovery's measured service surface, supplied by the tracked RSD substitute. */
+typedef const void* remote_service_t;
+extern uint64_t remote_service_get_xpc_remote_connection_version_flags(remote_service_t service);
+extern void remote_service_connect_socket(remote_service_t service, dispatch_queue_t queue,
+	void (^callback)(int fd, int error));
+extern void remote_service_listen_with_device(const char* name, dispatch_queue_t queue,
+	void (^callback)(id device, int fd));
 
 #include <pthread.h>
 #include <nghttp2/nghttp2.h>
@@ -88,6 +97,10 @@ struct xpc_remote_connection_s {
 	bool preface_seen;
 	bool activated;
 	bool cancelled;
+	/* The measured remote-service constructors retain a genuine RSD service object (type 1) or a
+	 * copied service name (type 2). They do not create an fd in the constructor. */
+	void* remote_service;
+	char* remote_service_name;
 };
 
 #define XR_STREAM_ROOT 1
@@ -166,6 +179,12 @@ XPC_CLASS_HEADER(remote_connection);
 	}
 	free(this->input);
 	xr_stream_assembler_free(&this->assembler);
+	if (this->remote_service) {
+		[(id)this->remote_service release];
+		this->remote_service = NULL;
+	}
+	free(this->remote_service_name);
+	this->remote_service_name = NULL;
 	[super dealloc];
 }
 
@@ -938,6 +957,43 @@ static void connection_activate_on_io_queue(id connection)
 		return;
 	}
 	this->activated = true;
+	if (this->remote_service && this->fd < 0) {
+		/* Measured service connection: activation defers the real RSD connect_socket call on the
+		 * internal queue; the returned fd then becomes this connection's transport. No cached
+		 * connection or guessed fd is used. */
+		dispatch_async(this->io_queue, ^{
+			remote_service_connect_socket((remote_service_t)this->remote_service, this->io_queue,
+				^(int fd, int error) {
+					if (this->cancelled) {
+						if (fd >= 0) close(fd);
+						return;
+					}
+					if (fd < 0) {
+						deliver_event(self, XPC_ERROR_CONNECTION_INVALID);
+						return;
+					}
+					this->fd = fd;
+					connection_activate_on_io_queue(self);
+				});
+		});
+		return;
+	}
+	if (this->remote_service_name) {
+		/* Listener constructor semantics are measured (name copy, type 2, flags|1), but the
+		 * accepted-device-to-connection handoff is not. Register the genuine RSD listener and fail
+		 * loudly rather than fabricate an accepted connection. */
+		dispatch_async(this->io_queue, ^{
+			remote_service_listen_with_device(this->remote_service_name, this->io_queue,
+				^(id device, int fd) {
+					(void)device;
+					if (fd >= 0) close(fd);
+					fprintf(stderr,
+						"RemoteXPC: accepted listener device has no measured connection handoff\n");
+					deliver_event(self, XPC_ERROR_CONNECTION_INVALID);
+				});
+		});
+		return;
+	}
 	dispatch_async(this->io_queue, ^{
 		connection_activate_on_io_queue(self);
 	});
@@ -1097,6 +1153,56 @@ xpc_object_t xpc_remote_connection_create_with_connected_fd(int fd, dispatch_que
 	this->endpoint_flags = endpoint_flags;
 	this->next_message_id = (endpoint_flags & REMOTE_XPC_ENDPOINT_LISTENER) ? 2 : 1;
 	xr_trace("P1-created");
+	return connection;
+}
+
+XPC_EXPORT
+xpc_object_t xpc_remote_connection_create_with_remote_service(const void* service,
+	dispatch_queue_t queue, uint64_t flags)
+{
+	if (!service) {
+		return NULL;
+	}
+	XPC_CLASS(remote_connection)* connection = [[XPC_CLASS(remote_connection) alloc] init];
+	struct xpc_remote_connection_s* this = xr_state(connection);
+	this->io_queue = dispatch_queue_create("com.darling.remotexpc.io", DISPATCH_QUEUE_SERIAL);
+	this->fd = -1;
+	if (queue) {
+		dispatch_retain(queue);
+		this->target_queue = queue;
+	}
+	/* Native: service version flags are used, falling back to the base version when invalid. */
+	uint64_t service_flags = remote_service_get_xpc_remote_connection_version_flags(
+		(remote_service_t)service);
+	this->version_flags = (service_flags >= 0x0100000000000000ULL && (service_flags & 1))
+		? service_flags : 0x0100000000000000ULL;
+	this->endpoint_flags = flags;
+	this->next_message_id = 1;
+	this->remote_service = [(id)service retain];
+	xr_trace("P1-created-remote-service");
+	return connection;
+}
+
+XPC_EXPORT
+xpc_object_t xpc_remote_connection_create_remote_service_listener(const char* name,
+	dispatch_queue_t queue, uint64_t flags)
+{
+	if (!name) {
+		return NULL;
+	}
+	XPC_CLASS(remote_connection)* connection = [[XPC_CLASS(remote_connection) alloc] init];
+	struct xpc_remote_connection_s* this = xr_state(connection);
+	this->io_queue = dispatch_queue_create("com.darling.remotexpc.io", DISPATCH_QUEUE_SERIAL);
+	this->fd = -1;
+	if (queue) {
+		dispatch_retain(queue);
+		this->target_queue = queue;
+	}
+	this->version_flags = flags | 1;
+	this->endpoint_flags = flags | 1;
+	this->next_message_id = 2;
+	this->remote_service_name = strdup(name);
+	xr_trace("P1-created-remote-service-listener");
 	return connection;
 }
 
