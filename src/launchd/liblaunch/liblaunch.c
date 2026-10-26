@@ -1127,11 +1127,17 @@ launch_msg_attach_session(launch_data_t job, launch_data_t resp, mach_port_t bp)
 	if (uuid_is_null(uuid))
 		return;
 	mach_port_t session_port = _audit_session_self();
-	if (MACH_PORT_VALID(session_port)) {
-		if (vproc_mig_set_security_session(bp, uuid, session_port) == KERN_SUCCESS)
-			launch_data_set_errno(resp, 0);
+	/*
+	 * Darling's audit_session_self syscall returns MACH_PORT_NULL. launchd
+	 * accepts a null session port for a job awaiting a session: it clears the
+	 * placeholder UUID and runs the job in launchd's own session
+	 * (job_mig_set_security_session in core.c). Skipping the call left every
+	 * user SMJobSubmit with the placeholder UUID and a permanent ENEEDAUTH.
+	 */
+	if (vproc_mig_set_security_session(bp, uuid, session_port) == KERN_SUCCESS)
+		launch_data_set_errno(resp, 0);
+	if (MACH_PORT_VALID(session_port))
 		mach_port_deallocate(mach_task_self(), session_port);
-	}
 }
 #endif
 

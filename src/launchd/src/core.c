@@ -543,6 +543,7 @@ struct job_s {
 	pid_t p;
 	uint64_t uniqueid;
 	int last_exit_status;
+	int last_spawn_error;
 	int stdin_fd;
 	int fork_fd;
 	int nice;
@@ -1062,6 +1063,14 @@ job_export(job_t j)
 	}
 	if ((tmp = launch_data_new_integer(status))) {
 		launch_data_dict_insert(r, tmp, LAUNCH_JOBKEY_LASTEXITSTATUS);
+	}
+	if (j->nruns > 0 && !j->p) {
+		if ((tmp = launch_data_new_bool(true))) {
+			launch_data_dict_insert(r, tmp, LAUNCH_JOBKEY_LASTEXITSTATUSVALID);
+		}
+	}
+	if (j->last_spawn_error && (tmp = launch_data_new_integer(j->last_spawn_error))) {
+		launch_data_dict_insert(r, tmp, LAUNCH_JOBKEY_LASTSPAWNERROR);
 	}
 
 	if (j->p && (tmp = launch_data_new_integer(j->p))) {
@@ -3725,6 +3734,12 @@ job_reap(job_t j)
 
 	int exit_status = WEXITSTATUS(j->last_exit_status);
 	if (WIFEXITED(j->last_exit_status) && exit_status != 0) {
+		if (!j->did_exec) {
+			/* A launchd child that exits before exec reports the spawn errno
+			 * through _exit(errno) in job_start_child(). Export that measured
+			 * value instead of leaving a consumer to infer an exit. */
+			j->last_spawn_error = exit_status;
+		}
 		if (!j->did_exec && _launchd_support_system) {
 			xpc_object_t event = NULL;
 			switch (exit_status) {
@@ -4492,6 +4507,7 @@ job_start(job_t j)
 
 		j->did_exec = false;
 		j->fpfail = false;
+		j->last_spawn_error = 0;
 		j->jettisoned = false;
 		j->xpcproxy_did_exec = false;
 		j->checkedin = false;

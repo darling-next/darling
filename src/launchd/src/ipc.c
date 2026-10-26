@@ -418,6 +418,11 @@ ipc_readmsg2(launch_data_t data, const char *cmd, void *context)
 				if ((j = job_find(NULL, launch_data_get_string(data))) != NULL) {
 					errno = 0;
 					job_remove(j);
+					/* job_remove() may leave errno from an internal
+					 * process lookup while the removal is pended. The
+					 * request was accepted; do not report that stale
+					 * errno as a failed removal. */
+					errno = 0;
 				}
 				resp = launch_data_new_errno(errno);
 			} else if (!strcmp(cmd, LAUNCH_KEY_SUBMITJOB)) {
