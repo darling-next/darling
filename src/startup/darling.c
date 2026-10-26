@@ -47,6 +47,9 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 #include "runtime_mode.h"
 #include "runtime_mode_prefix.h"
 
+extern const char* const darling_bsd_errlist[];
+extern const int darling_bsd_nerr;
+
 // Between Linux 4.9 and 4.11, a strange bug has been introduced
 // which prevents connecting to Unix sockets if the socket was
 // created in a different mount namespace or under overlayfs
@@ -279,6 +282,24 @@ int main(int argc, char ** argv)
 			(void)setegid(0);
 			return 1;
 		}
+	}
+	if (strcmp(argv[cli.command_index], "bind-clone") == 0) {
+		darling_runtime_prefix source = DARLING_RUNTIME_PREFIX_INITIALIZER;
+		int bound = -1;
+		if (argc != cli.command_index + 2) {
+			snprintf(runtimeModeError, sizeof(runtimeModeError),
+				"usage: DPREFIX=CLONE darling bind-clone BASE");
+		} else if (darling_runtime_mode_open_prefix(
+				argv[cli.command_index + 1], source,
+				runtimeModeError, sizeof(runtimeModeError)) == 0) {
+			bound = darling_runtime_prefix_bind_clone(g_runtimePrefix, source,
+				g_runtimeMode, g_originalUid, g_originalGid,
+				runtimeModeError, sizeof(runtimeModeError));
+		}
+		darling_runtime_mode_close_prefix(source);
+		if (bound != 0)
+			fprintf(stderr, "Cannot bind Darling clone: %s\n", runtimeModeError);
+		return bound == 0 ? 0 : 1;
 	}
 	struct darling_runtime_prefix_lifecycle_result lifecycle;
 	int lifecycle_result = darling_runtime_prefix_prepare(
@@ -709,8 +730,10 @@ static void shellLoop(int sockfd, int master)
 				exit(result.value);
 			if (result.kind == SHELLSPAWN_RESULT_ERROR)
 			{
-				fprintf(stderr, "shellspawn failed (errno=%d): %s\n", result.value,
-					strerror(result.value));
+				const char* message = result.value >= 0 && result.value < darling_bsd_nerr
+					? darling_bsd_errlist[result.value] : "Unknown Darwin error";
+				fprintf(stderr, "shellspawn failed (Darwin errno=%d): %s\n",
+					result.value, message);
 				exit(1);
 			}
 		fprintf(stderr, "shellspawn returned an unknown result kind: %u\n", result.kind);
@@ -1120,6 +1143,8 @@ void showHelp(const char* argv0)
 	fprintf(stderr, "\t%s [--rootless] shell [arguments...]\n", argv0);
 	fprintf(stderr, "\t%s [--rootless] exec <program-path> [arguments...]\n", argv0);
 	fprintf(stderr, "\t%s [--rootless] shutdown\n", argv0);
+	fprintf(stderr, "\tDPREFIX=CLONE %s [--rootless] bind-clone BASE\n", argv0);
+	fprintf(stderr, "\t  Bind an already copied/COW-mounted inert clone; does not copy data or boot.\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "Options:\n"
 		"--rootless - select rootless-eunion (exact spelling; requires an E-UNION-capable build)\n");

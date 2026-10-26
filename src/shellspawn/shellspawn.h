@@ -40,7 +40,7 @@ enum {
 
 enum shellspawn_result_kind {
 	SHELLSPAWN_RESULT_EXIT = 1,
-	SHELLSPAWN_RESULT_ERROR,
+	SHELLSPAWN_RESULT_ERROR, // value is a Darwin/BSD errno, not a host Linux errno
 };
 
 struct __attribute__((packed)) shellspawn_cmd

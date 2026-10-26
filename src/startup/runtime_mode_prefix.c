@@ -478,7 +478,7 @@ int darling_runtime_mode_prepare_workdir(
 	}
 	handle->workdir_fd = fd;
 
-validate_workdir:
+validate_workdir: ;
 	struct stat workdir_status;
 	if (fstat(handle->workdir_fd, &workdir_status) != 0 ||
 		!S_ISDIR(workdir_status.st_mode) ||
@@ -3171,6 +3171,310 @@ static int ensure_prefix_not_running(
 			"cannot validate runtime prefix process state: %s",
 			strerror(errno));
 	return 0;
+}
+
+/*
+ * RuntimePrefix::prefixFD() lives through the server event loop, and the
+ * server passes it to launchd across exec. These kernel-held identities
+ * remain authoritative when mutable PID metadata has been removed.
+ */
+static int clone_has_no_runtime_owner(
+	const darling_runtime_prefix handle, char* error, size_t error_size
+)
+{
+	struct stat target;
+	if (fstat(handle->directory_fd, &target) != 0)
+		return prefix_error(error, error_size,
+			"cannot identify runtime ownership: %s", strerror(errno));
+	DIR* processes = opendir("/proc");
+	if (processes == NULL)
+		return prefix_error(error, error_size,
+			"cannot enumerate runtime owners: %s", strerror(errno));
+	int result = 0;
+	struct dirent* entry;
+	errno = 0;
+	while ((entry = readdir(processes)) != NULL) {
+		char* end;
+		long pid = strtol(entry->d_name, &end, 10);
+		if (*entry->d_name == '\0' || *end != '\0' ||
+			pid <= 0 || pid == getpid())
+			continue;
+		int process = openat(dirfd(processes), entry->d_name,
+			O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+		if (process < 0) {
+			if (errno == ENOENT || errno == ESRCH) {
+				errno = 0;
+				continue;
+			}
+			result = -1;
+			break;
+		}
+		struct stat owner;
+		if (fstat(process, &owner) != 0) {
+			close(process);
+			result = -1;
+			break;
+		}
+		/* procfs changes directory ownership to root for nondumpable
+		 * processes. Recover real UID from kernel status before filtering. */
+		if (owner.st_uid == 0 && target.st_uid != 0) {
+			char status[4096];
+			int status_fd = openat(process, "status",
+				O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+			ssize_t length = status_fd < 0 ? -1 :
+				read(status_fd, status, sizeof(status) - 1);
+			int saved = errno;
+			if (status_fd >= 0)
+				close(status_fd);
+			if (length <= 0) {
+				close(process);
+				if (saved == ENOENT || saved == ESRCH) {
+					errno = 0;
+					continue;
+				}
+				errno = saved == 0 ? EIO : saved;
+				result = -1;
+				break;
+			}
+			status[length] = '\0';
+			char* uid_line = strstr(status, "\nUid:");
+			unsigned real_uid;
+			if (uid_line == NULL || sscanf(uid_line, "\nUid:%u", &real_uid) != 1) {
+				close(process);
+				errno = EIO;
+				result = -1;
+				break;
+			}
+			owner.st_uid = (uid_t)real_uid;
+		}
+		if (owner.st_uid != target.st_uid) {
+			close(process);
+			errno = 0;
+			continue;
+		}
+		char role[64];
+		int comm = openat(process, "comm", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+		ssize_t count = comm < 0 ? -1 : read(comm, role, sizeof(role) - 1);
+		int saved = errno;
+		if (comm >= 0)
+			close(comm);
+		if (count <= 0) {
+			close(process);
+			if (saved == ENOENT || saved == ESRCH) {
+				errno = 0;
+				continue;
+			}
+			errno = saved == 0 ? EIO : saved;
+			result = -1;
+			break;
+		}
+		role[count] = '\0';
+		/* Do not classify FUSE layer readers as runtime owners. */
+		if (strcmp(role, "darlingserver\n") != 0 &&
+			strcmp(role, "mldr\n") != 0 && strcmp(role, "darling\n") != 0) {
+			close(process);
+			errno = 0;
+			continue;
+		}
+		int descriptors = openat(process, "fd",
+			O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+		close(process);
+		if (descriptors < 0) {
+			if (errno == ENOENT || errno == ESRCH) {
+				errno = 0;
+				continue;
+			}
+			result = -1;
+			break;
+		}
+		DIR* fds = fdopendir(descriptors);
+		if (fds == NULL) {
+			close(descriptors);
+			result = -1;
+			break;
+		}
+		struct dirent* descriptor;
+		errno = 0;
+		while ((descriptor = readdir(fds)) != NULL) {
+			if (descriptor->d_name[0] == '.')
+				continue;
+			struct stat held;
+			/* These are kernel capability links, not prefix path input. */
+			if (fstatat(dirfd(fds), descriptor->d_name, &held, 0) != 0) {
+				if (errno == ENOENT || errno == ESRCH) {
+					errno = 0;
+					continue;
+				}
+				result = -1;
+				break;
+			}
+			if (S_ISDIR(held.st_mode) && held.st_dev == target.st_dev &&
+				held.st_ino == target.st_ino) {
+				errno = EBUSY;
+				result = -1;
+				break;
+			}
+			errno = 0;
+		}
+		if (errno != 0)
+			result = -1;
+		saved = errno;
+		closedir(fds);
+		errno = saved;
+		if (result != 0)
+			break;
+	}
+	if (errno != 0)
+		result = -1;
+	int saved = errno;
+	closedir(processes);
+	errno = saved;
+	if (result != 0)
+		return prefix_error(error, error_size,
+			"runtime ownership is active or uninspectable: %s", strerror(errno));
+	return 0;
+}
+
+static int clone_is_stable(
+	const darling_runtime_prefix handle,
+	const struct lifecycle_names* names,
+	char* error,
+	size_t error_size
+)
+{
+	char transaction_temporary[DARLING_PREFIX_LIFECYCLE_NAME_MAX + 4];
+	snprintf(transaction_temporary, sizeof(transaction_temporary),
+		"%s.tmp", names->transaction);
+	const char* entries[] = {
+		names->transaction, names->stage, transaction_temporary
+	};
+	struct stat status;
+	for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i) {
+		if (fstatat(handle->parent_fd, entries[i], &status,
+				AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT)
+			return prefix_error(error, error_size,
+				"clone binding requires a stable lifecycle: %s", entries[i]);
+	}
+	if (darling_runtime_mode_verify_prefix_name(handle, error, error_size) != 0 ||
+		ensure_prefix_not_running(handle, error, error_size) != 0)
+		return -1;
+	return clone_has_no_runtime_owner(handle, error, error_size);
+}
+
+int darling_runtime_prefix_bind_clone(
+	darling_runtime_prefix destination,
+	darling_runtime_prefix source,
+	enum darling_runtime_mode mode,
+	uid_t owner_uid,
+	gid_t owner_gid,
+	char* error,
+	size_t error_size
+)
+{
+	struct stat src, dst, src_parent, dst_parent;
+	struct lifecycle_names source_names, destination_names;
+	if (source == NULL || destination == NULL ||
+		source->directory_fd < 0 || destination->directory_fd < 0 ||
+		fstat(source->directory_fd, &src) != 0 ||
+		fstat(destination->directory_fd, &dst) != 0 ||
+		fstat(source->parent_fd, &src_parent) != 0 ||
+		fstat(destination->parent_fd, &dst_parent) != 0 ||
+		(src.st_dev == dst.st_dev && src.st_ino == dst.st_ino) ||
+		src.st_uid != owner_uid || dst.st_uid != owner_uid ||
+		src.st_gid != owner_gid || dst.st_gid != owner_gid ||
+		(src.st_mode & 07777) != (dst.st_mode & 07777) ||
+		format_lifecycle_names(source, &source_names, error, error_size) != 0 ||
+		format_lifecycle_names(destination, &destination_names, error, error_size) != 0)
+		return prefix_error(error, error_size,
+			"clone binding directory identities or owners are invalid: %s", "invalid");
+	/* Order the lock namespace, not the prefix inode: aliases of a parent
+	 * must use the same order, including opposite-direction bind requests. */
+	bool source_first = src_parent.st_dev != dst_parent.st_dev
+		? src_parent.st_dev < dst_parent.st_dev
+		: src_parent.st_ino != dst_parent.st_ino
+			? src_parent.st_ino < dst_parent.st_ino
+			: strcmp(source_names.lock, destination_names.lock) < 0;
+	if (src_parent.st_dev == dst_parent.st_dev &&
+		src_parent.st_ino == dst_parent.st_ino &&
+		strcmp(source_names.lock, destination_names.lock) == 0)
+		return prefix_error(error, error_size,
+			"clone binding lock identities alias: %s", "invalid");
+	int first = acquire_lifecycle_lock(source_first ? source : destination,
+		source_first ? &source_names : &destination_names,
+		owner_uid, owner_gid, error, error_size);
+	if (first < 0)
+		return -1;
+	int second = acquire_lifecycle_lock(source_first ? destination : source,
+		source_first ? &destination_names : &source_names,
+		owner_uid, owner_gid, error, error_size);
+	int result = -1;
+	if (second < 0)
+		goto out;
+	struct darling_runtime_prefix_state state;
+	char source_content[DARLING_PREFIX_STATE_MAX];
+	char destination_content[DARLING_PREFIX_STATE_MAX];
+	struct stat metadata;
+	if (clone_is_stable(source, &source_names, error, error_size) != 0 ||
+		clone_is_stable(destination, &destination_names, error, error_size) != 0 ||
+		darling_runtime_prefix_read_state(source, mode, owner_uid, owner_gid,
+			&state, error, error_size) != 0 ||
+		state.generation == UINT64_MAX ||
+		read_regular_file_at(source->directory_fd,
+			DARLING_RUNTIME_PREFIX_STATE_NAME, source_content,
+			sizeof(source_content), &metadata, false, error, error_size) != 0 ||
+		read_regular_file_at(destination->directory_fd,
+			DARLING_RUNTIME_PREFIX_STATE_NAME, destination_content,
+			sizeof(destination_content), &metadata, false, error, error_size) != 0)
+		goto out;
+	if ((metadata.st_mode & 07777) != 0600 ||
+		metadata.st_uid != owner_uid || metadata.st_gid != owner_gid ||
+		strcmp(source_content, destination_content) != 0) {
+		prefix_error(error, error_size,
+			"clone state is not the stable source record: %s", "invalid");
+		goto out;
+	}
+	state.prefix_device = dst.st_dev;
+	state.prefix_inode = dst.st_ino;
+	state.owner_uid = owner_uid;
+	state.owner_gid = owner_gid;
+	++state.generation;
+	if (stage_new_prefix_state(destination->directory_fd, &state,
+			error, error_size) != 0)
+		goto out;
+	/* Staging may block on IO or a test checkpoint. Recheck both retained
+	 * names and records before the sole atomic commit point. */
+	char current[DARLING_PREFIX_STATE_MAX];
+	if (clone_is_stable(source, &source_names, error, error_size) != 0 ||
+		clone_is_stable(destination, &destination_names, error, error_size) != 0 ||
+		read_regular_file_at(source->directory_fd,
+			DARLING_RUNTIME_PREFIX_STATE_NAME, current, sizeof(current),
+			&metadata, false, error, error_size) != 0 ||
+		strcmp(current, source_content) != 0 ||
+		read_regular_file_at(destination->directory_fd,
+			DARLING_RUNTIME_PREFIX_STATE_NAME, current, sizeof(current),
+			&metadata, false, error, error_size) != 0 ||
+		strcmp(current, destination_content) != 0)
+		goto out;
+	char staged[DARLING_PREFIX_STATE_MAX];
+	if ((metadata.st_mode & 07777) != 0600 ||
+		metadata.st_uid != owner_uid || metadata.st_gid != owner_gid ||
+		validate_prefix_state(&state, destination->directory_fd, mode,
+			owner_uid, owner_gid, error, error_size) != 0 ||
+		format_prefix_state(&state, staged, sizeof(staged), error, error_size) != 0 ||
+		read_regular_file_at(destination->directory_fd,
+			".darling-prefix-state-v2.tmp", current, sizeof(current),
+			&metadata, false, error, error_size) != 0 ||
+		(metadata.st_mode & 07777) != 0600 ||
+		metadata.st_uid != owner_uid || metadata.st_gid != owner_gid ||
+		strcmp(current, staged) != 0)
+		goto out;
+	result = publish_staged_prefix_state(destination->directory_fd,
+		LIFECYCLE_PUBLISH_REPLACE, error, error_size);
+out:
+	if (second >= 0)
+		close(second);
+	close(first);
+	return result;
 }
 
 static void recover_preserving_failure(

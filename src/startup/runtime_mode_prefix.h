@@ -136,6 +136,21 @@ int darling_runtime_prefix_lock_runtime(
 	size_t error_size
 );
 
+/*
+ * Bind an already copied, inert clone to its retained directory identity.
+ * Both handles must exist and belong to the invoking user. No guest data is
+ * copied and normal startup continues to reject unbound copied state.
+ */
+int darling_runtime_prefix_bind_clone(
+	darling_runtime_prefix destination,
+	darling_runtime_prefix source,
+	enum darling_runtime_mode mode,
+	uid_t owner_uid,
+	gid_t owner_gid,
+	char* error,
+	size_t error_size
+);
+
 int darling_runtime_prefix_prepare(
 	darling_runtime_prefix handle,
 	enum darling_runtime_mode mode,

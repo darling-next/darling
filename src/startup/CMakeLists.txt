@@ -14,12 +14,19 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 #set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-Ttext-segment,0x400000 -Wl,-Tbss,0x410000 -Wl,-Tdata,0x420000")
 add_definitions(-DINSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}" -D_GNU_SOURCE -DMLDR_BUILD)
 
+# Shellspawn sends Darwin errno values; host strerror() uses another numbering.
+# Reuse libc's authoritative table without exporting its legacy libc symbols.
+set(_darwin_errlist "${CMAKE_SOURCE_DIR}/src/external/libc/gen/errlst.c")
+set_source_files_properties("${_darwin_errlist}" PROPERTIES COMPILE_DEFINITIONS
+	"sys_errlist=darling_bsd_errlist;sys_nerr=darling_bsd_nerr")
+
 add_executable(darling
 	darling.c
 	rootless_shutdown.c
 	runtime_credentials.c
 	runtime_mode.c
 	runtime_mode_prefix.c
+	"${_darwin_errlist}"
 )
 target_compile_definitions(darling PRIVATE
 	DARLING_RUNTIME_EUNION_CAPABLE=$<BOOL:${DARLING_EUNION}>
@@ -45,8 +52,7 @@ install(TARGETS darling DESTINATION bin
     PERMISSIONS
     OWNER_READ OWNER_WRITE OWNER_EXECUTE
     GROUP_READ GROUP_EXECUTE
-    WORLD_READ WORLD_EXECUTE
-    SETUID)
+    WORLD_READ WORLD_EXECUTE)
 
 add_executable(rtsig rtsig.c)
 add_custom_command(OUTPUT rtsig.h DEPENDS rtsig COMMAND ${CMAKE_CURRENT_BINARY_DIR}/rtsig rtsig.h COMMENT "Determining available RT signals")

@@ -347,6 +347,7 @@ void spawnShell(int fd)
 	char cmsgbuf[CMSG_SPACE(sizeof(int)) * 3];
 	int wstatus;
 	int error;
+	const char* failure_stage = "receive-command";
 	struct shellspawn_result result;
 	struct shellspawn_result failure;
 
@@ -373,17 +374,32 @@ void spawnShell(int fd)
 		msg.msg_iov = &iov;
 		msg.msg_iovlen = 1;
 
-		if (recvmsg(fd, &msg, 0) != sizeof(cmd))
+		failure_stage = "receive-command";
+		ssize_t received = recvmsg(fd, &msg, 0);
+		if (received != sizeof(cmd))
 		{
-			if (DBG) puts("bad recvmsg");
+			if (received >= 0)
+			{
+				failure_stage = received == 0 ? "receive-command-eof" : "receive-command-short";
+				errno = EPROTO;
+			}
 			goto err;
 		}
 
 		if (cmd.data_length != 0)
 		{
 			param = (char*) malloc(cmd.data_length + 1);
-			if (read(fd, param, cmd.data_length) != cmd.data_length)
+			failure_stage = "read-command-data";
+			ssize_t received_data = read(fd, param, cmd.data_length);
+			if (received_data != cmd.data_length)
+			{
+				if (received_data >= 0)
+				{
+					failure_stage = received_data == 0 ? "read-command-data-eof" : "read-command-data-short";
+					errno = EPROTO;
+				}
 				goto err;
+			}
 			param[cmd.data_length] = '\0';
 		}
 
@@ -422,21 +438,22 @@ void spawnShell(int fd)
 			case SHELLSPAWN_GO:
 			{
 				struct cmsghdr *cmptr = CMSG_FIRSTHDR(&msg);
+				failure_stage = "validate-command-descriptors";
 
 				if (cmptr == NULL)
 				{
-					if (DBG) puts("bad cmptr");
+					errno = EPROTO;
 					goto err;
 				}
 				if (cmptr->cmsg_level != SOL_SOCKET
 						|| cmptr->cmsg_type != SCM_RIGHTS)
 				{
-					if (DBG) puts("bad cmsg level/type");
+					errno = EPROTO;
 					goto err;
 				}
 				if (cmptr->cmsg_len != CMSG_LEN(sizeof(int) * 3))
 				{
-					if (DBG) printf("bad cmsg_len: %d\n", cmptr->cmsg_len);
+					errno = EPROTO;
 					goto err;
 				}
 
@@ -477,6 +494,7 @@ void spawnShell(int fd)
 	argv = (char**) realloc(argv, sizeof(char*) * (argc + 1));
 	argv[argc] = NULL;
 
+	failure_stage = "create-exec-status-pipe";
 	if (pipe(pipefd) == -1)
 		goto err;
 
@@ -493,7 +511,10 @@ void spawnShell(int fd)
 
 	ioctl(STDIN_FILENO, TIOCSCTTY, STDIN_FILENO);
 
+	failure_stage = "fork-shell";
 	shell_pid = fork();
+	if (shell_pid == -1)
+		goto err;
 	if (shell_pid == 0)
 	{
 		close(fd);
@@ -520,6 +541,7 @@ void spawnShell(int fd)
 	// Check that exec succeeded
 	closeFd(&pipefd[1]); // close the write end
 	ssize_t exec_status;
+	failure_stage = "read-exec-status";
 	do
 	{
 		exec_status = read(pipefd[0], &rv, sizeof(rv));
@@ -527,22 +549,27 @@ void spawnShell(int fd)
 	while (exec_status == -1 && errno == EINTR);
 	if (exec_status == sizeof(rv))
 	{
+		failure_stage = "exec-shell";
 		errno = rv;
 		goto err;
 	}
 	if (exec_status != 0)
 	{
+		if (exec_status > 0)
+			failure_stage = "read-exec-status-short";
 		errno = exec_status == -1 ? errno : EPROTO;
 		goto err;
 	}
 	closeFd(&pipefd[0]);
 
+	failure_stage = "wait-shell";
 	enum shell_wait_result wait_result = waitForShell(shell_pid, fd, shellfd, &wstatus);
 	if (wait_result == SHELL_WAIT_ERROR)
 		goto err;
 	if (wait_result == SHELL_WAIT_CLIENT_CLOSED)
 	{
 		kill(shell_pid, SIGKILL);
+		failure_stage = "reap-disconnected-shell";
 		if (reapShell(shell_pid, &wstatus) == -1)
 			goto err;
 	}
@@ -562,7 +589,8 @@ void spawnShell(int fd)
 	return;
 err:
 	error = errno;
-	if (DBG) fprintf(stderr, "Error spawning shell: %s\n", strerror(errno));
+	fprintf(stderr, "shellspawn failed at %s (errno=%d): %s\n",
+		failure_stage, error, strerror(error));
 
 	closeFd(&pipefd[0]);
 	closeFd(&pipefd[1]);

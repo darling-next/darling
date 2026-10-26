@@ -16,8 +16,36 @@ target_compile_options(mldr_dserver_rpc PRIVATE -include ${CMAKE_CURRENT_SOURCE_
 add_dependencies(mldr_dserver_rpc rtsig_h)
 target_include_directories(mldr_dserver_rpc PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/..)
 
+set(eunion_emulation_root
+	"${CMAKE_SOURCE_DIR}/src/external/xnu/darling/src/libsystem_kernel/emulation")
+set(mldr_guest_path_sources
+	guest_path.c
+	"${eunion_emulation_root}/src/linux_premigration/eunion_resolver.c")
+include_directories("${eunion_emulation_root}/include")
+
+add_executable(darling_mldr_guest_path_test EXCLUDE_FROM_ALL
+	../tests/mldr_guest_path_test.c ${mldr_guest_path_sources})
+target_include_directories(darling_mldr_guest_path_test PRIVATE
+	"${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_executable(darling_mldr_socket_bitmap_test EXCLUDE_FROM_ALL
+	../tests/mldr_socket_bitmap_test.c socket_bitmap.c)
+target_include_directories(darling_mldr_socket_bitmap_test PRIVATE
+	"${CMAKE_CURRENT_SOURCE_DIR}")
+
+if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+	add_executable(darling_bsd_syscall_abi_test EXCLUDE_FROM_ALL
+		../tests/bsd_syscall_abi_test.c
+		../tests/bsd_syscall_abi_test.S
+		"${eunion_emulation_root}/src/xnu_syscall/bsd/bsd_syscall.S")
+	target_compile_definitions(darling_bsd_syscall_abi_test PRIVATE
+		DARLING_BSD_SYSCALL_HOST_TEST=1)
+endif()
+
 set(mldr_sources
 	mldr.c
+	socket_bitmap.c
+	${mldr_guest_path_sources}
 	../runtime_mode.c
 	glibc_fork_reset.c
 	commpage.c

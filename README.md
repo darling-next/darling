@@ -15,11 +15,78 @@ under [releases](https://github.com/darlinghq/darling/releases).
 
 For build instructions, visit [Darling Docs](https://docs.darlinghq.org/build-instructions.html).
 
+With the documented host dependencies, initialized source submodules and the
+Swift Git LFS payload available, a normal production build and installation is:
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$HOME/.local/darling"
+cmake --build build
+cmake --install build
+DPREFIX="$HOME/.local/state/darling/default" \
+  "$HOME/.local/darling/bin/darling" shell echo Hello
+```
+
+The default shipping component selection is `COMPONENTS=stock`. Build the default
+target and install the whole configured tree; a single `--component core` install
+is not a complete shell or developer runtime. Member install rules provide the
+guest commands, libraries, framework links, services and runtime data (including
+ICU and Objective-C trampolines). No workspace, patch profile, deployment JSON,
+test metadata or test-only build option is required.
+
+The runtime root is the configured `CMAKE_INSTALL_PREFIX`, not `DPREFIX`.
+Runtime paths are compiled in: configure with the final absolute installation
+root rather than relocating with `cmake --install --prefix`. `DESTDIR` remains
+available for packaging at that configured location. Installation never stops
+running prefixes; shut down each affected prefix explicitly before upgrading
+its shared runtime.
+
 ### Prefixes
 
 Darling has support for DPREFIXes, which are very similar to WINEPREFIXes. They are virtual “chroot” environments with an macOS-like filesystem structure, where you can install software safely. The default DPREFIX location is `~/.darling`, but this can be changed by exporting an identically named environment variable. A prefix is automatically created and initialized on first use.
 
-Please note that we use `overlayfs` for creating prefixes, and so we cannot support putting prefix on a filesystem like NFS or eCryptfs. In particular, the default prefix location won't work if you have an encrypted home directory.
+The default runtime is rootless and uses a writable per-prefix upper layer over
+the installed read-only system tree through vchroot path translation
+(`DARLING_EUNION=ON`). It needs no setuid launcher, overlay mount or copied
+system-library tree in the prefix. The prefix filesystem must support the
+extended attributes used for copy-up, whiteouts and opaque directories.
+Explicit privileged diagnostic modes remain available, but are not the default
+and require the corresponding host privileges.
+
+One installed runtime can serve separate prefixes:
+
+```sh
+DPREFIX="$HOME/.local/state/darling/one" "$HOME/.local/darling/bin/darling" shell echo one
+DPREFIX="$HOME/.local/state/darling/two" "$HOME/.local/darling/bin/darling" shell echo two
+DPREFIX="$HOME/.local/state/darling/one" "$HOME/.local/darling/bin/darling" shutdown
+DPREFIX="$HOME/.local/state/darling/two" "$HOME/.local/darling/bin/darling" shutdown
+```
+
+Each prefix owns its first-use skeleton and writable runtime state. Do not copy
+the runtime's `bin` or system libraries into it.
+Normal installation sets the four `Library`/`System/Library` launch-service
+directories to `0755`, independently of the host umask. Keep service directories
+and property lists non-group/world-writable: `launchctl` rejects unsafe paths.
+
+`tests/src/installed_runtime.c` is a focused guest behavioral oracle for the
+normal `stock` installation. Compile it with the guest CLT and run it in a fresh
+prefix; it checks shipping resources and compares paginated bulk directory
+enumeration against `readdir`, including rewind. It does not inject system files.
+
+Shell startup failures emit a failure-only `shellspawn failed at STAGE` diagnostic
+on the service or redirected command stderr, in addition to the launcher's error
+result. The stage distinguishes command/descriptor framing, exec-status pipe,
+shell exec and child wait failures. Incomplete command frames and invalid
+descriptor control messages report `EPROTO`, not an unrelated earlier errno.
+The host launcher formats those Darwin errno values with the vendored libc
+table, not Linux's differently numbered `strerror()` table.
+
+On x86-64 hosts, the optional native `darling_bsd_syscall_abi_test` target
+exercises the production BSD syscall dispatcher with both guest entry-stack
+alignments, eight arguments and unknown-syscall handling. Build it explicitly
+with `cmake --build build --target darling_bsd_syscall_abi_test`, then run
+`build/src/startup/mldr/darling_bsd_syscall_abi_test`. This host regression is
+not a substitute for guest boot or installed-runtime acceptance.
 
 ### Hello world
 

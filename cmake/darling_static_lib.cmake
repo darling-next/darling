@@ -8,6 +8,14 @@ function(add_darling_static_library name)
 
 	set(CMAKE_AR "${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ar/${APPLE_TARGET_TRIPLET_PRIMARY}-ar")
 	set(CMAKE_RANLIB "${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ar/${APPLE_TARGET_TRIPLET_PRIMARY}-ranlib")
+	# Darwin ar cannot update universal archives. Rules are read from directory
+	# scope during generation, not from this function's temporary scope.
+	set(archive_remove "\"${CMAKE_COMMAND}\" -E rm -f <TARGET>")
+	list(GET CMAKE_ASM_CREATE_STATIC_LIBRARY 0 archive_first)
+	if (NOT archive_first STREQUAL archive_remove)
+		list(PREPEND CMAKE_ASM_CREATE_STATIC_LIBRARY "${archive_remove}")
+		set(CMAKE_ASM_CREATE_STATIC_LIBRARY "${CMAKE_ASM_CREATE_STATIC_LIBRARY}" PARENT_SCOPE)
+	endif ()
 	add_library(${name} STATIC ${STATIC_LIB_SOURCES})
 
 	set_property(TARGET ${name} APPEND_STRING PROPERTY COMPILE_FLAGS " -B ${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/misc/")

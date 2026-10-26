@@ -57,7 +57,7 @@ FUNCTION(use_ld64 target)
 -Wl,-dylib_file,/usr/lib/libSystem.B.dylib:${CMAKE_BINARY_DIR}/src/external/libsystem/libSystem.B.dylib \
 -Wl,-dylib_file,/System/Library/Frameworks/Python.framework/Versions/2.7/Python:${CMAKE_BINARY_DIR}/src/external/python/2.7/Python-2.7.16/Python \
 -Wl,-dylib_file,/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation:${CMAKE_BINARY_DIR}/src/external/corefoundation/CoreFoundation \
--Wl,-dylib_file,/System/Library/Frameworks/Combine.framework/Versions/A/Combine:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/System/Library/Frameworks/Combine.framework/Versions/A/Combine \
+-Wl,-dylib_file,/System/Library/Frameworks/Combine.framework/Versions/A/Combine:${CMAKE_SOURCE_DIR}/src/external/swift/Combine.framework/Versions/A/Combine \
 -Wl,-dylib_file,/System/Library/Frameworks/Ruby.framework/Versions/2.0/Ruby:${CMAKE_BINARY_DIR}/src/external/ruby/Ruby \
 -Wl,-dylib_file,/usr/lib/libiconv.2.dylib:${CMAKE_BINARY_DIR}/src/libiconv/libiconv.2.dylib \
 -Wl,-dylib_file,/usr/lib/libcharset.1.dylib:${CMAKE_BINARY_DIR}/src/external/libiconv/libcharset.1.dylib \
@@ -177,39 +177,21 @@ FUNCTION(use_ld64 target)
 -Wl,-dylib_file,/usr/lib/native/libxkbfile.dylib:${CMAKE_BINARY_DIR}/src/native/libxkbfile.dylib \
 -Wl,-dylib_file,/usr/lib/native/libXRandR.dylib:${CMAKE_BINARY_DIR}/src/native/libXRandR.dylib")
 
-	# The Swift payload's dylibs, by install name.  The Foundation framework
-	# re-exports /usr/lib/swift/libswiftFoundation.dylib, so every client that
-	# links Foundation makes ld open that path in the sysroot, where it does not
-	# exist ("ld: file not found: /usr/lib/swift/libswiftFoundation.dylib for
-	# architecture x86_64", seen for libMobileGestalt, FSEvents,
-	# LocalAuthentication, FMDB, SecurityFoundation and installer).  Mapping only
-	# that file is not enough: a client that resolves a Swift symbol through the
-	# re-export walks the chain, and the next measurement was
-	# "file not found: /usr/lib/swift/libswift_RegexParser.dylib" for the ruby
-	# bundles.  The build stages the whole payload set in
-	# rootless-toolchain-resources, so map whatever is there rather than a
-	# hand-kept list.
-	#
-	# THE GLOB MUST NOT READ THE STAGING DIRECTORY. The rootless-toolchain block fills that directory
-	# with configure_file, and it does so AFTER this function has already been expanded for the targets
-	# that call it, so in a NEW build dir the glob is empty, every client of the Swift payload fails to
-	# link, and the failure looks like a missing payload rather than a configure-order defect.
-	# MEASURED 2026-10-12: `cmake` once + `ninja` in a fresh build dir produced ZERO mappings and died
-	# at 8216/9298 with
-	#   "ld: file not found: /usr/lib/swift/libswiftFoundation.dylib for architecture x86_64"
-	# (FMDB, installer); running the configure a SECOND time produced 1308 mappings and the build
-	# finished -- i.e. "configure twice in a fresh build dir" was a defect in this glob, not a fact of
-	# life. CONFIGURE_DEPENDS does not repair it (the re-configure repeats the same order; measured),
-	# but discovering the names where they are CHECKED IN does: the staged set is a copy of
-	# src/external/swift, which exists at configure time, and the mapping's target stays the path the
-	# build stages them to.
+	# The normal Swift member installs these source-owned payloads unchanged.
+	# Clients follow Foundation's re-export chain through the Swift dylibs, so
+	# resolve every payload install name directly from its vendored binary.
+	# No installation or generated copy is required before the first link.
+	# Record these binary inputs for incremental relinking as well.
 	set(_darling_swift_maps " ")
 	file(GLOB _darling_swift_payload CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/external/swift/*.dylib")
 	foreach(_darling_swift_dylib IN LISTS _darling_swift_payload)
 		get_filename_component(_darling_swift_name "${_darling_swift_dylib}" NAME)
-		string(APPEND _darling_swift_maps "-Wl,-dylib_file,/usr/lib/swift/${_darling_swift_name}:${CMAKE_BINARY_DIR}/rootless-toolchain-resources/usr/lib/swift/${_darling_swift_name} ")
+		string(APPEND _darling_swift_maps "-Wl,-dylib_file,/usr/lib/swift/${_darling_swift_name}:${_darling_swift_dylib} ")
 	endforeach()
 	set_property(TARGET ${target} APPEND_STRING PROPERTY LINK_FLAGS "${_darling_swift_maps}")
+	set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
+		${_darling_swift_payload}
+		"${CMAKE_SOURCE_DIR}/src/external/swift/Combine.framework/Versions/A/Combine")
 
 	add_dependencies(${target} ${APPLE_TARGET_TRIPLET_PRIMARY}-ld)
 

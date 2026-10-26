@@ -12,15 +12,11 @@ set(DYLIB_CURRENT_VERSION "370.63.7")
 # The name is MetalNoGPU rather than Metal because the tree already defines a `Metal` target --
 # src/external/metal, the real Vulkan-backed implementation, added under COMPONENT_dev_gui_common
 # when BUILD_METAL is on. Two images cannot claim the same install name, so this one is built only
-# when that real one is not: src/private-frameworks/CMakeLists.txt guards the add_subdirectory with
-# the top-level DARLING_ROOTLESS_METAL_TARGET selection, which is also what the deployment
-# declaration uses -- MEASURED 2026-10-12, when this file's old "not built in this configuration"
-# premise was false and both images existed with this one shadowing the real Metal on
-# /System/Library/Frameworks/Metal.framework/Versions/A/Metal.
-add_darling_library(MetalNoGPU SHARED
-	src/Metal.c
+# when that real one is not, as selected by DARLING_METAL_TARGET.
+add_framework(Metal
+	VERSION "A"
+	CURRENT_VERSION
+	TARGET_NAME MetalNoGPU
+	FAT
+	SOURCES src/Metal.c
 )
-
-make_fat(MetalNoGPU)
-
-install(TARGETS MetalNoGPU DESTINATION libexec/darling/System/Library/Frameworks/Metal.framework/Versions/A)

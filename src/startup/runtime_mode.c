@@ -89,9 +89,9 @@ bool darling_runtime_mode_uses_eunion(enum darling_runtime_mode mode)
 enum darling_runtime_mode darling_runtime_mode_default_for_host(void)
 {
 	/*
-	 * ROOTLESS IS THE DEFAULT. It is the mode the product is bootstrapped, deployed and
-	 * measured in, and it needs neither setuid root nor a privileged mount, so a plain
-	 * `darling shell` works on a checkout with no install step.
+	 * Rootless is the production default. A normal installation supplies the
+	 * read-only runtime, while DPREFIX owns writable first-use state; neither
+	 * setuid root nor a privileged mount is required.
 	 *
 	 * MEASURED reason this changed: with the privileged default, a normal smoke run answered
 	 * "the binary is not setuid root, which is mandatory" -- a message about an install

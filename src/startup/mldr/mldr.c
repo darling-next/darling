@@ -58,6 +58,7 @@ static void mldr_diagf(const char* fmt, ...); // see the definition
 #include "glibc_fork_reset.h"
 #include "signal_atomic.h"
 #include "stack_mapping.h"
+#include "socket_bitmap.h"
 #include "elfcalls/threads.h"
 #include <sys/resource.h>
 #include <sys/prctl.h>
@@ -1062,17 +1063,6 @@ static void unset_special_env() {
 	unsetenv("__mldr_runtime_mode");
 };
 
-typedef struct socket_bitmap {
-	pthread_mutex_t mutex;
-	/**
-	 * This is always next lowest available index.
-	 * If this is equal to #bit_length, then the bitmap is full.
-	 */
-	size_t next_index;
-	uint8_t* bits;
-	size_t bit_length;
-	int highest;
-} socket_bitmap_t;
 
 static socket_bitmap_t socket_bitmap = {
 	.mutex = PTHREAD_MUTEX_INITIALIZER,
@@ -1314,86 +1304,6 @@ static size_t ring_fd_count;
 static size_t ring_fd_capacity;
 static __thread sigset_t fork_signal_mask;
 
-static int socket_bitmap_get_locked(socket_bitmap_t* bitmap) {
-	int fd = -1;
-	bool updated = false;
-
-	if (bitmap->highest == -1) {
-		// we need to initialize this bitmap
-		struct rlimit limit;
-
-		if (getrlimit(RLIMIT_NOFILE, &limit) < 0) {
-			goto out;
-		}
-
-		if (limit.rlim_cur == RLIM_INFINITY) {
-			// just default to 1024
-			limit.rlim_cur = 1024;
-		}
-
-		bitmap->highest = limit.rlim_cur - 1;
-	}
-
-	// Never reserve a standard descriptor, even with a reduced host limit.
-	if (bitmap->highest < 3 || bitmap->next_index > (size_t)(bitmap->highest - 3)) {
-		goto out;
-	}
-
-	if (bitmap->next_index >= bitmap->bit_length) {
-		// we need to grow the bitmap
-
-		if ((bitmap->bit_length % 8) == 0) {
-			// we need to allocate an additional byte
-
-			void* ptr = realloc(bitmap->bits, (bitmap->bit_length / 8) + 1);
-			if (!ptr) {
-				goto out;
-			}
-
-			bitmap->bits = ptr;
-
-			bitmap->bits[bitmap->bit_length / 8] = 0;
-		} else {
-			// we just need to increment the bit length
-		}
-
-		++bitmap->bit_length;
-	}
-
-	fd = bitmap->highest - bitmap->next_index;
-
-	bitmap->bits[bitmap->next_index / 8] |= 1 << (bitmap->next_index % 8);
-
-	// update the next available index
-	for (size_t i = bitmap->next_index + 1; i < bitmap->bit_length; ++i) {
-		size_t byte = i / 8;
-		uint8_t bit = i % 8;
-
-		if (bit == 0) {
-			// check the entire byte at once so we can avoid unnecessary iteration
-			if (bitmap->bits[byte] == 0xff) {
-				// this byte is full, skip it
-				i += 7;
-				continue;
-			}
-		}
-
-		if ((bitmap->bits[byte] & (1 << bit)) == 0) {
-			// this index is unused
-			bitmap->next_index = i;
-			updated = true;
-			break;
-		}
-	}
-
-	if (!updated) {
-		// all of our entries are currently in-use
-		bitmap->next_index = bitmap->bit_length;
-	}
-
-out:
-	return fd;
-};
 
 static int socket_bitmap_get(socket_bitmap_t* bitmap) {
 	sigset_t saved;
@@ -1405,58 +1315,6 @@ static int socket_bitmap_get(socket_bitmap_t* bitmap) {
 	return fd;
 }
 
-static void socket_bitmap_put_locked(socket_bitmap_t* bitmap, int socket) {
-	size_t index;
-
-	index = bitmap->highest - socket;
-
-	bitmap->bits[index / 8] &= ~(1 << (index % 8));
-
-	if (index < bitmap->next_index) {
-		bitmap->next_index = index;
-	}
-
-	if (index == bitmap->bit_length - 1) {
-		// we can shrink the bitmap
-		size_t old_byte_size = (bitmap->bit_length + 7) / 8;
-		size_t new_byte_size = old_byte_size;
-
-		while (bitmap->bit_length > 0) {
-			size_t index = bitmap->bit_length - 1;
-
-			if ((bitmap->bit_length % 8) == 0) {
-				// check the entire byte at once to avoid unnecessary iteration
-				if (bitmap->bits[(bitmap->bit_length / 8) - 1] == 0) {
-					// remove this entire byte
-					bitmap->bit_length -= 8;
-					continue;
-				}
-			}
-
-			if ((bitmap->bits[index / 8] & (1 << (index % 8))) == 0) {
-				// this bit is in-use, so we can't shrink any further
-				break;
-			}
-
-			--bitmap->bit_length;
-		}
-
-		new_byte_size = (bitmap->bit_length + 7) / 8;
-
-		if (old_byte_size != new_byte_size) {
-			// we can free one or more bytes from the bitmap
-			void* ptr = realloc(bitmap->bits, new_byte_size);
-			if (!ptr) {
-				goto out;
-			}
-
-			bitmap->bits = ptr;
-		}
-	}
-
-out:
-	return;
-};
 
 static void socket_bitmap_put(socket_bitmap_t* bitmap, int socket) {
 	sigset_t saved;

@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <string.h>
 
 extern int lkm_call(int nr, ...);
 extern int __darling_vchroot(int dfd);
@@ -16,14 +17,6 @@ int main(int argc, const char** argv)
 		return 1;
 	}
 
-	char buf[4096];
-	sprintf(buf, "%s%s", argv[1], argv[2]);
-
-	if (access(buf, F_OK) != 0)
-	{
-		fprintf(stderr, "Target executable not found: %s\n", buf);
-		return 5;
-	}
 
 	int dfd = open(argv[1], O_RDONLY | O_DIRECTORY);
 	if (dfd == -1)
@@ -45,6 +38,16 @@ int main(int argc, const char** argv)
 	}
 
 	close(dfd);
+	/* Resolve in the established guest namespace. Concatenating the upper
+	 * prefix before this transition rejects lower-only executables and
+	 * bypasses E-UNION whiteout/opaque policy. The ordinary access/exec
+	 * syscall paths already own that policy. */
+	if (access(argv[2], F_OK) != 0)
+	{
+		fprintf(stderr, "Target executable not found: %s: %s\n",
+			argv[2], strerror(errno));
+		return 5;
+	}
 
 	// The root is needed by the LOADER for the image this helper is about to exec: it is what prefixes the
 	// guest's own paths, including the dylinker image the loader opens for the new image. It must not reach the

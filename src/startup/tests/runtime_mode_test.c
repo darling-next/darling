@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -482,14 +483,12 @@ static size_t read_fd_file(
 	return (size_t)length;
 }
 
-static void replace_fd_file(
+static void create_fd_file(
 	int directory_fd,
 	const char* name,
 	const char* content
 )
 {
-	require(unlinkat(directory_fd, name, 0) == 0,
-		"remove fixture metadata");
 	int fd = openat(directory_fd, name,
 		O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
 	require(fd >= 0, "create replacement fixture metadata");
@@ -498,6 +497,28 @@ static void replace_fd_file(
 		"write replacement fixture metadata");
 	require(fsync(fd) == 0, "persist replacement fixture metadata");
 	require(close(fd) == 0, "close replacement fixture metadata");
+}
+
+static void replace_fd_file(
+	int directory_fd,
+	const char* name,
+	const char* content
+)
+{
+	if (unlinkat(directory_fd, name, 0) != 0) {
+		int saved = errno;
+		char anchor[64], directory[4096];
+		snprintf(anchor, sizeof(anchor), "/proc/self/fd/%d", directory_fd);
+		ssize_t length = readlink(anchor, directory, sizeof(directory) - 1);
+		if (length >= 0)
+			directory[length] = '\0';
+		else
+			snprintf(directory, sizeof(directory), "%s", anchor);
+		fprintf(stderr, "FAIL remove fixture metadata %s/%s: errno=%d (%s)\n",
+			directory, name, saved, strerror(saved));
+		exit(1);
+	}
+	create_fd_file(directory_fd, name, content);
 }
 
 static void delete_prefix_fixture(
@@ -1787,10 +1808,182 @@ static void test_account_provisioning(void)
 	remove_fixture_tree(directory);
 }
 
+static void test_clone_binding(void)
+{
+	const char* state_root = getenv("DW_STATE_ROOT");
+	require(state_root != NULL && state_root[0] == '/',
+		"clone fixture requires absolute owned DW_STATE_ROOT");
+	char root[4096];
+	snprintf(root, sizeof(root), "%s/clone-binding.XXXXXX", state_root);
+	char* directory = mkdtemp(root);
+	require(directory != NULL, "create clone fixture");
+	char base_path[4096], clone_path[4096], parked[4096];
+	snprintf(base_path, sizeof(base_path), "%s/base", directory);
+	snprintf(clone_path, sizeof(clone_path), "%s/clone", directory);
+	snprintf(parked, sizeof(parked), "%s/parked", directory);
+	darling_runtime_prefix base = DARLING_RUNTIME_PREFIX_INITIALIZER;
+	darling_runtime_prefix clone = DARLING_RUNTIME_PREFIX_INITIALIZER;
+	struct darling_runtime_prefix_lifecycle_result lifecycle;
+	prepare_prefix_fixture(base_path, base, &lifecycle);
+	prepare_prefix_fixture(clone_path, clone, &lifecycle);
+	char original[2048], observed[2048], error[512] = {0};
+	read_fd_file(base->directory_fd, DARLING_RUNTIME_PREFIX_STATE_NAME,
+		original, sizeof(original));
+	replace_fd_file(clone->directory_fd, DARLING_RUNTIME_PREFIX_STATE_NAME, original);
+	const enum darling_runtime_mode mode = DARLING_RUNTIME_MODE_ROOTLESS_EUNION;
+	struct darling_runtime_prefix_state state;
+	require(darling_runtime_prefix_read_state(clone, mode, getuid(), getgid(),
+		&state, error, sizeof(error)) != 0, "unbound clone accepted by startup");
+	require(darling_runtime_prefix_bind_clone(base, base, mode, getuid(), getgid(),
+		error, sizeof(error)) != 0, "aliased clone accepted");
+	/* A real host runtime-role process retains the directory capability
+	 * without any .init.pid. Layer readers and another prefix are not owners. */
+	for (unsigned scenario = 0; scenario < 3; ++scenario) {
+		int ready[2], release[2];
+		require(pipe(ready) == 0 && pipe(release) == 0,
+			"create runtime owner barriers");
+		pid_t owner = fork();
+		require(owner >= 0, "fork retained-prefix owner");
+		if (owner == 0) {
+			close(ready[0]);
+			close(release[1]);
+			darling_runtime_mode_close_prefix(base);
+			darling_runtime_mode_close_prefix(clone);
+			if (prctl(PR_SET_NAME, scenario == 1 ? "eunion" : "darlingserver",
+					0, 0, 0) != 0)
+				_exit(2);
+			int retained = open(scenario == 2 ? directory : base_path,
+				O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+			if (retained < 0 || write(ready[1], "R", 1) != 1)
+				_exit(3);
+			char byte;
+			if (read(release[0], &byte, 1) != 1)
+				_exit(4);
+			close(retained);
+			_exit(0);
+		}
+		close(ready[1]);
+		close(release[0]);
+		char byte;
+		require(read(ready[0], &byte, 1) == 1, "wait for retained-prefix owner");
+		int outcome = darling_runtime_prefix_bind_clone(clone, base, mode,
+			getuid(), getgid(), error, sizeof(error));
+		int binding_errno = errno;
+		if (scenario == 0) {
+			require(outcome != 0 && binding_errno == EBUSY,
+				"runtime retained FD without PID file was accepted");
+			read_fd_file(clone->directory_fd, DARLING_RUNTIME_PREFIX_STATE_NAME,
+				observed, sizeof(observed));
+			require(strcmp(original, observed) == 0,
+				"active retained owner changed clone state");
+		} else {
+			require(outcome == 0, "nonowner or other-prefix FD blocked clone");
+			replace_fd_file(clone->directory_fd,
+				DARLING_RUNTIME_PREFIX_STATE_NAME, original);
+		}
+		require(write(release[1], "R", 1) == 1, "release retained-prefix owner");
+		int status;
+		require(waitpid(owner, &status, 0) == owner && WIFEXITED(status) &&
+			WEXITSTATUS(status) == 0, "retained-prefix owner failed");
+		close(ready[0]);
+		close(release[1]);
+	}
+	create_fd_file(base->directory_fd, ".init.pid", "1\n");
+	require(darling_runtime_prefix_bind_clone(clone, base, mode, getuid(), getgid(),
+		error, sizeof(error)) != 0, "active source accepted");
+	require(unlinkat(base->directory_fd, ".init.pid", 0) == 0, "remove source PID");
+	require(fchmodat(clone->directory_fd, DARLING_RUNTIME_PREFIX_STATE_NAME,
+		0644, 0) == 0, "change clone state mode");
+	require(darling_runtime_prefix_bind_clone(clone, base, mode, getuid(), getgid(),
+		error, sizeof(error)) != 0, "hostile clone state mode accepted");
+	require(fchmodat(clone->directory_fd, DARLING_RUNTIME_PREFIX_STATE_NAME,
+		0600, 0) == 0, "restore clone state mode");
+	require(darling_runtime_prefix_bind_clone(clone, base, mode, getuid() + 1,
+		getgid(), error, sizeof(error)) != 0, "foreign clone owner accepted");
+	darling_runtime_prefix spelling = DARLING_RUNTIME_PREFIX_INITIALIZER;
+	char unsafe[sizeof(clone_path) + sizeof("/../base") - 1];
+	snprintf(unsafe, sizeof(unsafe), "%s/../base", clone_path);
+	require(darling_runtime_mode_open_prefix(unsafe, spelling, error,
+		sizeof(error)) != 0, "parent traversal clone spelling accepted");
+	char alias[4096];
+	snprintf(alias, sizeof(alias), "%s/alias", directory);
+	require(symlink(base_path, alias) == 0, "create source symlink");
+	require(darling_runtime_mode_open_prefix(alias, spelling, error,
+		sizeof(error)) != 0, "symlink source spelling accepted");
+	require(unlink(alias) == 0, "remove source symlink");
+	create_fd_file(clone->directory_fd, ".init.pid", "1\n");
+	require(darling_runtime_prefix_bind_clone(clone, base, mode, getuid(), getgid(),
+		error, sizeof(error)) != 0, "active clone accepted");
+	require(unlinkat(clone->directory_fd, ".init.pid", 0) == 0, "remove live PID");
+	replace_fd_file(clone->directory_fd, DARLING_RUNTIME_PREFIX_STATE_NAME, "broken\n");
+	require(darling_runtime_prefix_bind_clone(clone, base, mode, getuid(), getgid(),
+		error, sizeof(error)) != 0, "malformed clone accepted");
+	replace_fd_file(clone->directory_fd, DARLING_RUNTIME_PREFIX_STATE_NAME, original);
+	checkpoint_injection = CHECKPOINT_FAILURE;
+	checkpoint_phase = "state-staged";
+	require(darling_runtime_prefix_bind_clone(clone, base, mode, getuid(), getgid(),
+		error, sizeof(error)) != 0, "staged failure ignored");
+	checkpoint_injection = CHECKPOINT_NONE;
+	read_fd_file(clone->directory_fd, DARLING_RUNTIME_PREFIX_STATE_NAME,
+		observed, sizeof(observed));
+	require(strcmp(original, observed) == 0, "partial staging changed stable clone");
+	require(rename(clone_path, parked) == 0, "rename retained clone");
+	require(darling_runtime_prefix_bind_clone(clone, base, mode, getuid(), getgid(),
+		error, sizeof(error)) != 0, "renamed clone accepted");
+	require(rename(parked, clone_path) == 0, "restore clone name");
+	int ready[2], release[2];
+	require(pipe(ready) == 0 && pipe(release) == 0, "create clone race barriers");
+	pid_t binder = fork();
+	require(binder >= 0, "fork clone binder");
+	if (binder == 0) {
+		close(ready[0]);
+		close(release[1]);
+		checkpoint_ready_fd = ready[1];
+		checkpoint_release_fd = release[0];
+		checkpoint_phase = "state-staged";
+		checkpoint_injection = CHECKPOINT_PAUSE;
+		int outcome = darling_runtime_prefix_bind_clone(clone, base, mode,
+			getuid(), getgid(), error, sizeof(error));
+		_exit(outcome != 0 ? 0 : 1);
+	}
+	close(ready[1]);
+	close(release[0]);
+	char byte;
+	require(read(ready[0], &byte, 1) == 1, "wait for staged clone");
+	require(rename(clone_path, parked) == 0, "race staged clone rename");
+	require(write(release[1], "R", 1) == 1, "release staged clone");
+	int status;
+	require(waitpid(binder, &status, 0) == binder && WIFEXITED(status) &&
+		WEXITSTATUS(status) == 0, "staged clone rename race was accepted");
+	close(ready[0]);
+	close(release[1]);
+	require(rename(parked, clone_path) == 0, "restore raced clone");
+	read_fd_file(clone->directory_fd, DARLING_RUNTIME_PREFIX_STATE_NAME,
+		observed, sizeof(observed));
+	require(strcmp(original, observed) == 0, "rename race published partial state");
+	require(darling_runtime_prefix_bind_clone(clone, base, mode, getuid(), getgid(),
+		error, sizeof(error)) == 0, error);
+	require_state(clone, 2);
+	read_fd_file(base->directory_fd, DARLING_RUNTIME_PREFIX_STATE_NAME,
+		observed, sizeof(observed));
+	require(strcmp(original, observed) == 0, "clone binding mutated source");
+	require_state(base, 1);
+	require(darling_runtime_prefix_bind_clone(clone, base, mode, getuid(), getgid(),
+		error, sizeof(error)) != 0, "independent bound state rebound");
+	delete_prefix_fixture(clone);
+	delete_prefix_fixture(base);
+	remove_fixture_tree(directory);
+}
+
 int main(void)
 {
 	const char* selected = getenv("DARLING_RUNTIME_PREFIX_TEST_CASE");
 	if (selected != NULL) {
+		if (strcmp(selected, "clone") == 0) {
+			test_clone_binding();
+			puts("DARLING_RUNTIME_MODE_CONTRACT_OK");
+			return 0;
+		}
 		if (strcmp(selected, "lock-race") == 0)
 			test_lifecycle_lock_race();
 		else if (strcmp(selected, "durability") == 0)
@@ -1824,6 +2017,7 @@ int main(void)
 	test_prefix_marker();
 	test_rootless_namespace_layout();
 	test_account_provisioning();
+	test_clone_binding();
 	puts("DARLING_RUNTIME_MODE_CONTRACT_OK");
 	return 0;
 }

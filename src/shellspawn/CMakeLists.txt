@@ -12,4 +12,6 @@ target_compile_definitions(shellspawn PRIVATE
 )
 
 install(TARGETS shellspawn DESTINATION libexec/darling/usr/libexec)
-install(FILES org.darlinghq.shellspawn.plist DESTINATION libexec/darling/System/Library/LaunchDaemons)
+install(FILES org.darlinghq.shellspawn.plist
+	DESTINATION libexec/darling/System/Library/LaunchDaemons
+	PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)

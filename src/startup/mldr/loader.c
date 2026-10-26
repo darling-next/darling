@@ -11,6 +11,7 @@
 
 #include "loader.h"
 
+#include "guest_path.h"
 static int native_prot(int prot);
 static void load(const char* path, cpu_type_t cpu, bool expect_dylinker, char** argv, struct load_results* lr);
 static void setup_space(struct load_results* lr, bool is_64_bit);
@@ -267,50 +268,14 @@ no_slide:
 				}
 
 				struct dylinker_command* dy = (struct dylinker_command*) lc;
-				// perf#30 (doc section 202): `path` was UNINITIALIZED here. When `lr->root_path` is NULL the
-				// first branch is skipped and this variable holds garbage, so the "if (path == NULL)" fallback
-				// below may be skipped as well and `load()` gets a wild pointer; and when it is not skipped, the
-				// fallback builds the linkers's GUEST path with no prefix -- so `open("/usr/lib/dyld")` fails with
-				// ENOENT on the host. MEASURED: exactly that message for the second incarnation, where the root
-				// is not set yet, while the first incarnation (whose root comes from the environment) loads fine.
-				char* path = NULL;
-				size_t length;
 				static char path_buffer[4096];
-
-				if (lr->root_path != NULL)
-				{
-					const size_t root_len = strlen(lr->root_path);
-					const size_t linker_len = dy->cmdsize - dy->name.offset;
-
-					length = linker_len + root_len;
-					if (length > sizeof(path_buffer) - 1) {
-						fprintf(stderr, "Dynamic loader path too long");
-						exit(1);
-					}
-					path = path_buffer;
-
-					// Concat root path and linker path
-					memcpy(path, lr->root_path, root_len);
-					memcpy(path + root_len, ((char*) dy) + dy->name.offset, linker_len);
-					path[length] = '\0';
+				if (dy->name.offset >= dy->cmdsize) {
+					fprintf(stderr, "Malformed dynamic loader path\n");
+					exit(1);
 				}
-
-				if (path == NULL)
-				{
-					length = dy->cmdsize - dy->name.offset;
-					if (length > sizeof(path_buffer) - 1) {
-						fprintf(stderr, "Dynamic loader path too long");
-						exit(1);
-					}
-					path = path_buffer;
-
-					memcpy(path, ((char*) dy) + dy->name.offset, length);
-					path[length] = '\0';
-				}
-
-				if (path == NULL)
-				{
-					fprintf(stderr, "Failed to load dynamic linker for executable\n");
+				const char* guest_linker = ((const char*)dy) + dy->name.offset;
+				if (memchr(guest_linker, '\0', dy->cmdsize - dy->name.offset) == NULL) {
+					fprintf(stderr, "Malformed dynamic loader path\n");
 					exit(1);
 				}
 
@@ -319,8 +284,16 @@ no_slide:
 				// point where that is possible (the outer image is mapped, and the plane can be established
 				// here), and it is the ordering the whole change exists to produce.
 				mldr_bootstrap_before_dylinker_load(lr);
+				if (mldr_resolve_guest_path(lr->root_path,
+						DARLING_RUNTIME_EUNION_CAPABLE ?
+							INSTALL_PREFIX "/libexec/darling" : NULL,
+						guest_linker, path_buffer, sizeof(path_buffer)) != 0) {
+					fprintf(stderr, "Cannot resolve dynamic loader %s: %s\n",
+						guest_linker, strerror(errno));
+					exit(1);
+				}
 
-				load(path, header.cputype, true, NULL, lr);
+				load(path_buffer, header.cputype, true, NULL, lr);
 
 				break;
 			}
