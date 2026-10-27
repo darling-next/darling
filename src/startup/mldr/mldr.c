@@ -296,7 +296,6 @@ int __mldr_fd_courier_socket(void);
 uint64_t __mldr_process_generation(void);
 int __mldr_process_control_create(void);
 int __mldr_process_control_request(uint32_t op, uint64_t p0, uint64_t p1, uint64_t p2, uint64_t p3);
-static int __mldr_process_control_request_once(uint32_t op, uint64_t p0, uint64_t p1, uint64_t p2, uint64_t p3);
 int __mldr_process_control_ready(void);
 int __mldr_process_control_wait_ready(int timeout_ms);
 void* __mldr_process_control_page(void);
