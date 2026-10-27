@@ -104,6 +104,27 @@ static int drain(int fd, unsigned* seen) {
     }
     return result == 0;
 }
+static void libc_directory_checks(void) {
+    struct stat before = {0}, opened = {0};
+    int valid = stat(ROOT "/stream", &before) == 0;
+    DIR* directory = opendir(ROOT "/stream");
+    valid = valid && directory && fstat(dirfd(directory), &opened) == 0 &&
+        before.st_dev == opened.st_dev && before.st_ino == opened.st_ino;
+    unsigned seen = 0;
+    int entries = 0;
+    struct dirent* entry;
+    errno = 0;
+    while (directory && (entry = readdir(directory))) {
+        if (!note(entry->d_name, &seen) || ++entries > 32) {
+            valid = 0;
+            break;
+        }
+    }
+    int scan_error = errno;
+    if (directory && closedir(directory) != 0) valid = 0;
+    check("libc opendir retains lower directory identity and enumerates every member once",
+        valid && !scan_error && seen == 0xfffu);
+}
 static void descriptor_checks(void) {
     char name[256], other[256];
     int fd = open(ROOT "/regular-fd", O_RDONLY);
@@ -359,6 +380,7 @@ static void rename_noop_checks(void) {
     if (fd >= 0) close(fd);
 }
 int main(void) {
+    libc_directory_checks();
     publication_checks();
     removal_checks();
     rename_noop_checks();
