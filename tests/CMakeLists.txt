@@ -155,3 +155,59 @@ InstallSymlink("real"
 install(FILES data/eunion/probe/lower.txt data/eunion/probe/shadow.txt
     DESTINATION libexec/darling/usr/share/darling/tests/eunion/probe
     PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ COMPONENT tests-data EXCLUDE_FROM_ALL)
+
+# Immutable lower inputs for the production filesystem state-transition cases.
+set(_eunion_state_fixture_root "libexec/darling/usr/share/darling/tests/eunion")
+foreach(_fixture IN ITEMS state routing xattr-state)
+    install(DIRECTORY "data/eunion/${_fixture}/"
+        DESTINATION "${_eunion_state_fixture_root}/${_fixture}"
+        FILE_PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+        DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+        COMPONENT tests-data EXCLUDE_FROM_ALL)
+endforeach()
+
+install(CODE "
+    execute_process(
+        COMMAND \"${Python3_EXECUTABLE}\" -c \"import os,sys
+root = sys.argv[1]
+for name in 'chmod-dirfd chmod-cwd utimes-cwd extended-cwd truncate-cwd hardlink-src failure meta-follow-target meta-nofollow-target follow-target create-follow-target exclusive-target nofollow-target create-nofollow-target alist-path alist-fd alist-invalid'.split():
+    os.setxattr(os.path.join(root, 'routing', name), 'user.test.routing', b'routing-tag')
+for name in 'absolute fd cwd-remove thread-remove cwd-set thread-set follow-set follow-remove nofollow whiteout opaque/.lower'.split():
+    path = os.path.join(root, 'xattr-state', name)
+    os.setxattr(path, 'user.test.remove', b'REMOVE_ME')
+    os.setxattr(path, 'user.test.keep', b'KEEP_ME')
+os.setxattr(os.path.join(root, 'state/large-xattr'), 'user.test.large', bytes(i % 251 for i in range(2048)))
+\"
+            \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}\"
+        RESULT_VARIABLE state_xattr_result)
+    if(NOT state_xattr_result EQUAL 0)
+        message(FATAL_ERROR \"Cannot install E-UNION state-transition fixture xattrs\")
+    endif()
+" COMPONENT tests-data EXCLUDE_FROM_ALL)
+
+InstallSymlink("follow-target"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/routing/follow-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+InstallSymlink("create-follow-target"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/routing/create-follow-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+InstallSymlink("exclusive-target"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/routing/exclusive-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+InstallSymlink("nofollow-target"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/routing/nofollow-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+InstallSymlink("create-nofollow-target"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/routing/create-nofollow-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+InstallSymlink("dangling-create-target"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/routing/dangling-create-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+InstallSymlink("dangling-exclusive-target"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/routing/dangling-exclusive-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+InstallSymlink("dangling-missing-target"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/routing/dangling-missing-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+InstallSymlink("meta-follow-target"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/routing/meta-follow-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+InstallSymlink("meta-nofollow-target"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/routing/meta-nofollow-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+InstallSymlink("follow-set"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/xattr-state/set-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+InstallSymlink("follow-remove"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/xattr-state/remove-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+InstallSymlink("nofollow"
+    "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/xattr-state/nofollow-link" COMPONENT tests-data EXCLUDE_FROM_ALL)

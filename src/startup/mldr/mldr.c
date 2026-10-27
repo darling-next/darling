@@ -60,6 +60,7 @@ static void mldr_diagf(const char* fmt, ...); // see the definition
 #include "stack_mapping.h"
 #include "socket_bitmap.h"
 #include "elfcalls/threads.h"
+#include "elfcalls/elfcalls.h"
 #include <sys/resource.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
@@ -1300,14 +1301,30 @@ static void mldr_op_ledger_snapshot(char** envp) {
 	mldr_op_ledger_limit = enabled ? (uint32_t)(cap > 0 ? cap : DSERVER_LEDGER_DEFAULT_MAX) : 0u;
 }
 
-static int* ring_fds;
-static size_t ring_fd_count;
-static size_t ring_fd_capacity;
-static __thread sigset_t fork_signal_mask;
+enum mldr_owned_fd_role {
+	MLDR_OWNED_FD_RING,
+	MLDR_OWNED_FD_UNION,
+};
+
+struct mldr_owned_fd {
+	int fd;
+	enum mldr_owned_fd_role role;
+	unsigned flags;
+	bool closing;
+};
+
+// One process-wide ownership list for both guest images. Bitmap reservations
+// protect entries, including those whose native close is still in flight.
+static struct mldr_owned_fd* owned_fds;
+static size_t owned_fd_count;
+static size_t owned_fd_capacity;
+static size_t owned_fd_closes;
+static uint32_t owned_fd_close_epoch;
+static __thread signal_atomic_mask_t fork_signal_mask;
 
 
 static int socket_bitmap_get(socket_bitmap_t* bitmap) {
-	sigset_t saved;
+	signal_atomic_mask_t saved;
 	mldr_block_async_signals(&saved);
 	pthread_mutex_lock(&bitmap->mutex);
 	int fd = socket_bitmap_get_locked(bitmap);
@@ -1318,7 +1335,7 @@ static int socket_bitmap_get(socket_bitmap_t* bitmap) {
 
 
 static void socket_bitmap_put(socket_bitmap_t* bitmap, int socket) {
-	sigset_t saved;
+	signal_atomic_mask_t saved;
 	mldr_block_async_signals(&saved);
 	pthread_mutex_lock(&bitmap->mutex);
 	socket_bitmap_put_locked(bitmap, socket);
@@ -1326,44 +1343,87 @@ static void socket_bitmap_put(socket_bitmap_t* bitmap, int socket) {
 	mldr_restore_signals(&saved);
 }
 
-int __mldr_adopt_ring_fd(int source) {
-	int result = -1;
-	sigset_t saved;
+// Called with the bitmap locked after a native close outside the mutex.
+static void mldr_owned_fd_close_complete_locked(void) {
+	--owned_fd_closes;
+	__atomic_add_fetch(&owned_fd_close_epoch, 1u, __ATOMIC_RELEASE);
+	syscall(SYS_futex, &owned_fd_close_epoch, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
+}
+
+static int mldr_adopt_owned_fd(int source, enum mldr_owned_fd_role role, unsigned flags) {
+	int result = -ENOMEM;
+	signal_atomic_mask_t saved;
 	mldr_block_async_signals(&saved);
 	pthread_mutex_lock(&socket_bitmap.mutex);
-	if (ring_fd_count == ring_fd_capacity) {
-		size_t capacity = ring_fd_capacity ? ring_fd_capacity * 2 : 16;
-		if (capacity < ring_fd_capacity || capacity > SIZE_MAX / sizeof(*ring_fds)) {
+	int descriptor_flags = FD_CLOEXEC; // The existing ring API always sets CLOEXEC.
+	if (role == MLDR_OWNED_FD_UNION) {
+		descriptor_flags = (int)syscall(SYS_fcntl, source, F_GETFD);
+		if (descriptor_flags < 0) {
+			result = -errno;
 			goto out;
 		}
-		int* resized = realloc(ring_fds, capacity * sizeof(*ring_fds));
+	}
+	if (owned_fd_count == owned_fd_capacity) {
+		size_t capacity = owned_fd_capacity ? owned_fd_capacity * 2 : 16;
+		if (capacity < owned_fd_capacity || capacity > SIZE_MAX / sizeof(*owned_fds)) {
+			goto out;
+		}
+		struct mldr_owned_fd* resized = realloc(owned_fds, capacity * sizeof(*owned_fds));
 		if (!resized) {
 			goto out;
 		}
-		ring_fds = resized;
-		ring_fd_capacity = capacity;
+		owned_fds = resized;
+		owned_fd_capacity = capacity;
 	}
+	errno = 0; // Bitmap exhaustion has no native syscall to set errno.
 	int reserved = socket_bitmap_get_locked(&socket_bitmap);
 	if (reserved < 0) {
+		result = errno ? -errno : -EMFILE;
 		goto out;
 	}
-	// Unlike dup2, F_DUPFD_CLOEXEC cannot overwrite an application descriptor
-	// that occupies or races to acquire our preferred number. A collision is
-	// a clean attach failure; the caller retains and closes its source FD.
-	int duplicate = fcntl(source, F_DUPFD_CLOEXEC, reserved);
+	// F_DUPFD never overwrites a guest descriptor occupying the reserved
+	// number. Duplication shares the OFD (status/access flags and cursor);
+	// choosing the command preserves the union source's per-FD CLOEXEC.
+	int command = (descriptor_flags & FD_CLOEXEC) ? F_DUPFD_CLOEXEC : F_DUPFD;
+	int duplicate = (int)syscall(SYS_fcntl, source, command, reserved);
 	if (duplicate != reserved) {
+		result = duplicate < 0 ? -errno : -EBUSY;
 		if (duplicate >= 0) {
-			close(duplicate);
+			syscall(SYS_close, duplicate);
 		}
 		socket_bitmap_put_locked(&socket_bitmap, reserved);
 		goto out;
 	}
-	ring_fds[ring_fd_count++] = duplicate;
+	owned_fds[owned_fd_count++] = (struct mldr_owned_fd) {
+		.fd = duplicate, .role = role, .flags = flags, .closing = false,
+	};
 	result = duplicate;
+	if (role == MLDR_OWNED_FD_UNION) {
+		// Commit ownership before consuming the source. Fork must wait for
+		// this transient unregistered source to disappear as well.
+		++owned_fd_closes;
+		pthread_mutex_unlock(&socket_bitmap.mutex);
+		syscall(SYS_close, source);
+		pthread_mutex_lock(&socket_bitmap.mutex);
+		mldr_owned_fd_close_complete_locked();
+	}
 out:
 	pthread_mutex_unlock(&socket_bitmap.mutex);
 	mldr_restore_signals(&saved);
 	return result;
+}
+
+int __mldr_adopt_ring_fd(int source) {
+	// Ring callers still own their source on success and failure.
+	int result = mldr_adopt_owned_fd(source, MLDR_OWNED_FD_RING, 0);
+	return result < 0 ? -1 : result;
+}
+
+int __mldr_adopt_union_fd(int source, unsigned flags) {
+	if (flags & ~DSERVER_UNION_FD_KEEP_ON_FORK) {
+		return -EINVAL;
+	}
+	return mldr_adopt_owned_fd(source, MLDR_OWNED_FD_UNION, flags);
 }
 
 // perf#28 (ONE doorbell): adopt the process-wide Ring wake descriptor. The server duplicates its
@@ -2350,7 +2410,7 @@ int __mldr_ring_doorbell(int received) {
 
 bool __mldr_fd_is_internal(int fd) {
 	bool owned = false;
-	sigset_t saved;
+	signal_atomic_mask_t saved;
 	mldr_block_async_signals(&saved);
 	pthread_mutex_lock(&socket_bitmap.mutex);
 	if (fd >= 0 && fd <= socket_bitmap.highest) {
@@ -2363,40 +2423,66 @@ bool __mldr_fd_is_internal(int fd) {
 	return owned;
 }
 
-// perf#27 (lane lifecycle): release an adopted ring descriptor. The guest lane that owned it is being
-// torn down, so the loader must FORGET the number as well as close it -- leaving it in ring_fds[] would
-// make a later __mldr_postfork_child close a number the application may have since reused for something
-// else. Called from the guest's thread-exit path via the `dserver_release_ring_fd` elfcall.
-void __mldr_release_ring_fd(int fd) {
-	if (fd < 0) {
-		return;
-	}
-	sigset_t saved;
+static int mldr_release_owned_fd(int fd, enum mldr_owned_fd_role role) {
+	int result = -EBADF;
+	signal_atomic_mask_t saved;
 	mldr_block_async_signals(&saved);
 	pthread_mutex_lock(&socket_bitmap.mutex);
-	int found = 0;
-	for (size_t i = 0; i < ring_fd_count; ++i) {
-		if (ring_fds[i] == fd) {
-			socket_bitmap_put_locked(&socket_bitmap, fd);
-			ring_fds[i] = ring_fds[--ring_fd_count];
-			found = 1;
-			break;
+	for (size_t i = 0; i < owned_fd_count; ++i) {
+		if (owned_fds[i].fd != fd || owned_fds[i].role != role) {
+			continue;
 		}
+		if (owned_fds[i].closing) {
+			result = -EBUSY;
+			goto out;
+		}
+		owned_fds[i].closing = true;
+		++owned_fd_closes;
+		pthread_mutex_unlock(&socket_bitmap.mutex);
+		// No cancellation point or signal delivery between claiming the
+		// entry and completing close. Keep its reservation until close has
+		// returned, even on error; Linux close must never be retried.
+		result = syscall(SYS_close, fd) < 0 ? -errno : 0;
+		pthread_mutex_lock(&socket_bitmap.mutex);
+		// Other threads may have resized or compacted the list while the
+		// mutex was dropped, but cannot remove this CLOSING entry.
+		for (size_t j = 0; j < owned_fd_count; ++j) {
+			if (owned_fds[j].fd == fd && owned_fds[j].role == role) {
+				socket_bitmap_put_locked(&socket_bitmap, fd);
+				owned_fds[j] = owned_fds[--owned_fd_count];
+				break;
+			}
+		}
+		mldr_owned_fd_close_complete_locked();
+		break;
 	}
+out:
 	pthread_mutex_unlock(&socket_bitmap.mutex);
 	mldr_restore_signals(&saved);
-	// close outside the lock: an fd teardown may take the address-space lock in the kernel and we do not
-	// want to hold the fork-blocking registry mutex across it.
-	close(fd);
-	(void)found;
+	return result;
+}
+
+void __mldr_release_ring_fd(int fd) {
+	(void)mldr_release_owned_fd(fd, MLDR_OWNED_FD_RING);
+}
+
+int __mldr_release_union_fd(int fd) {
+	return mldr_release_owned_fd(fd, MLDR_OWNED_FD_UNION);
 }
 
 void __mldr_prefork_prepare(void) {
-	// Do not fork between installing an inherited ring FD and recording its
-	// ownership. The parent releases this lock on success and failure alike.
+	// Serialize ownership installation with fork and wait for native closes
+	// to finish before taking the fork snapshot.
 	// A guest signal handler may call close/fcntl and reenter this registry.
 	mldr_block_async_signals(&fork_signal_mask);
 	pthread_mutex_lock(&socket_bitmap.mutex);
+	while (owned_fd_closes != 0) {
+		uint32_t epoch = __atomic_load_n(&owned_fd_close_epoch, __ATOMIC_ACQUIRE);
+		pthread_mutex_unlock(&socket_bitmap.mutex);
+		// Unlike pthread_cond_wait, this is not a host cancellation point.
+		syscall(SYS_futex, &owned_fd_close_epoch, FUTEX_WAIT_PRIVATE, epoch, NULL, NULL, 0);
+		pthread_mutex_lock(&socket_bitmap.mutex);
+	}
 }
 
 void __mldr_postfork_parent(void) {
@@ -2413,16 +2499,22 @@ void __mldr_postfork_child(void) {
 		extern void __darling_thread_rpc_socket_invalidate(void);
 		__darling_thread_rpc_socket_invalidate();
 	}
-	socket_bitmap.mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 	__mldr_glibc_fork_reset_child();
-	// Close both guest images' inherited ring descriptors before any child
-	// RPC socket can reuse their numbers. Image-local reset must not close
-	// these saved numbers a second time.
-	for (size_t i = 0; i < ring_fd_count; ++i) {
-		close(ring_fds[i]);
-		socket_bitmap_put(&socket_bitmap, ring_fds[i]);
+	// Prepare held the bitmap lock with no native closes in flight. Use
+	// that quiescent snapshot directly: no allocation or reentrant locking.
+	size_t kept = 0;
+	for (size_t i = 0; i < owned_fd_count; ++i) {
+		struct mldr_owned_fd entry = owned_fds[i];
+		if (entry.role == MLDR_OWNED_FD_UNION &&
+				(entry.flags & DSERVER_UNION_FD_KEEP_ON_FORK)) {
+			owned_fds[kept++] = entry;
+			continue;
+		}
+		syscall(SYS_close, entry.fd);
+		socket_bitmap_put_locked(&socket_bitmap, entry.fd);
 	}
-	ring_fd_count = 0;
+	owned_fd_count = kept;
+	socket_bitmap.mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 	// The child does not inherit the parent's doorbell: the descriptor above was just closed and the
 	// child's first lane attach adopts its own. Writing a stale number here would be a wake for a
 	// descriptor the child no longer owns.

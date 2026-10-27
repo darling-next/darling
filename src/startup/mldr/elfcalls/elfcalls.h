@@ -14,6 +14,11 @@ struct darling_thread_create_callbacks {
 };
 
 typedef const struct darling_thread_create_callbacks* darling_thread_create_callbacks_t;
+// Union pins survive fork only when explicitly retained by the caller.
+enum {
+	DSERVER_UNION_FD_KEEP_ON_FORK = 1u,
+};
+
 
 struct elf_calls
 {
@@ -140,6 +145,16 @@ struct elf_calls
 	// the decision exactly as it owns the lane directory above. Pure accessor: no allocation, no
 	// environment scan, no RPC, no printing. APPENDED (see the note at the top of this struct).
 	uint32_t (*dserver_op_ledger_limit)(void);
+
+	// Process-wide union FD ownership, shared by normal and DYLD images.
+	// APPENDED: preserve every preceding loader/guest ABI field offset.
+	// Adopt returns a reserved duplicate sharing the source OFD and FD flags,
+	// consuming source only on success; failures are negative Linux errno.
+	int (*dserver_adopt_union_fd)(int fd, unsigned flags);
+	// Only a UNION entry may be released; reservation lasts through native
+	// close completion. Returns zero or negative Linux errno, even on close
+	// error the entry is forgotten. Unknown/wrong-role FDs are never closed.
+	int (*dserver_release_union_fd)(int fd);
 
 };
 

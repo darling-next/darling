@@ -73,6 +73,8 @@ extern void __mldr_prefork_prepare(void);
 extern void __mldr_postfork_parent(void);
 extern int __mldr_adopt_ring_fd(int fd);
 extern void __mldr_release_ring_fd(int fd);
+extern int __mldr_adopt_union_fd(int fd, unsigned flags);
+extern int __mldr_release_union_fd(int fd);
 // perf#28: the process-wide Ring doorbell adopt (see mldr.c).
 extern bool __mldr_fd_is_internal(int fd);
 extern void __mldr_close_rpc_socket(int socket);
@@ -170,4 +172,6 @@ calls->dserver_ring_doorbell = __mldr_ring_doorbell;
 	calls->dserver_op_ledger_limit = __mldr_op_ledger_limit;
 	calls->prefork_prepare = __mldr_prefork_prepare;
 	calls->postfork_parent = __mldr_postfork_parent;
+	calls->dserver_adopt_union_fd = __mldr_adopt_union_fd;
+	calls->dserver_release_union_fd = __mldr_release_union_fd;
 }

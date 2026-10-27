@@ -73,6 +73,27 @@ normal `stock` installation. Compile it with the guest CLT and run it in a fresh
 prefix; it checks shipping resources and compares paginated bulk directory
 enumeration against `readdir`, including rewind. It does not inject system files.
 
+The normal `DARLING_EUNION` build resolves the immutable installation tree and
+writable guest prefix in production; it does not require a FUSE overlay.
+Typed mutation transactions authorize copy-up, namespace changes and metadata
+updates before their native effects. Managed writes never target the lower
+image, while a read-only lower open performs no eager copy. Internal whiteout
+and opacity attributes are not guest xattrs. Explicit `/Volumes/SystemRoot`
+escapes remain unmanaged host operations, not sandboxed image access.
+
+Descriptor promotion retains opened-object authority after unlink or replacement
+and preserves explicit dup lineages, flags and offsets. Directory aliases share
+one merged cursor and rewind state, including through promotion. Namespace
+admission and protected native-FD ownership span processes and runtime images;
+the virtual alias/cursor registries themselves remain image-local. Copy-up does
+not provide synthetic stable inode numbers or universal inherited-cursor
+coherence across processes/images.
+
+`tests/src/eunion_{state,mutation_state,xattr_state,fd_lifetime}_guest.c` provide
+guest regressions for these transitions using the optional normally installed
+`tests-data`. Compile and run them with guest CLT against the complete matching
+kernel, dyld and mldr installation, not injected replacement runtime libraries.
+
 Kernel `__simple_kprintf` diagnostics use the existing process-management plane,
 including before a calling thread has attached its RPC ring. The ordinary server
 `Kprintf` call still owns guest-memory copying, trailing-whitespace removal and

@@ -50,9 +50,9 @@ extern struct sockaddr_un __dserver_socket_address_data;
 #define dserver_rpc_hooks_memcpy memcpy
 
 // perf#29 (GENERATED-WRAPPER RING ROUTE, MLDR BINDING): mldr compiles the SAME generated rpc.c,
-// but it runs before any lane machinery exists (the lane table lives in the kernel image), and it
-// cannot include the emulation header tree. It therefore binds the shared routing hook to a stub
-// that always reports NOT_TAKEN -- so the generated policy table stays ONE table, the semantics of
+// but it runs before any lane machinery exists (the lane table lives in the kernel image).
+// It therefore binds the shared routing hook to a stub that always reports NOT_TAKEN --
+// so the generated policy table stays ONE table, the semantics of
 // "only NOT_TAKEN falls through to the datagram path" is unchanged, and the datagram path itself is
 // untouched. The stub COUNTS and names its callers, which is what identifies mldr as the sender of
 // the bootstrap UDS traffic the census reports.
@@ -246,7 +246,7 @@ extern int __dserver_main_thread_socket_fd;
 
 #define dserver_rpc_hooks_printf(...) fprintf(stderr, ## __VA_ARGS__)
 
-#define dserver_rpc_hooks_atomic_save_t sigset_t
+#define dserver_rpc_hooks_atomic_save_t signal_atomic_mask_t
 
 #define dserver_rpc_hooks_atomic_begin mldr_block_async_signals
 #define dserver_rpc_hooks_atomic_end mldr_restore_signals
