@@ -29,6 +29,8 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <signal.h>
+#include <ucontext.h>
 // MEASURED (doc section 183): the loader replaces the guest's environment while a guest image is being set up,
 // so a `getenv` consulted from inside long-running loader code stops answering -- the process sat in its reply loop
 // for thirty seconds with every diagnostic suppressed because the gate read NULL. The decision is therefore taken
