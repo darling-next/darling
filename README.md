@@ -89,6 +89,9 @@ consumption. Constructing, queued and unread completed requests are not free
 slots, and a published call is not republished on a timer. An abandoned
 reservation fails closed for that process incarnation; restart the process
 rather than reclaiming a slot whose owner may still be alive.
+Retained completion mappings are not active courier recipients. Descriptor
+delivery requires a live generation and a connection authenticated to that exact
+process; another process's loader connection is never a fallback route.
 
 Unix socket translation keeps Darwin's 104-byte pathname capacity separate from
 Linux's 108-byte host capacity. Expanded host pathnames must include a terminator;
