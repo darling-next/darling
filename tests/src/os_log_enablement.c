@@ -27,6 +27,15 @@ static void release_previous(hook_fn previous)
 		Block_release(previous);
 }
 
+static void expect_message(const char *actual, const char *expected)
+{
+	if (actual == NULL || strcmp(actual, expected) != 0) {
+		fprintf(stderr, "os_log message mismatch: expected <%s>, actual <%s>\n",
+			expected, actual == NULL ? "(null)" : actual);
+		abort();
+	}
+}
+
 static void check_hooks(get_type_fn get_type, set_hook_fn set_hook,
 	copy_message_fn copy_message)
 {
@@ -59,7 +68,7 @@ static void check_hooks(get_type_fn get_type, set_hook_fn set_hook,
 			if (index == 4) {
 				strcpy(observed->mutable_public, "after-value");
 				char *again = copy_message(message);
-				assert(strcmp(again, "before-value") == 0);
+				expect_message(again, "before-value");
 				free(again);
 			}
 			/* A recursive emitter must not reenter this callback. */
@@ -70,7 +79,7 @@ static void check_hooks(get_type_fn get_type, set_hook_fn set_hook,
 	assert(state.calls == 0);
 	os_log_with_type(OS_LOG_DEFAULT, OS_LOG_TYPE_ERROR, "%{public}s", "public-value");
 	assert(state.calls == 1);
-	assert(strcmp(state.messages[0], "public-value") == 0);
+	expect_message(state.messages[0], "public-value");
 
 	/* Raising the requested threshold preserves the historical lower rank. */
 	hook_fn active = set_hook(OS_LOG_TYPE_FAULT, quiet);
@@ -78,22 +87,22 @@ static void check_hooks(get_type_fn get_type, set_hook_fn set_hook,
 	Block_release(active);
 	os_log_with_type(OS_LOG_DEFAULT, OS_LOG_TYPE_ERROR, "%{private}s", "secret");
 	assert(state.calls == 2);
-	assert(strcmp(state.messages[1], "<private>") == 0);
+	expect_message(state.messages[1], "<private>");
 	/* Default privacy follows dyld immutability, not image membership alone. */
 	os_log_with_type(OS_LOG_DEFAULT, OS_LOG_TYPE_FAULT, "%s", immutable_message);
 	assert(state.calls == 3);
-	assert(strcmp(state.messages[2], immutable_message) == 0);
+	expect_message(state.messages[2], immutable_message);
 	os_log_with_type(OS_LOG_DEFAULT, OS_LOG_TYPE_FAULT, "%s",
 		(const char *)writable_message);
 	assert(state.calls == 4);
-	assert(strcmp(state.messages[3], "<private>") == 0);
+	expect_message(state.messages[3], "<private>");
 	/* The record snapshots arguments before calling client code. */
 	os_log_with_type(OS_LOG_DEFAULT, OS_LOG_TYPE_ERROR, "%{public}s", mutable_public);
 	assert(state.calls == 5);
-	assert(strcmp(mutable_public, "after-value") == 0);
-	assert(strcmp(state.messages[4], "before-value") == 0);
+	expect_message(mutable_public, "after-value");
+	expect_message(state.messages[4], "before-value");
 	/* Every returned string remains caller-owned after later emissions. */
-	assert(strcmp(state.messages[0], "public-value") == 0);
+	expect_message(state.messages[0], "public-value");
 	for (unsigned int index = 0; index < 5; ++index)
 		free(state.messages[index]);
 
@@ -107,7 +116,7 @@ static void check_hooks(get_type_fn get_type, set_hook_fn set_hook,
 			release_previous(set_hook(OS_LOG_TYPE_FAULT, quiet));
 			assert(get_type(message) == type);
 			char *copy = copy_message(message);
-			assert(strcmp(copy, "replacement-still-alive") == 0);
+			expect_message(copy, "replacement-still-alive");
 			free(copy);
 		});
 	release_previous(set_hook(OS_LOG_TYPE_FAULT, replacement_hook));
