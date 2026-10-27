@@ -437,7 +437,7 @@ static void* darling_thread_entry(void* p)
 			for (int t = 0; t < 2000 && !slot; ++t) {
 				uint32_t expect = DSERVER_PROCESS_CONTROL_IDLE;
 				if (__atomic_compare_exchange_n(&page->request_state, &expect,
-				        DSERVER_PROCESS_CONTROL_PENDING, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+				        DSERVER_PROCESS_CONTROL_CLAIMED, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
 					slot = 1;
 					break;
 				}
@@ -445,13 +445,7 @@ static void* darling_thread_entry(void* p)
 				nanosleep(&ts, NULL);
 			}
 			if (slot) {
-				static uint32_t checkin_seq = 0;
-				// ATOMIC (doc section 70): THE MEASURED CAUSE. Threads of one process call this concurrently, and a
-				// plain ++ hands two of them the same sequence; the server answers one, the other reads a foreign
-				// reply_seq, refuses the result and falls back to the datagram -- creating the per-thread RPC socket
-				// this route exists to avoid. Intersecting the socket-creation tids with the tids the server
-				// serviced showed 19 of 19 had been serviced with status 0, leaving only this collision.
-				uint32_t mine = __atomic_add_fetch(&checkin_seq, 1, __ATOMIC_RELAXED);
+				uint32_t mine = DSERVER_PROCESS_CONTROL_NEXT_SEQ(page);
 				checkin_pubseq = mine;
 				page->reply_state = DSERVER_PROCESS_CONTROL_IDLE;
 				page->request_op = DSERVER_PROCESS_CONTROL_OP_CHECKIN;
@@ -466,6 +460,7 @@ static void* darling_thread_entry(void* p)
 				page->request_payload[1] = (uint64_t)(unsigned)syscall(SYS_gettid);
 				page->request_payload[2] = 0;   // no lifetime descriptor on the thread-create checkin
 				page->request_payload[3] = (uint64_t)(uintptr_t)&dummy_stack_variable;
+				page->request_tid = (int32_t)syscall(SYS_gettid);
 				__atomic_store_n(&page->request_state, DSERVER_PROCESS_CONTROL_PENDING, __ATOMIC_RELEASE);
 				{
 					extern int __mldr_fd_courier_socket(void);
@@ -483,7 +478,7 @@ char wake = 0;
 					}
 				}
 				int spins = 0, claimed = 0;
-				while (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) != DSERVER_PROCESS_CONTROL_DONE) {
+				while (!DSERVER_PROCESS_CONTROL_REPLIED(page, mine)) {
 					if (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_CLAIMED) {
 						claimed = 1;
 					}
@@ -491,7 +486,7 @@ char wake = 0;
 					{
 						uint32_t seen = page->futex;
 						struct timespec ts = {0, claimed ? 2000000L : 1000000L};
-						if (page->reply_state == DSERVER_PROCESS_CONTROL_DONE) { break; }
+						if (DSERVER_PROCESS_CONTROL_REPLIED(page, mine)) { break; }
 						syscall(SYS_futex, &page->futex, FUTEX_WAIT, (int)seen, &ts, NULL, 0);
 					}
 				}
@@ -502,7 +497,6 @@ char wake = 0;
 				uint32_t seenState = __atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE);
 				uint32_t seenSeq = page->reply_seq;
 				int32_t seenStatus = page->reply_status;
-	{ uint32_t _st = __atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE); if (_st == DSERVER_PROCESS_CONTROL_PENDING) { static const char _m[] = "[release-drops-pending] site=threads.c:350\n"; long _a = 1, _d = 2, _s = (long)_m, _n = sizeof(_m) - 1; __asm__ volatile("syscall" : "+a"(_a), "+D"(_d), "+S"(_s), "+d"(_n) : : "rcx", "r11", "memory"); } }
 				DSERVER_PROCESS_CONTROL_RELEASE(page);
 				if (seenState == DSERVER_PROCESS_CONTROL_DONE && seenSeq == mine && seenStatus == 0) {
 					checked_in = 1;
@@ -518,14 +512,6 @@ char wake = 0;
 						MLDR_TAG("[checkin-diag] pid=%d tid=%d state=%u seq=%u mine=%u status=%d spins=%d\n",
 							(int)getpid(), (int)syscall(SYS_gettid), seenState, seenSeq, mine, (int)seenStatus, spins);
 					}
-				} else if (claimed || checkin_pubseq != 0) {
-					if (!claimed) {
-						MLDR_TAG("[checkin-reply-unseen tid=%d pub=%u seen=%u seenstate=0x%x -- published, reply overtaken]\n",
-							(int)syscall(SYS_gettid), (unsigned)checkin_pubseq, (unsigned)seenSeq, (unsigned)seenState);
-					}
-					// the server owns the checkin; it is the same operation, so treat a completion we could
-					// not read as done rather than duplicating it on the datagram
-					checked_in = 1;
 				}
 			}
 		}
@@ -714,13 +700,12 @@ int __darling_thread_terminate(void* stackaddr,
 			for (int t = 0; t < 2000 && !slot; ++t) {
 				uint32_t expect = DSERVER_PROCESS_CONTROL_IDLE;
 				if (__atomic_compare_exchange_n(&page->request_state, &expect,
-				        DSERVER_PROCESS_CONTROL_PENDING, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) { slot = 1; break; }
+				        DSERVER_PROCESS_CONTROL_CLAIMED, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) { slot = 1; break; }
 				struct timespec ts = {0, 1000000L};
 				nanosleep(&ts, NULL);
 			}
 			if (slot) {
-				static uint32_t exit_checkout_seq = 0;
-				uint32_t mine = __atomic_add_fetch(&exit_checkout_seq, 1, __ATOMIC_RELAXED);  // atomic: doc 70
+				uint32_t mine = DSERVER_PROCESS_CONTROL_NEXT_SEQ(page);
 				checkout_pubseq = mine;
 				page->reply_state = DSERVER_PROCESS_CONTROL_IDLE;
 				page->request_op = DSERVER_PROCESS_CONTROL_OP_CHECKOUT;
@@ -729,6 +714,7 @@ int __darling_thread_terminate(void* stackaddr,
 				page->request_payload[1] = (uint64_t)(unsigned)syscall(SYS_gettid);
 				page->request_payload[2] = 0;
 				page->request_payload[3] = 1u;
+				page->request_tid = (int32_t)syscall(SYS_gettid);
 				__atomic_store_n(&page->request_state, DSERVER_PROCESS_CONTROL_PENDING, __ATOMIC_RELEASE);
 				{
 					extern int __mldr_fd_courier_socket(void);
@@ -746,13 +732,13 @@ char wake = 0;
 					}
 				}
 				int spins = 0, claimed = 0;
-				while (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) != DSERVER_PROCESS_CONTROL_DONE) {
+				while (!DSERVER_PROCESS_CONTROL_REPLIED(page, mine)) {
 					if (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_CLAIMED) { claimed = 1; }
 					if (++spins < 20000) { continue; }
 					{
 						uint32_t seen = page->futex;
 						struct timespec ts = {0, claimed ? 2000000L : 1000000L};
-						if (page->reply_state == DSERVER_PROCESS_CONTROL_DONE) { break; }
+						if (DSERVER_PROCESS_CONTROL_REPLIED(page, mine)) { break; }
 						syscall(SYS_futex, &page->futex, FUTEX_WAIT, (int)seen, &ts, NULL, 0);
 					}
 				}
@@ -761,11 +747,10 @@ char wake = 0;
 				uint32_t seenSeq = page->reply_seq;
 				int32_t seenStatus = page->reply_status;
 				checkout_seenState = seenState; checkout_seenSeq = seenSeq; checkout_claimed = claimed;
-	{ uint32_t _st = __atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE); if (_st == DSERVER_PROCESS_CONTROL_PENDING) { static const char _m[] = "[release-drops-pending] site=threads.c:531\n"; long _a = 1, _d = 2, _s = (long)_m, _n = sizeof(_m) - 1; __asm__ volatile("syscall" : "+a"(_a), "+D"(_d), "+S"(_s), "+d"(_n) : : "rcx", "r11", "memory"); } }
 				DSERVER_PROCESS_CONTROL_RELEASE(page);
 				if (seenState == DSERVER_PROCESS_CONTROL_DONE && seenSeq == mine) {
-					checkout_result = page->reply_status; checkout_via_page = 1;
-				} else if (claimed) { checkout_result = 0; checkout_via_page = 1; }
+					checkout_result = seenStatus; checkout_via_page = 1;
+				}
 			}
 		}
 	}

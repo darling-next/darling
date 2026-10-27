@@ -321,6 +321,8 @@ static const char* __mldr_diag_image(const char* arg0) {
 
 // Read-only view for diagnostics: the POINTER ONLY, never a call that may create the page.
 static struct dserver_process_control* mldr_process_control_page_readonly(void);
+static int __mldr_process_control_request_once(uint32_t op, uint64_t p0, uint64_t p1,
+	uint64_t p2, uint64_t p3, uint64_t* outReply0);
 
 // perf#30 LOADER CHECKIN ORDERING: the deferred checkin's context. Values only -- see the note at the
 // recording site: the recording frame returns before the deferred call runs.
@@ -694,12 +696,12 @@ int main(int argc, char** argv, char** envp)
 		 * whether the plane should hand a reply to its own publisher instead of leaving it to a sequence
 		 * comparison -- is dar-rcnr/dar-b5pe and is not settled by this retry. */
 		int trapStatus = -1;
-		struct dserver_process_control* trapPage = __mldr_process_control_page();
+		uint64_t trapReply = 0;
 		for (int attempt = 1; attempt <= 3 && main_thread_port == 0; ++attempt) {
-			trapStatus = __mldr_process_control_request(DSERVER_PROCESS_CONTROL_OP_THREAD_SELF_BOOTSTRAP,
-				(uint64_t)(unsigned)gettid(), archForTrap, 0, 0);
-			if (trapStatus == 0 && trapPage != NULL) {
-				main_thread_port = (uint32_t)(trapPage->reply_payload[0] & 0xffffffffu);
+			trapStatus = __mldr_process_control_request_once(DSERVER_PROCESS_CONTROL_OP_THREAD_SELF_BOOTSTRAP,
+				(uint64_t)(unsigned)gettid(), archForTrap, 0, 0, &trapReply);
+			if (trapStatus == 0) {
+				main_thread_port = (uint32_t)(trapReply & 0xffffffffu);
 			}
 			if (main_thread_port == 0 && attempt < 3) {
 				mldr_diagf("[mldr-ctl] thread-self-bootstrap retry attempt=%d status=%d\n", attempt, trapStatus);
@@ -1640,12 +1642,12 @@ void* __mldr_process_control_page(void) {
 
 // One request through the page: publish, wait for the server's answer on the same page, read the status.
 // The wait is a bounded spin plus a futex sleep -- never a datagram, never a lane.
-static int __mldr_process_control_request_once(uint32_t op, uint64_t p0, uint64_t p1, uint64_t p2, uint64_t p3) {
+static int __mldr_process_control_request_once(uint32_t op, uint64_t p0, uint64_t p1, uint64_t p2, uint64_t p3,
+	uint64_t* outReply0) {
 	if (g_process_control_page == NULL) {
 		return -1;
 	}
 	struct dserver_process_control* page = g_process_control_page;
-	static uint32_t seq = 0;
 	// perf#30 MAILBOX CLAIM: ONE outstanding request per page is the model, so the slot is CLAIMED with a
 	// compare-exchange instead of published over. MEASURED: this function is the publisher for every op
 	// except the guest attach, and publishing over another request overwrites `request_seq` -- the server
@@ -1689,17 +1691,12 @@ static int __mldr_process_control_request_once(uint32_t op, uint64_t p0, uint64_
 		mldr_diagf("[mldr-ctl] request pid=%d op=%u page=%p memfd=%d global=%p dev=%llu ino=%llu\n",
 			(int)getpid(), op, (void*)page, __mldr_process_control_memfd, (void*)g_process_control_page, dev_, ino_);
 	}
-	// perf#30 (doc section 195): a slot left at DONE by the SERVER's completion store (which races this side's
-	// RELEASE and can therefore land after it) is CLAIMABLE. MEASURED: with only IDLE claimable, one lost race
-	// wedged the slot at DONE forever, every later request was refused with -3, and the guest fell back to the
-	// datagram route -- seen as `seq=3 after-dyld status=-3` plus "Failed to tell darlingserver about our dyld
-	// info". The publisher reads its ANSWER from reply_state, never from this flag, so reusing a completed slot
-	// is exactly what "the publisher owns the slot until it has read its answer" already means.
+	// Only IDLE is free; DONE belongs to the publisher reading its answer.
 	int slot = 0;
 	for (int t = 0; t < 2000 && !slot; ++t) {
-		uint32_t expect = (t % 2 == 0) ? DSERVER_PROCESS_CONTROL_IDLE : DSERVER_PROCESS_CONTROL_DONE;
+		uint32_t expect = DSERVER_PROCESS_CONTROL_IDLE;
 		if (__atomic_compare_exchange_n(&page->request_state, &expect,
-		        DSERVER_PROCESS_CONTROL_PENDING, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+		        DSERVER_PROCESS_CONTROL_CLAIMED, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
 			slot = 1;
 			break;
 		}
@@ -1718,11 +1715,7 @@ static int __mldr_process_control_request_once(uint32_t op, uint64_t p0, uint64_
 		}
 		return -3;  // no mailbox slot: the caller falls back to its datagram route
 	}
-	// ATOMIC (doc section 70): the shared publisher is called from several threads of one process, and a
-	// plain ++ can hand two of them the same sequence -- the server then answers one, and the other refuses
-	// the result and repeats its operation on the datagram. MEASURED: 19 of 19 socket-creating threads had
-	// their page request serviced with status 0, which leaves this collision as the remaining cause.
-	uint32_t mine = __atomic_add_fetch(&seq, 1, __ATOMIC_RELAXED);
+	uint32_t mine = DSERVER_PROCESS_CONTROL_NEXT_SEQ(page);
 	__atomic_store_n(&page->reply_state, DSERVER_PROCESS_CONTROL_IDLE, __ATOMIC_RELEASE);
 	page->reply_payload[0] = 0;   // doc 91: never inherit an earlier request's answer
 	page->reply_payload[1] = 0;
@@ -1732,6 +1725,8 @@ static int __mldr_process_control_request_once(uint32_t op, uint64_t p0, uint64_
 	page->request_payload[1] = p1;
 	page->request_payload[2] = p2;
 	page->request_payload[3] = p3;
+	page->request_tid = (int32_t)syscall(SYS_gettid);
+	__atomic_store_n(&page->request_state, DSERVER_PROCESS_CONTROL_PENDING, __ATOMIC_RELEASE);
 	// Wake the server on the channel it already owns: the PROCESS doorbell. The management page is
 	// shared memory, so there is no event of its own, and the server must not poll for one on the hot
 	// path -- ringing the doorbell is what turns "a request appeared" into "the loop runs a pass",
@@ -1779,131 +1774,13 @@ char wake = 0;
 		mldr_diagf("[mldr-ctl] planeloop BEGIN pid=%d op=%u mine=%u state=%u\n", (int)getpid(), op, mine,
 			__atomic_load_n(&page->request_state, __ATOMIC_ACQUIRE));
 	}
-	// perf#30 (doc section 187): UNCONDITIONAL, ungated progress. Every reading so far has been an inference
-	// from which prints appeared, and two of those prints were themselves measured to be unreliable (a blocking
-	// sink, an environment that is replaced mid-boot). This counter has no gate at all: it is written to the
-	// diagnostic file directly, so "the loop advanced this far and no further" is read, not deduced.
-	unsigned long long iterations = 0;
-	int spins = 0;
-	int claimed = 0;
-	// perf#30 LOADER CHECKIN ORDERING (doc section 168): BOUNDED, and it says why it gave up.
-	//
-	// This loop had no bound while every other wait in this file does. The consequence was measured: the
-	// second incarnation (the exec of launchd) publishes and then hangs here forever, so the boot goes silent
-	// with no launchd at all and -- worse for diagnosis -- the guest can say NOTHING about where it stopped,
-	// because the diagnostic that would report it comes after this loop. An unbounded wait whose failure is
-	// invisible is the "instrument that cannot answer" class this work keeps recording.
-	//
-	// The bound is generous (about ten seconds of futex waits) because this is a bootstrap path, and on expiry
-	// the request is abandoned and the caller's datagram route runs, exactly as for a refused slot.
-	int waited_ms = 0;
-	// perf#30 (doc section 191): ATOMIC ON EVERY ITERATION. MEASURED: this condition and the `break` below were
-	// plain loads, so the compiler may keep the value in a register and the loop then never observes the reply
-	// the server writes -- which is exactly the shape of the stall (the loop keeps spinning with `waited=0`), and
-	// the completion is written by ANOTHER PROCESS, so no compiler may cache it. The complaints this project
-	// already records about hoisting are the same defect seen from the other side.
-	while (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) != DSERVER_PROCESS_CONTROL_DONE) {
-		// CLAIMED is ownership transfer, not completion: from here the caller waits for the server's
-		// transaction to finish rather than giving up and duplicating the operation elsewhere.
-		if (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_CLAIMED) {
-			claimed = 1;
-		}
-		if ((++iterations % 1000) == 0 && mldr_diag_fd >= 0) {
-			mldr_diagf("[mldr-ctl] iter=%llu waited=%d reply=%u seq=%u\n", iterations, waited_ms,
-				__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE), page->reply_seq);
-		}
-		if (++spins < 20000) {
-			continue; // the server services the page on its next loop pass
-		}
-		if (waited_ms > 10000) {
-			if (mldr_diag_on()) {
-				// perf#30 (doc section 177): the page's IDENTITY, not its address. Addresses cannot be compared
-				// across address spaces; the memfd inode can, and the server prints the same field for the
-				// region it holds. Equal inodes mean one memory and the defect is in the read; different
-				// inodes mean the guest waits on a page the server does not hold.
-				{
-					struct stat _st;
-					unsigned long long _ino = 0;
-					if (__mldr_process_control_memfd >= 0 && fstat(__mldr_process_control_memfd, &_st) == 0) {
-						_ino = (unsigned long long)_st.st_ino;
-					}
-					mldr_diagf("[mldr-ctl] plane-page-identity pid=%d memfd=%d ino=%llu\n",
-						(int)getpid(), __mldr_process_control_memfd, _ino);
-				}
-				mldr_diagf("[mldr-ctl] plane-request TIMEOUT pid=%d op=%u seq=%u state=%u claimed=%d"
-					" transport_ready=%d page=%p image=%s\n", (int)getpid(), op, mine,
-					__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE), claimed,
-					__atomic_load_n(&page->transport_ready, __ATOMIC_ACQUIRE), (void*)page,
-					__mldr_diag_image(mldr_load_results.argv != NULL ? mldr_load_results.argv[0] : NULL));
-			}
-			return -4; // abandoned: the caller falls back to its datagram route
-		}
-		waited_ms += claimed ? 2 : 1;
-		// perf#30 (doc section 189): ONE BYTE per completed sleep, with no formatting, no gate and no condition
-		// beyond the fd being open. Every other reading in this stretch was an inference from formatted prints,
-		// and two of those print paths were themselves measured to be the blocker. A byte count cannot lie about
-		// how many times the loop came round.
-		if (mldr_diag_fd >= 0) {
-			char dot = '.';
-			long a = 1, d = mldr_diag_fd, sp2 = (long)&dot, l = 1;
-			__asm__ volatile("syscall" : "+a"(a), "+D"(d), "+S"(sp2), "+d"(l) : : "rcx", "r11", "memory");
-		}
-		// perf#30 (doc section 181): a heartbeat INSIDE the loop, with the identity that actually identifies the
-		// memory -- (dev, ino) of the memfd, not the inode number alone, which is unique only within a
-		// filesystem and was the defect that hid this contradiction. It also prints the values the guest reads,
-		// so "the server wrote DONE and the guest reads 0" and "the guest reads DONE and does not proceed" are
-		// distinguishable in one run instead of in the next three.
-		if ((waited_ms % 1000) == 0 && mldr_diag_on()) {
-			struct stat _st;
-			unsigned long long _dev = 0, _ino = 0;
-			if (__mldr_process_control_memfd >= 0 && fstat(__mldr_process_control_memfd, &_st) == 0) {
-				_dev = (unsigned long long)_st.st_dev;
-				_ino = (unsigned long long)_st.st_ino;
-			}
-			mldr_diagf("[mldr-ctl] planeloop-heartbeat waited=%d reply_state=%u reply_seq=%u request_state=%u"
-				" mine=%u payload0=%llx payload1=%llx memfd=%d dev=%llu ino=%llu\n", waited_ms,
-				__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE), page->reply_seq,
-				__atomic_load_n(&page->request_state, __ATOMIC_ACQUIRE), mine,
-				(unsigned long long)page->reply_payload[0], (unsigned long long)page->reply_payload[1],
-				__mldr_process_control_memfd, _dev, _ino);
-		}
-		// ORDER: read the futex word, THEN the state, THEN wait on the value read. This is the canonical
-		// sequence that makes a lost wake impossible: if the server bumped the word before we read it, the
-		// state check below already sees DONE; if it bumps after, the value differs and FUTEX_WAIT returns
-		// EAGAIN instead of sleeping.
+	// Published requests retain borrowed memory until actual matching completion.
+	while (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) != DSERVER_PROCESS_CONTROL_DONE
+	       || page->reply_seq != mine) {
 		uint32_t seen = __atomic_load_n(&page->futex, __ATOMIC_ACQUIRE);
-		if (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_DONE) {
-			break;
-		}
-		{
-			struct timespec ts = {0, claimed ? 2000000L : 1000000L};
-			// perf#30 (doc section 183): the two lines that distinguish "the wait never returns" from "it
-			// returns and something after it parks". MEASURED: the loop prints its heartbeat at waited=1000
-			// and then nothing for the rest of the run, with the process observed parked in futex -- and those
-			// two facts together cannot both be explained by a bounded wait that is known to be bounded.
-			if ((waited_ms % 1000) == 0 && mldr_diag_on()) {
-				mldr_diagf("[mldr-ctl] futex-wait BEGIN waited=%d seen=%u timeout_ns=%ld\n", waited_ms,
-					seen, (long)ts.tv_nsec);
-			}
-			// perf#30 (doc section 185): the PRIMITIVE changed, not another reading. MEASURED: a FUTEX_WAIT on
-			// the page's own word, with a timespec the kernel reads as one millisecond, did not return for
-			// ~27 s of observation, while the same word and value are exactly what the arguments said. The
-			// kernel can always time out a clock_nanosleep, so the polling case uses one; the futex wake stays
-			// as an optimisation whose loss costs latency only.
-			// perf#30 (doc section 190): NO TIMEOUT. MEASURED: the loop completed exactly 995 slept iterations
-			// and then the last sleep never returned, with the tracer showing the same thread in the same wait
-			// across the whole observation window -- and the earlier futex anomaly was the same shape (a
-			// one-millisecond relative timeout that did not expire). A relative timeout is evaluated against
-			// the process's clock, and this process's clock is the GUEST's: when nothing else is pending, guest
-			// timers do not advance, so a timeout-based wait can park indefinitely while a WAKE always works.
-			// The server writes reply_state and FUTEX_WAKEs the page on completion, so the wait is woken by the
-			// event it is waiting for; the timeout was never the mechanism, it was the fallback.
-			long fret = syscall(SYS_futex, &page->futex, FUTEX_WAIT, (int)seen, NULL, NULL, 0);
-			if ((waited_ms % 1000) == 0 && mldr_diag_on()) {
-				mldr_diagf("[mldr-ctl] futex-wait DONE waited=%d ret=%ld futex=%u reply=%u\n", waited_ms,
-					fret, page->futex, __atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE));
-			}
-		}
+		if (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_DONE
+		    && page->reply_seq == mine) { break; }
+		syscall(SYS_futex, &page->futex, FUTEX_WAIT, (int)seen, NULL, NULL, 0);
 	}
 	// The publisher owns the slot until it has read its own answer (doc section 67) -- and the answer must be
 	// READ BEFORE the release (doc section 71): releasing first lets the next thread claim the slot and
@@ -1912,52 +1789,16 @@ char wake = 0;
 	// per-thread RPC socket creations.
 	uint32_t seenSeq = page->reply_seq;
 	int32_t seenStatus = page->reply_status;
-	{ uint32_t _st = __atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE); if (_st == DSERVER_PROCESS_CONTROL_PENDING) { static const char _m[] = "[release-drops-pending] site=mldr.c:1347\n"; long _a = 1, _d = 2, _s = (long)_m, _n = sizeof(_m) - 1; __asm__ volatile("syscall" : "+a"(_a), "+D"(_d), "+S"(_s), "+d"(_n) : : "rcx", "r11", "memory"); } }
-	/* TRACED EXPERIMENT (dar-b5pe): a give-up that would take back a slot the server owns announces itself and leaves
-	 * the slot alone. Only the LOADER is changed here, so a boot failure that persists attributes to this site rather
-	 * than to the release macro as a whole. */
-	if (__atomic_load_n(&(page)->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_CLAIMED) {
-		static int __mldr_held_1 = 0;
-		if (!__mldr_held_1) {
-			__mldr_held_1 = 1;
-			MLDR_TAG("[mldr-release-held-claimed] site=mldr.c:1896 tid=%d op=%u state=%u rstate=%u\n",
-				(int)syscall(SYS_gettid),
-				(unsigned)__atomic_load_n(&(page)->request_op, __ATOMIC_ACQUIRE),
-				(unsigned)__atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE),
-				(unsigned)__atomic_load_n(&(page)->reply_state, __ATOMIC_ACQUIRE));
-			fflush(stderr);
-		}
-	} else {
-		// doc 195: the server's DONE store races this release, so clear whatever the completed slot holds
-		// (PENDING or DONE) instead of a CAS that can lose the race and leave the page wedged at DONE.
-		DSERVER_PROCESS_CONTROL_RELEASE(page);
-	}
+	if (outReply0) { *outReply0 = page->reply_payload[0]; }
+	DSERVER_PROCESS_CONTROL_RELEASE(page);
 	if (seenSeq != mine) {
 		return -2; // a stale answer: never treated as success
 	}
 	return seenStatus;
 }
 
-/* A LOADER REQUEST THAT DID NOT GET ITS OWN ANSWER IS RETRIED, BOUNDED (dar-4cp9). MEASURED root cause of the
- * residual boot stall: __mldr_process_control_request_once returns -2 when the reply sequence is not the one it
- * published (its wait ran out with the slot still PENDING, printed as release-drops-pending), and the loader's
- * caller treats ANY negative as fatal -- `Failed to tell darlingserver about our executable path` and exit(1),
- * which is precisely the 15-line boot failure whose guest disappears with no denial and no signal. A retry is the
- * same remedy used for the guest-side and server-side plane paths and is safe for the same reason: the request
- * map is keyed by (pid, seq), so a new sequence is a NEW transaction. Only -2 is retried -- a real server status
- * is an answer and is returned unchanged -- and the attempts are bounded at three. */
 int __mldr_process_control_request(uint32_t op, uint64_t p0, uint64_t p1, uint64_t p2, uint64_t p3) {
-	int rc = -1;
-	for (int attempt = 0; attempt < 3; ++attempt) {
-		rc = __mldr_process_control_request_once(op, p0, p1, p2, p3);
-		if (rc != -2) {
-			return rc;
-		}
-		if (mldr_diag_on()) {
-			mldr_diagf("[mldr-ctl] request-retry op=%u attempt=%d\n", (unsigned)op, attempt + 1);
-		}
-	}
-	return rc;
+	return __mldr_process_control_request_once(op, p0, p1, p2, p3, NULL);
 }
 
 // perf#28d (round 49p): the loader RECEIVES descriptors as well as sending them -- the process doorbell
@@ -2280,7 +2121,7 @@ void* __mldr_ring_lane_seed(void) {
 				for (int t = 0; t < 2000 && !slot; ++t) {
 					uint32_t expect = DSERVER_PROCESS_CONTROL_IDLE;
 					if (__atomic_compare_exchange_n(&page->request_state, &expect,
-					        DSERVER_PROCESS_CONTROL_PENDING, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+					        DSERVER_PROCESS_CONTROL_CLAIMED, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
 						slot = 1;
 						break;
 					}
@@ -2288,8 +2129,7 @@ void* __mldr_ring_lane_seed(void) {
 					nanosleep(&ts, NULL);
 				}
 				if (slot) {
-					static uint32_t seed_seq = 0;
-					uint32_t mine = __atomic_add_fetch(&seed_seq, 1, __ATOMIC_RELAXED);  // atomic: doc section 70
+					uint32_t mine = DSERVER_PROCESS_CONTROL_NEXT_SEQ(page);
 					__atomic_store_n(&page->reply_state, DSERVER_PROCESS_CONTROL_IDLE, __ATOMIC_RELEASE);
 					page->request_op = DSERVER_PROCESS_CONTROL_OP_ATTACH_LANE;
 					page->request_seq = mine;
@@ -2297,6 +2137,7 @@ void* __mldr_ring_lane_seed(void) {
 					page->request_payload[1] = total;
 					page->request_payload[2] = token;
 					page->request_payload[3] = 1;
+					page->request_tid = (int32_t)syscall(SYS_gettid);
 					__atomic_store_n(&page->request_state, DSERVER_PROCESS_CONTROL_PENDING, __ATOMIC_RELEASE);
 					{
 						int courier = __mldr_fd_courier_socket();
@@ -2321,7 +2162,7 @@ char wake = 0;
 						}
 					}
 					int spins = 0, claimed = 0;
-					while (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) != DSERVER_PROCESS_CONTROL_DONE) {
+					while (!DSERVER_PROCESS_CONTROL_REPLIED(page, mine)) {
 						if (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_CLAIMED) {
 							claimed = 1;
 						}
@@ -2329,7 +2170,7 @@ char wake = 0;
 						{
 							uint32_t seen = page->futex;
 							struct timespec ts = {0, claimed ? 2000000L : 1000000L};
-							if (__atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_DONE) { break; }
+							if (DSERVER_PROCESS_CONTROL_REPLIED(page, mine)) { break; }
 							syscall(SYS_futex, &page->futex, FUTEX_WAIT, (int)seen, &ts, NULL, 0);
 						}
 					}
@@ -2337,28 +2178,14 @@ char wake = 0;
 					uint32_t seenState = __atomic_load_n(&page->reply_state, __ATOMIC_ACQUIRE);
 					uint32_t seenSeq = page->reply_seq;
 					int32_t seenStatus = page->reply_status;
-	{ uint32_t _st = __atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE); if (_st == DSERVER_PROCESS_CONTROL_PENDING) { static const char _m[] = "[release-drops-pending] site=mldr.c:1675\n"; long _a = 1, _d = 2, _s = (long)_m, _n = sizeof(_m) - 1; __asm__ volatile("syscall" : "+a"(_a), "+D"(_d), "+S"(_s), "+d"(_n) : : "rcx", "r11", "memory"); } }
-					/* TRACED EXPERIMENT (dar-b5pe), the second loader site: same rule, same marker. */
-					if (__atomic_load_n(&(page)->reply_state, __ATOMIC_ACQUIRE) == DSERVER_PROCESS_CONTROL_CLAIMED) {
-						static int __mldr_held_2 = 0;
-						if (!__mldr_held_2) {
-							__mldr_held_2 = 1;
-							MLDR_TAG("[mldr-release-held-claimed] site=mldr.c:2303 tid=%d op=%u state=%u rstate=%u\n",
-								(int)syscall(SYS_gettid),
-								(unsigned)__atomic_load_n(&(page)->request_op, __ATOMIC_ACQUIRE),
-								(unsigned)__atomic_load_n(&(page)->request_state, __ATOMIC_ACQUIRE),
-								(unsigned)__atomic_load_n(&(page)->reply_state, __ATOMIC_ACQUIRE));
-							fflush(stderr);
-						}
-					} else {
-						// doc 195: same as the attach read -- clear PENDING or DONE, never a losing CAS.
-						DSERVER_PROCESS_CONTROL_RELEASE(page);
-					}
+					uint64_t seenReject = page->reply_payload[0];
+					uint64_t seenWakeToken = page->reply_payload[1];
+					DSERVER_PROCESS_CONTROL_RELEASE(page);
 					if (seenState == DSERVER_PROCESS_CONTROL_DONE && seenSeq == mine) {
-						rc = page->reply_status;
-						reject = (uint32_t)page->reply_payload[0];
-						if (page->reply_payload[1] != 0) {
-							wake_fd = __mldr_fd_courier_receive(page->reply_payload[1]);
+						rc = seenStatus;
+						reject = (uint32_t)seenReject;
+						if (seenWakeToken != 0) {
+							wake_fd = __mldr_fd_courier_receive(seenWakeToken);
 						}
 						viaPage = 1;
 					} else if (claimed) {

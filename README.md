@@ -73,6 +73,30 @@ normal `stock` installation. Compile it with the guest CLT and run it in a fresh
 prefix; it checks shipping resources and compares paginated bulk directory
 enumeration against `readdir`, including rewind. It does not inject system files.
 
+Kernel `__simple_kprintf` diagnostics use the existing process-management plane,
+including before a calling thread has attached its RPC ring. The ordinary server
+`Kprintf` call still owns guest-memory copying, trailing-whitespace removal and
+logging policy. The default log cutoff remains `Error`; to inspect these `Info`
+records, set the existing host-side `DSERVER_LOG_LEVEL=info` before starting an
+idle prefix's server. Changing a guest environment after server startup does not
+reconfigure that server. `tests/src/kprintf_logging.c`, compiled with guest CLT,
+checks exact newly appended payloads in `/var/log/dserver.log` and whitespace
+removal. It requires that explicit diagnostic logging setting and does not enable
+diagnostics in ordinary production launches.
+
+Management protocol version 3 reserves a request through matching reply
+consumption. Constructing, queued and unread completed requests are not free
+slots, and a published call is not republished on a timer. An abandoned
+reservation fails closed for that process incarnation; restart the process
+rather than reclaiming a slot whose owner may still be alive.
+
+Unix socket translation keeps Darwin's 104-byte pathname capacity separate from
+Linux's 108-byte host capacity. Expanded host pathnames must include a terminator;
+107-byte names fit and longer names return `ENAMETOOLONG`, never truncation.
+Returned addresses honor the caller's capacity. The guest fixture
+`tests/src/unix_sockaddr_boundary.c` exercises those host-expansion boundaries,
+stream/datagram roundtrips and short output buffers.
+
 Shell startup failures emit a failure-only `shellspawn failed at STAGE` diagnostic
 on the service or redirected command stderr, in addition to the launcher's error
 result. The stage distinguishes command/descriptor framing, exec-status pipe,
