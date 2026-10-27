@@ -962,8 +962,8 @@ int connectToShellspawn(pid_t pidInit)
 		if (elapsed_ms >= ready_timeout_ms)
 		{
 			close(socketDirectoryFD);
-			fprintf(stderr, "Rootless shellspawn did not become ready within %ldms (%s)\n",
-				ready_timeout_ms, addr.sun_path);
+			fprintf(stderr, "Rootless shellspawn did not become ready within %ldms (%s); init=%d last_connect_errno=%d (%s)\n",
+				ready_timeout_ms, addr.sun_path, pidInit, error, strerror(error));
 			exit(1);
 		}
 		poll(NULL, 0, 100);
