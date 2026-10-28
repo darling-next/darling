@@ -184,6 +184,12 @@ entries, including empty values. `tests/src/xtrace_exec_environment_guest.c`
 exercises a traced exec with those settings removed from the caller's environment
 and verifies their reconstructed values in the new guest image.
 
+Code-signing requirement compilation uses the vendored ANTLR lexer and parser
+already linked into Security, rather than loading a separate `csparser.bundle`.
+`tests/src/security_requirement_guest.c` covers valid anchor/identifier
+requirements, incomplete-syntax rejection, and recovery after a syntax error
+without changing subsequent requirement bytecode.
+
 On x86-64 hosts, the optional native `darling_bsd_syscall_abi_test` target
 exercises the production BSD syscall dispatcher with both guest entry-stack
 alignments, eight arguments and unknown-syscall handling. Build it explicitly
