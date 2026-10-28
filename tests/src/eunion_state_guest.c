@@ -266,10 +266,76 @@ static void publication_checks(void) {
     if (fd >= 0) close(fd);
     check("successful content write survives xattr staging", count == 6 && !memcmp(data, "UPPER\n", 6));
 }
-static int fd_inventory(int* values, int capacity) {
+struct fd_observation {
+    int fd, live, proc_result, proc_error, opened_result, opened_error;
+    dev_t device;
+    ino_t inode;
+    mode_t mode;
+};
+/* A guarded fcntl and an already closed native fd both report EBADF. Observe
+ * procfs without following its final magic link, then record the opened inode
+ * separately. Neither operation enumerates/reopens the guest directory. */
+static struct fd_observation observe_fd(int fd) {
+    int saved_errno = errno;
+    char proc[80];
+    struct stat link, opened;
+    struct fd_observation observation = { .fd = fd };
+    snprintf(proc, sizeof(proc), "/Volumes/SystemRoot/proc/self/fd/%d", fd);
+    errno = 0;
+    observation.proc_result = lstat(proc, &link);
+    observation.proc_error = errno;
+    errno = 0;
+    observation.opened_result = fstat(fd, &opened);
+    observation.opened_error = errno;
+    observation.live = observation.proc_result == 0 && S_ISLNK(link.st_mode) &&
+        observation.opened_result == 0;
+    if (observation.opened_result == 0) {
+        observation.device = opened.st_dev;
+        observation.inode = opened.st_ino;
+        observation.mode = opened.st_mode;
+    }
+    errno = saved_errno;
+    return observation;
+}
+static void report_fd_observation(const char* phase, struct fd_observation observation) {
+    int saved_errno = errno;
+    char proc[80], target[4096];
+    snprintf(proc, sizeof(proc), "/Volumes/SystemRoot/proc/self/fd/%d", observation.fd);
+    errno = 0;
+    ssize_t length = readlink(proc, target, sizeof(target) - 1);
+    int link_error = errno;
+    if (length >= 0) target[length] = '\0';
+    else strcpy(target, "<unavailable>");
+    fprintf(stderr, "EUNION_FD phase=%s fd=%d proc=%d proc_errno=%d "
+        "fstat=%d fstat_errno=%d dev=%llu ino=%llu mode=%o "
+        "readlink=%ld readlink_errno=%d target=%s\n",
+        phase, observation.fd, observation.proc_result, observation.proc_error,
+        observation.opened_result, observation.opened_error,
+        (unsigned long long)observation.device, (unsigned long long)observation.inode,
+        (unsigned)observation.mode, (long)length, link_error, target);
+    errno = saved_errno;
+}
+static int same_fd_identity(const char* phase,
+    struct fd_observation before, struct fd_observation after) {
+    int same = before.live && after.live && before.device == after.device &&
+        before.inode == after.inode && before.mode == after.mode;
+    if (!same) {
+        report_fd_observation("expected-directory-pin", before);
+        report_fd_observation(phase, after);
+    }
+    return same;
+}
+static int fd_inventory(struct fd_observation* values, int capacity) {
     DIR* directory = opendir("/Volumes/SystemRoot/proc/self/fd");
     if (!directory) return -1;
     int observer = dirfd(directory), count = 0, error = 0;
+    struct fd_observation observer_identity = observe_fd(observer);
+    if (!observer_identity.live || !S_ISDIR(observer_identity.mode)) {
+        report_fd_observation("inventory-observer", observer_identity);
+        closedir(directory);
+        errno = EIO;
+        return -1;
+    }
     struct dirent* entry;
     for (;;) {
         errno = 0;
@@ -278,17 +344,34 @@ static int fd_inventory(int* values, int capacity) {
         char* end;
         long value = strtol(entry->d_name, &end, 10);
         if (end == entry->d_name || *end || value < 0 || value > INT_MAX || value == observer) continue;
-        if (count == capacity) { closedir(directory); return -1; }
-        values[count++] = (int)value;
+        struct fd_observation current = observe_fd((int)value);
+        /* procfs entries are not capabilities: a runtime transient can close
+         * before readdir consumes its buffered name. Only this independently
+         * observed missing native descriptor is stale; other errors fail. */
+        if (current.opened_result == -1 && current.opened_error == EBADF &&
+            current.proc_result == -1 && current.proc_error == ENOENT) continue;
+        if (!current.live) {
+            report_fd_observation("inventory-entry", current);
+            error = current.opened_error ? current.opened_error :
+                current.proc_error ? current.proc_error : EIO;
+            break;
+        }
+        if (!S_ISDIR(current.mode) ||
+            (current.device == observer_identity.device && current.inode == observer_identity.inode)) continue;
+        if (count == capacity) { error = EOVERFLOW; break; }
+        values[count++] = current;
     }
-    return closedir(directory) == 0 && !error ? count : -1;
+    int closed = closedir(directory);
+    if (error) errno = error;
+    return closed == 0 && !error ? count : -1;
 }
-static int contains_fd(const int* values, int count, int fd) {
-    for (int i = 0; i < count; i++) if (values[i] == fd) return 1;
+static int contains_fd(const struct fd_observation* values, int count, int fd) {
+    for (int i = 0; i < count; i++) if (values[i].fd == fd) return 1;
     return 0;
 }
 static void descriptor_protection_checks(void) {
-    int before[1024], after[1024], pins[1024], pin_count = 0;
+    struct fd_observation before[1024], after[1024], pins[1024];
+    int pin_count = 0;
     int sentinel = open(ROOT "/regular-fd", O_RDONLY);
     int baseline = fd_inventory(before, 1024);
     int fd = open(ROOT "/stream", O_RDONLY);
@@ -296,17 +379,26 @@ static void descriptor_protection_checks(void) {
     check("inventory real loader-owned directory pins", sentinel >= 0 && fd >= 0 && baseline >= 0 && observed >= 0);
     if (baseline >= 0 && observed >= 0) {
         for (int i = 0; i < observed; i++)
-            if (after[i] != fd && !contains_fd(before, baseline, after[i])) pins[pin_count++] = after[i];
+            if (after[i].fd != fd && !contains_fd(before, baseline, after[i].fd)) pins[pin_count++] = after[i];
     }
     check("opened directory retains native authority", pin_count > 0);
     for (int i = 0; i < pin_count; i++) {
+        struct fd_observation current = observe_fd(pins[i].fd);
+        check("inventoried directory pin remains natively live after observer close",
+            same_fd_identity("after-observer-close", pins[i], current) && S_ISDIR(current.mode));
         errno = 0;
-        int result = fcntl(pins[i], F_GETFD);
+        int result = fcntl(pins[i].fd, F_GETFD);
         check("internal directory pin is not a guest fcntl target", result == -1 && errno == EBADF);
-        check("guest close cannot release internal authority", close(pins[i]) == 0);
+        check("guest close cannot release internal authority", close(pins[i].fd) == 0);
+        current = observe_fd(pins[i].fd);
+        check("guest close preserves exact native directory authority",
+            same_fd_identity("after-guest-close", pins[i], current));
         errno = 0;
-        result = dup2(sentinel, pins[i]);
+        result = dup2(sentinel, pins[i].fd);
         check("guest dup2 cannot overwrite internal authority", result == -1 && errno == EBADF);
+        current = observe_fd(pins[i].fd);
+        check("guest dup2 preserves exact native directory authority",
+            same_fd_identity("after-guest-dup2", pins[i], current));
     }
     char name[256];
     check("directory remains readable after attempted pin close", fd >= 0 && next_name(fd, name) == 1);
@@ -323,11 +415,16 @@ static void descriptor_protection_checks(void) {
     check("parent authority survives child release", fd >= 0 && lseek(fd, 0, SEEK_SET) == 0 && drain(fd, &seen) && seen == 0xfffu);
     if (fd >= 0) close(fd);
     for (int i = 0; i < pin_count; i++) {
+        struct fd_observation released = observe_fd(pins[i].fd);
+        int removed = released.proc_result == -1 && released.proc_error == ENOENT &&
+            released.opened_result == -1 && released.opened_error == EBADF;
+        if (!removed) report_fd_observation("after-last-directory-close", released);
+        check("last directory close removes native pin before reuse", removed);
         char bytes[8];
-        int copied = sentinel >= 0 && lseek(sentinel, 0, SEEK_SET) == 0 && dup2(sentinel, pins[i]) == pins[i];
-        int readable = copied && read(pins[i], bytes, sizeof(bytes)) == sizeof(bytes) && !memcmp(bytes, "REGULAR\n", sizeof(bytes));
+        int copied = sentinel >= 0 && lseek(sentinel, 0, SEEK_SET) == 0 && dup2(sentinel, pins[i].fd) == pins[i].fd;
+        int readable = copied && read(pins[i].fd, bytes, sizeof(bytes)) == sizeof(bytes) && !memcmp(bytes, "REGULAR\n", sizeof(bytes));
         check("last directory close releases reservation for real descriptor reuse", readable);
-        if (copied) close(pins[i]);
+        if (copied) close(pins[i].fd);
     }
     if (sentinel >= 0) close(sentinel);
 }

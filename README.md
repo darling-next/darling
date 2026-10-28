@@ -80,6 +80,9 @@ updates before their native effects. Managed writes never target the lower
 image, while a read-only lower open performs no eager copy. Internal whiteout
 and opacity attributes are not guest xattrs. Explicit `/Volumes/SystemRoot`
 escapes remain unmanaged host operations, not sandboxed image access.
+Traversing a layer's host pathname through that escape does not enable union
+fallback: an absent prefix entry remains absent even when the installed lower
+tree supplies the corresponding guest path.
 
 Descriptor promotion retains opened-object authority after unlink or replacement
 and preserves explicit dup lineages, flags and offsets. Directory aliases share
@@ -88,6 +91,14 @@ admission and protected native-FD ownership span processes and runtime images;
 the virtual alias/cursor registries themselves remain image-local. Copy-up does
 not provide synthetic stable inode numbers or universal inherited-cursor
 coherence across processes/images.
+
+The directory-pin regression inventories live native directory objects, not
+every number returned by procfs: a runtime transient may close before its
+buffered entry is consumed. It excludes the inventory observer's own directory
+identity, and requires exact native pin identities after observer release and
+around guest close/dup2 attempts, before enumeration can acquire new authority.
+A guarded `fcntl` returning `EBADF` alone proves no native liveness. The final
+directory close must remove each native pin before real descriptor-number reuse.
 
 `tests/src/eunion_{state,mutation_state,xattr_state,fd_lifetime}_guest.c` provide
 guest regressions for these transitions using the optional normally installed

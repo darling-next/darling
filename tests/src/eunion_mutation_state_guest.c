@@ -53,6 +53,28 @@ static int tag(const char* path) {
     return getxattr(path, "test.routing", data, sizeof(data), 0, 0) == 11 &&
            !memcmp(data, "routing-tag", 11);
 }
+static void observation_authority(void) {
+    const char* leaves[] = {
+        "alist-invalid", "exclusive-target", "nofollow-target",
+        "create-nofollow-target", "meta-nofollow-target", "failure"
+    };
+    /* These installed lower inputs must be visible through the guest route,
+     * but the host escape must observe only the actual prefix namespace. */
+    for (unsigned i = 0; i < sizeof(leaves) / sizeof(leaves[0]); i++) {
+        char path[4096], label[160];
+        snprintf(label, sizeof(label), "%s guest lower input visible", leaves[i]);
+        check(label, bytes(leaves[i], PAYLOAD));
+        upper(path, leaves[i]);
+        snprintf(label, sizeof(label), "%s upper observer starts absent", leaves[i]);
+        check(label, absent(path));
+        errno = 0;
+        int fd = open(path, O_RDONLY);
+        int error = errno;
+        snprintf(label, sizeof(label), "%s upper observer cannot open lower", leaves[i]);
+        check(label, fd == -1 && error == ENOENT);
+        if (fd >= 0) close(fd);
+    }
+}
 static void metadata(int rootfd) {
     char path[4096];
     check("fchmodat dirfd relative", fchmodat(rootfd, "chmod-dirfd", 0600, 0) == 0);
@@ -239,6 +261,7 @@ int main(void) {
     umask(0);
     int rootfd = open(ROOT, O_RDONLY | O_DIRECTORY);
     if (rootfd < 0 || fchdir(rootfd) != 0) { perror("routing fixture"); return 1; }
+    observation_authority();
     metadata(rootfd);
     creators(rootfd);
     hardlinks(rootfd);
