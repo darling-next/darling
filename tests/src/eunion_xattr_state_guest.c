@@ -196,7 +196,8 @@ static void symlink_fd_cases(void)
 {
     const char* path = ROOT "/fd-symlink";
     char names[128];
-    struct stat before = {0}, after = {0};
+    struct stat before, after;
+    memset(&before, 0, sizeof(before));
     expect("symlink-fd", "create upper symlink to attributed target", symlink("absolute", path) == 0);
     int fd = open(path, O_SYMLINK);
     expect("symlink-fd", "production open retains symlink inode", fd >= 0 && fstat(fd, &before) == 0 && S_ISLNK(before.st_mode));

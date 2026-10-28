@@ -1,6 +1,5 @@
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <dirent.h>
 #include <errno.h>
@@ -11,6 +10,11 @@
 #include <string.h>
 #include <sys/xattr.h>
 #include <unistd.h>
+
+/* Canonical declaration: src/external/libc/gen/FreeBSD/telldir.h.
+ * The SDK's public getdirentries is unavailable with 64-bit inodes; this
+ * existing stub is src/external/xnu/gen/bsdsyscalls/___getdirentries64.S. */
+size_t		__getdirentries64(int fd, void *buf, size_t bufsize, __darwin_off_t *basep);
 
 #define ROOT "/usr/share/darling/tests/eunion/state"
 static int failures;
@@ -58,7 +62,7 @@ static void removal_checks(void) {
     check("create dataless-flag removal fixture", mkdir(ROOT "/upper-dataless", 0755) == 0);
     /* Existing Darwin AT_REMOVEDIR_DATALESS conversion is a removal alias. */
     check("unlinkat dataless removal retains native directory semantics",
-        syscall(SYS_unlinkat, AT_FDCWD, ROOT "/upper-dataless", 0x100) == 0 && !visible(ROOT "/upper-dataless"));
+        unlinkat(AT_FDCWD, ROOT "/upper-dataless", 0x100) == 0 && !visible(ROOT "/upper-dataless"));
     check("materialize merged directory", create(ROOT "/merged/upper", "UPPER\n"));
     check("empty merged directory via visible unlink", unlink(ROOT "/merged/seed") == 0 && unlink(ROOT "/merged/upper") == 0);
     remove_case(ROOT "/merged", 0);
@@ -81,9 +85,10 @@ static void removal_checks(void) {
 /* Use the actual BSD syscall, not DIR buffering: distinct DIR objects have
  * independent user buffers, but their duplicated fds must share the OFD cursor. */
 static int next_name(int fd, char* out) {
-    char buffer[40]; long base = 0;
-    ssize_t size = syscall(SYS_getdirentries64, fd, buffer, sizeof(buffer), &base);
-    if (size <= 0) return (int)size;
+    char buffer[40]; off_t base = 0;
+    size_t size = __getdirentries64(fd, buffer, sizeof(buffer), &base);
+    if (size == (size_t)-1) return -1;
+    if (size == 0) return 0;
     struct dirent* entry = (void*)buffer;
     if (entry->d_reclen != size || entry->d_namlen >= 256) return -2;
     memcpy(out, entry->d_name, entry->d_namlen);
@@ -105,7 +110,7 @@ static int drain(int fd, unsigned* seen) {
     return result == 0;
 }
 static void libc_directory_checks(void) {
-    struct stat before = {0}, opened = {0};
+    struct stat before, opened;
     int valid = stat(ROOT "/stream", &before) == 0;
     DIR* directory = opendir(ROOT "/stream");
     valid = valid && directory && fstat(dirfd(directory), &opened) == 0 &&
@@ -143,7 +148,7 @@ static void descriptor_checks(void) {
         if (kind == 0 && fd >= 0) alias = dup(fd);
         if (kind == 1 && fd >= 0) {
             alias = open(ROOT "/dup-target", O_RDONLY);
-            if (alias >= 0) { char buffer[512]; long base = 0; syscall(SYS_getdirentries64, alias, buffer, sizeof(buffer), &base); }
+            if (alias >= 0) { char buffer[512]; off_t base = 0; __getdirentries64(alias, buffer, sizeof(buffer), &base); }
             if (alias >= 0 && dup2(fd, alias) < 0) { close(alias); alias = -1; }
         }
         if (kind == 2 && fd >= 0) alias = fcntl(fd, F_DUPFD, 0);
@@ -216,7 +221,7 @@ static void directory_promotion_checks(void) {
     off_t cookie = lseek(fd, 0, SEEK_CUR);
     check("directory promotion begins at a shared partial cookie",
         partial && cookie > 0 && lseek(alias, 0, SEEK_CUR) == cookie);
-    struct stat original = {0}, duplicate = {0}, named = {0};
+    struct stat original, duplicate, named;
     check("directory metadata promotion retains live upper aliases",
         fchmod(fd, 0750) == 0 && fstat(fd, &original) == 0 &&
         fstat(alias, &duplicate) == 0 && stat(ROOT "/stream", &named) == 0 &&
@@ -264,17 +269,18 @@ static void publication_checks(void) {
 static int fd_inventory(int* values, int capacity) {
     DIR* directory = opendir("/Volumes/SystemRoot/proc/self/fd");
     if (!directory) return -1;
-    int observer = dirfd(directory), count = 0;
+    int observer = dirfd(directory), count = 0, error = 0;
     struct dirent* entry;
-    errno = 0;
-    while ((entry = readdir(directory))) {
+    for (;;) {
+        errno = 0;
+        entry = readdir(directory);
+        if (!entry) { error = errno; break; }
         char* end;
         long value = strtol(entry->d_name, &end, 10);
         if (end == entry->d_name || *end || value < 0 || value > INT_MAX || value == observer) continue;
         if (count == capacity) { closedir(directory); return -1; }
         values[count++] = (int)value;
     }
-    int error = errno;
     return closedir(directory) == 0 && !error ? count : -1;
 }
 static int contains_fd(const int* values, int count, int fd) {
@@ -358,7 +364,7 @@ static void private_namespace_checks(void) {
     check("root rename rejects without moving prefix", result == -1 && errno == EBUSY && visible(ROOT "/nonempty/child"));
 }
 static void rename_noop_checks(void) {
-    struct stat before = {0}, after = {0};
+    struct stat before, after;
     int existed = stat(ROOT "/nonempty", &before) == 0;
     check("same-name nonempty-directory rename succeeds", rename(ROOT "/nonempty", ROOT "/nonempty") == 0);
     check("same-name rename preserves directory identity and children", existed &&
@@ -368,7 +374,7 @@ static void rename_noop_checks(void) {
     int fd = open(ROOT "/rmdir-file", O_RDONLY);
     existed = stat(ROOT "/rmdir-file", &before) == 0;
     check("distinct same-inode rename succeeds", rename(ROOT "/rmdir-file", ROOT "/noop-hardlink") == 0);
-    struct stat other = {0};
+    struct stat other;
     check("same-inode rename preserves both names and link identity", existed &&
         stat(ROOT "/rmdir-file", &after) == 0 && stat(ROOT "/noop-hardlink", &other) == 0 &&
         after.st_dev == before.st_dev && after.st_ino == before.st_ino &&

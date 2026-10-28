@@ -10,7 +10,6 @@
 #include <sys/attr.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/un.h>
 #include <sys/xattr.h>
@@ -67,9 +66,18 @@ static void metadata(int rootfd) {
     upper(path, "utimes-cwd");
     struct stat st;
     check("utimes upper effect and preserved bytes xattr", stat(path, &st) == 0 && st.st_mtime == 123456790 && bytes(path, PAYLOAD) && tag(path));
-    /* chmod_extended is not a public SDK libc entry point. Invoke the actual
-     * Darwin syscall with unchanged ownership and no extended security blob. */
-    check("chmod_extended cwd relative", syscall(SYS_chmod_extended, "extended-cwd", -1, -1, 0600, NULL) == 0);
+    /* The public filesec interface reaches chmod_extended. Explicit ownership
+     * sentinels preserve -1/-1; leaving ACL and UUID properties unset sends NULL. */
+    filesec_t security = filesec_init();
+    uid_t owner = (uid_t)-1;
+    gid_t group = (gid_t)-1;
+    mode_t permissions = 0600;
+    check("chmod_extended cwd relative", security &&
+          filesec_set_property(security, FILESEC_OWNER, &owner) == 0 &&
+          filesec_set_property(security, FILESEC_GROUP, &group) == 0 &&
+          filesec_set_property(security, FILESEC_MODE, &permissions) == 0 &&
+          chmodx_np("extended-cwd", security) == 0);
+    if (security) filesec_free(security);
     upper(path, "extended-cwd");
     check("chmod_extended upper bytes mode xattr", bytes(path, PAYLOAD) && mode(path, 0600) && tag(path));
     check("truncate cwd relative", truncate("truncate-cwd", 3) == 0);

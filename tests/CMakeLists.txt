@@ -146,9 +146,6 @@ InstallSymlink("sp_real"
 InstallSymlink("r"
     "${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/share/darling/tests/eunion/nested-bind/l" COMPONENT tests-data EXCLUDE_FROM_ALL)
 
-InstallSymlink("../../../../../../../escape-target"
-    "${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/share/darling/tests/eunion/path-errors/escape_link" COMPONENT tests-data EXCLUDE_FROM_ALL)
-
 InstallSymlink("real"
     "${CMAKE_INSTALL_PREFIX}/libexec/darling/usr/share/darling/tests/eunion/special-create/link_parent" COMPONENT tests-data EXCLUDE_FROM_ALL)
 
