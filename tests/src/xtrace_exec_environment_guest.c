@@ -54,8 +54,10 @@ int main(int argc, char** argv) {
 		failures += expect("XTRACE_LOG_FILE", "");
 		failures += expect("DYLD_INSERT_LIBRARIES", "/usr/lib/darling/libxtrace.dylib");
 		if (failures) return 1;
-		puts("XTRACE_EXEC_ENVIRONMENT_OK");
-		return 0;
+		/* One write keeps the oracle on its own line despite syscall tracing. */
+		const char marker[] = "\nXTRACE_EXEC_ENVIRONMENT_OK\n";
+		return write(STDOUT_FILENO, marker, sizeof(marker) - 1) ==
+			(ssize_t)(sizeof(marker) - 1) ? 0 : 1;
 	} else {
 		fprintf(stderr, "FAIL xtrace environment: invalid fixture stage\n");
 		return 1;
