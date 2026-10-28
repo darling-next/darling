@@ -96,6 +96,12 @@ including after a forked service lowers its limit before exec. Existing high
 descriptors retain their ownership until close; lowering or restoring the limit
 does not rebase their identities or change the service's configured limits.
 
+Native server dispatch preserves an unfinished XNU wait when another call is
+deferred behind its continuation. Only kernel wait finalization changes the
+wait result and clears the wait state; physical microthread dispatch does not.
+Interrupt entry preserves an already committed semaphore grant, and neither
+interrupt completion nor a previous grant may satisfy a later wait.
+
 The directory-pin regression inventories live native directory objects, not
 every number returned by procfs: a runtime transient may close before its
 buffered entry is consumed. It excludes the inventory observer's own directory
@@ -125,6 +131,11 @@ consumption. Constructing, queued and unread completed requests are not free
 slots, and a published call is not republished on a timer. An abandoned
 reservation fails closed for that process incarnation; restart the process
 rather than reclaiming a slot whose owner may still be alive.
+The futex notification word is an independent event epoch, not a request
+sequence. Transport readiness, claim and completion each increment it before
+waking waiters. A notification between the consumer's final reply check and its
+kernel wait must invalidate the sampled epoch, even for the first request or
+multiple notifications for the same sequence.
 Retained completion mappings are not active courier recipients. Descriptor
 delivery requires a live generation and a connection authenticated to that exact
 process; another process's loader connection is never a fallback route.
