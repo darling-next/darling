@@ -111,6 +111,9 @@ Its reply readiness and transfer from service-pass to deferred ownership are
 serialized with the Thread state. Only a recorded final reply permits inline
 completion. Deferred completion owns both body translation and descriptor-token
 publication; the service pass must not also consume or forward that reply.
+Checkout retains its Thread completion owner until a suppressed management reply
+is recorded, even across exec teardown. Ordinary ring/datagram replies keep their
+detached destination.
 Interrupt entry preserves an already committed semaphore grant, and neither
 interrupt completion nor a previous grant may satisfy a later wait.
 The opt-in `DSERVER_TEST_TRACE_FILE` records semaphore begin/reply events for
