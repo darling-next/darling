@@ -103,6 +103,10 @@ finalization changes the wait result and clears the wait state; physical
 microthread dispatch does not.
 Interrupt entry preserves an already committed semaphore grant, and neither
 interrupt completion nor a previous grant may satisfy a later wait.
+The opt-in `DSERVER_TEST_TRACE_FILE` records semaphore begin/reply events for
+both ordinary RPC and direct management signals. A management signal's terminal
+record follows answer publication; tracing does not dispatch a Call on the
+thread whose wait the signal may release.
 
 The directory-pin regression inventories live native directory objects, not
 every number returned by procfs: a runtime transient may close before its
