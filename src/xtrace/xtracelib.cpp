@@ -550,7 +550,7 @@ static const char* envp_make_entry(const char* key, const char* value) {
 	memcpy(entry, key, key_length);
 	entry[key_length] = '=';
 	memcpy(&entry[key_length + 1], value, value_length);
-	entry[key_length + value_length + 2] = '\0';
+	entry[key_length + value_length + 1] = '\0';
 	return entry;
 };
 

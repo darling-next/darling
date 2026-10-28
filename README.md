@@ -179,6 +179,11 @@ descriptor control messages report `EPROTO`, not an unrelated earlier errno.
 The host launcher formats those Darwin errno values with the vendored libc
 table, not Linux's differently numbered `strerror()` table.
 
+The xtrace exec hook preserves its settings as exact NUL-terminated environment
+entries, including empty values. `tests/src/xtrace_exec_environment_guest.c`
+exercises a traced exec with those settings removed from the caller's environment
+and verifies their reconstructed values in the new guest image.
+
 On x86-64 hosts, the optional native `darling_bsd_syscall_abi_test` target
 exercises the production BSD syscall dispatcher with both guest entry-stack
 alignments, eight arguments and unknown-syscall handling. Build it explicitly
