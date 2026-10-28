@@ -101,6 +101,11 @@ XNU wait continuation. Ordinary calls wait until the active call finishes;
 they cannot discard its stack, held locks or pending cleanup. Only kernel wait
 finalization changes the wait result and clears the wait state; physical
 microthread dispatch does not.
+Management-plane admission uses the same busy-state rule. A nonqueueable request
+is disarmed while the prior wait remains active, not reported as completed or
+executed later without its owner. A queueable request waits for that call to finish.
+Process-scoped console opens select a runnable thread of the same task; they remain
+nonqueueable because the service pass must deliver the real returned descriptor.
 Interrupt entry preserves an already committed semaphore grant, and neither
 interrupt completion nor a previous grant may satisfy a later wait.
 The opt-in `DSERVER_TEST_TRACE_FILE` records semaphore begin/reply events for
