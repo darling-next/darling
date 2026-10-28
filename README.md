@@ -96,9 +96,11 @@ including after a forked service lowers its limit before exec. Existing high
 descriptors retain their ownership until close; lowering or restoring the limit
 does not rebase their identities or change the service's configured limits.
 
-Native server dispatch preserves an unfinished XNU wait when another call is
-deferred behind its continuation. Only kernel wait finalization changes the
-wait result and clears the wait state; physical microthread dispatch does not.
+Native server dispatch preserves both a suspended native stack and an unfinished
+XNU wait continuation. Ordinary calls wait until the active call finishes;
+they cannot discard its stack, held locks or pending cleanup. Only kernel wait
+finalization changes the wait result and clears the wait state; physical
+microthread dispatch does not.
 Interrupt entry preserves an already committed semaphore grant, and neither
 interrupt completion nor a previous grant may satisfy a later wait.
 
