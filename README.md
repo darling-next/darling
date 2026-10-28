@@ -190,6 +190,18 @@ already linked into Security, rather than loading a separate `csparser.bundle`.
 requirements, incomplete-syntax rejection, and recovery after a syntax error
 without changing subsequent requirement bytecode.
 
+On Linux, Security's single-pass content hashing uses a private
+`POSIX_FADV_NOREUSE` replacement-policy hint instead of Darwin's cache-bypass
+`F_NOCACHE`; this does not implement `F_NOCACHE` for other callers.
+`tests/src/security_static_validation_guest.c` validates a genuine ad-hoc
+SHA-256 signature and requires modified content to fail the same public API.
+
+Mach-port channel admission may execute on another runnable thread of the same
+task when main is parked. Opening retains the task's IPC space; the later read
+uses its explicit receive requester. `tests/src/plane_mach_port_open_guest.c`
+requires channel message delivery and subsequent port construction before the
+worker releases main, including after closing and reopening the channel.
+
 On x86-64 hosts, the optional native `darling_bsd_syscall_abi_test` target
 exercises the production BSD syscall dispatcher with both guest entry-stack
 alignments, eight arguments and unknown-syscall handling. Build it explicitly
