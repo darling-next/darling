@@ -119,6 +119,8 @@ interrupt completion nor a previous grant may satisfy a later wait.
 Executable-path and supplementary-group RPCs use the ordinary ring request/reply
 path. Their arrays travel through process-memory copies, not variable-sized RPC
 payloads; neither operation requires a per-thread socket or caller-side upcall.
+The public `getgroups` capacity is signed: negative capacities return `EINVAL`
+before any group-buffer access, including when the process has no groups.
 The opt-in `DSERVER_TEST_TRACE_FILE` records semaphore begin/reply events for
 both ordinary RPC and direct management signals. A management signal's terminal
 record follows answer publication; tracing does not dispatch a Call on the
