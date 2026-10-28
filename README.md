@@ -202,6 +202,11 @@ uses its explicit receive requester. `tests/src/plane_mach_port_open_guest.c`
 requires channel message delivery and subsequent port construction before the
 worker releases main, including after closing and reopening the channel.
 
+Single-path creation resolves visibility under exclusive namespace admission.
+Concurrent creators therefore observe the committed object rather than a stale
+pre-admission snapshot. `tests/eunion_mkdir_race_guest.c` requires exactly one
+successful `mkdir` per round and `EEXIST` from every competing creator.
+
 On x86-64 hosts, the optional native `darling_bsd_syscall_abi_test` target
 exercises the production BSD syscall dispatcher with both guest entry-stack
 alignments, eight arguments and unknown-syscall handling. Build it explicitly
