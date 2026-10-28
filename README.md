@@ -116,6 +116,9 @@ is recorded, even across exec teardown. Ordinary ring/datagram replies keep thei
 detached destination.
 Interrupt entry preserves an already committed semaphore grant, and neither
 interrupt completion nor a previous grant may satisfy a later wait.
+Executable-path and supplementary-group RPCs use the ordinary ring request/reply
+path. Their arrays travel through process-memory copies, not variable-sized RPC
+payloads; neither operation requires a per-thread socket or caller-side upcall.
 The opt-in `DSERVER_TEST_TRACE_FILE` records semaphore begin/reply events for
 both ordinary RPC and direct management signals. A management signal's terminal
 record follows answer publication; tracing does not dispatch a Call on the
