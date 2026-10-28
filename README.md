@@ -91,6 +91,10 @@ admission and protected native-FD ownership span processes and runtime images;
 the virtual alias/cursor registries themselves remain image-local. Copy-up does
 not provide synthetic stable inode numbers or universal inherited-cursor
 coherence across processes/images.
+New protected descriptor reservations obey the current soft `RLIMIT_NOFILE`,
+including after a forked service lowers its limit before exec. Existing high
+descriptors retain their ownership until close; lowering or restoring the limit
+does not rebase their identities or change the service's configured limits.
 
 The directory-pin regression inventories live native directory objects, not
 every number returned by procfs: a runtime transient may close before its

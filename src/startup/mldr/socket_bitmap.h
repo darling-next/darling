@@ -12,12 +12,13 @@ typedef struct socket_bitmap {
 	uint8_t* bits;
 	size_t bit_length;
 	size_t byte_capacity;
+	size_t used_count;
 	int highest;
 } socket_bitmap_t;
 
 /* Caller holds mutex and defers asynchronous signals. A set bit reserves the
- * descriptor highest-index. Freeing trims only unused trailing slots; an empty
- * bitmap releases storage explicitly and remains reusable after fork cleanup. */
+ * descriptor highest-index; highest stays fixed across resource-limit changes.
+ * Keep represented storage while reservations survive, and release it when empty. */
 int socket_bitmap_get_locked(socket_bitmap_t* bitmap);
 void socket_bitmap_put_locked(socket_bitmap_t* bitmap, int descriptor);
 
