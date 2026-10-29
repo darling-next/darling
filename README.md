@@ -202,6 +202,21 @@ unchanged. `tests/src/indexed_collection_filter_guest.m` checks ordered array
 selection, nonmonotonic insertion and set filtering across empty, single-element
 and large sparse collections, including more than 32 ranges.
 
+Process activities balance the existing CoreFoundation sudden-termination and
+vproc automatic-termination transactions. Ending a token, deallocation and
+exceptional block completion release its activity. Sleep-suppression requests
+use IOKit assertions and report unavailable power services as errors;
+latency-critical scheduling requests are explicitly unsupported.
+`tests/src/process_activity_guest.m` checks nested lifetimes, automatic
+termination, exceptional completion and rejected requests.
+
+Regular-file `clonefile`/`fclonefileat` uses Linux `FICLONE`, not a byte-copy
+substitute. The destination becomes visible only after data and metadata
+preparation, without replacing an existing name. Unsupported filesystem/object
+capabilities return Darwin `ENOTSUP`; other native errors remain errors.
+`tests/src/clonefile_guest.c` checks this capability boundary, failed-publication
+cleanup, nofollow, source-offset preservation and destination nonreplacement.
+
 Code-signing requirement compilation uses the vendored ANTLR lexer and parser
 already linked into Security, rather than loading a separate `csparser.bundle`.
 `tests/src/security_requirement_guest.c` covers valid anchor/identifier
