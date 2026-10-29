@@ -234,6 +234,11 @@ zero-length datagram is not EOF; buffered data remains available after a
 half-close. `tests/src/kqueue_socket_eof_guest.c` checks zero-length datagrams,
 subsequent delivery and buffered stream half-close with reverse-direction I/O.
 
+LibSystem's fork and `posix_spawn` child callbacks use libc's single kqueue
+registry, including the mutexes used by descriptor-close callbacks.
+`tests/src/kqueue_fork_guest.c` checks that a kqueue is not inherited by the
+child and that child cleanup preserves the parent's registered readiness.
+
 XPC pipe replies and received messages transfer a caller-owned reference,
 independently of the deserializer's autorelease. Callers release that reference
 with `xpc_release`. `tests/src/membership_autorelease_guest.m` exercises the real
