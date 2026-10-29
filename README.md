@@ -228,6 +228,12 @@ reusing it for sequential AAAA/A queries. Concurrent lookups share neither
 transaction state nor resolver sockets. Context destruction preserves query
 `errno`; lookup failure remains an error rather than a successful fallback.
 
+Kqueue read events derive EOF from Linux hangup/half-close notifications, not
+from the instantaneous `FIONREAD` byte count. An empty live socket or a
+zero-length datagram is not EOF; buffered data remains available after a
+half-close. `tests/src/kqueue_socket_eof_guest.c` checks zero-length datagrams,
+subsequent delivery and buffered stream half-close with reverse-direction I/O.
+
 Code-signing requirement compilation uses the vendored ANTLR lexer and parser
 already linked into Security, rather than loading a separate `csparser.bundle`.
 `tests/src/security_requirement_guest.c` covers valid anchor/identifier
