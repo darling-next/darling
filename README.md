@@ -240,6 +240,12 @@ with `xpc_release`. `tests/src/membership_autorelease_guest.m` exercises the rea
 OpenDirectory user-name lookup, UID roundtrip and stable UUID across nested
 autorelease-pool drains.
 
+The `posix_spawn` child invalidates libsyscall's cached PID before running
+libSystem child callbacks. Allocators can therefore distinguish child lock
+reinitialization from parent unlock. `tests/src/posix_spawn_pid_cache_guest.c`
+checks the PID inside malloc-zone callbacks, non-main-thread spawning, genuine
+`ENOENT` propagation, successful child completion and ordinary `fork`.
+
 Code-signing requirement compilation uses the vendored ANTLR lexer and parser
 already linked into Security, rather than loading a separate `csparser.bundle`.
 `tests/src/security_requirement_guest.c` covers valid anchor/identifier
