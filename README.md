@@ -223,6 +223,11 @@ Generation fences preserve that ordering independently of queue priorities.
 `tests/src/operation_queue_barrier_guest.m` checks asynchronous completion,
 concurrent-executor exclusion, suspension, cancellation and empty queues.
 
+Darling Libinfo's DNS backend owns a private libresolv context for each lookup,
+reusing it for sequential AAAA/A queries. Concurrent lookups share neither
+transaction state nor resolver sockets. Context destruction preserves query
+`errno`; lookup failure remains an error rather than a successful fallback.
+
 Code-signing requirement compilation uses the vendored ANTLR lexer and parser
 already linked into Security, rather than loading a separate `csparser.bundle`.
 `tests/src/security_requirement_guest.c` covers valid anchor/identifier
