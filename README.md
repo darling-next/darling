@@ -234,6 +234,12 @@ zero-length datagram is not EOF; buffered data remains available after a
 half-close. `tests/src/kqueue_socket_eof_guest.c` checks zero-length datagrams,
 subsequent delivery and buffered stream half-close with reverse-direction I/O.
 
+XPC pipe replies and received messages transfer a caller-owned reference,
+independently of the deserializer's autorelease. Callers release that reference
+with `xpc_release`. `tests/src/membership_autorelease_guest.m` exercises the real
+OpenDirectory user-name lookup, UID roundtrip and stable UUID across nested
+autorelease-pool drains.
+
 Code-signing requirement compilation uses the vendored ANTLR lexer and parser
 already linked into Security, rather than loading a separate `csparser.bundle`.
 `tests/src/security_requirement_guest.c` covers valid anchor/identifier
