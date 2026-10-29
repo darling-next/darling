@@ -34,7 +34,7 @@ NSString *const UTTagClassMIMEType = @"public.mime-type";
 
 // The UTType constants are defined in UTType.m, next to the built-in type table that fills them at load.
 void* const _UTTagClassBluetoothVendorProductID = (void*)0;
-void* const _UTTagClassDeviceModelCode = (void*)0;
+NSString *const _UTTagClassDeviceModelCode = @"com.apple.device-model-code";
 void* const _UTTagClassHFSTypeCode = (void*)0;
 void* const _UTTagClassPasteboardType = (void*)0;
 void* const _UTTypeAppCategory = (void*)0;

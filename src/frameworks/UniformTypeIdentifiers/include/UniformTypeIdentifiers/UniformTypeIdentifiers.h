@@ -183,7 +183,6 @@ extern UTType *const UTTypeXPCService;
 extern UTType *const UTTypeYAML;
 extern UTType *const UTTypeZIP;
 extern void* const _UTTagClassBluetoothVendorProductID;
-extern void* const _UTTagClassDeviceModelCode;
 extern void* const _UTTagClassHFSTypeCode;
 extern void* const _UTTagClassPasteboardType;
 extern void* const _UTTypeAppCategory;

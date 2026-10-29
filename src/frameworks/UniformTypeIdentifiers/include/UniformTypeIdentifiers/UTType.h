@@ -26,6 +26,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 extern NSString *const UTTagClassFilenameExtension;
 extern NSString *const UTTagClassMIMEType;
+extern NSString *const _UTTagClassDeviceModelCode;
 
 // As in the macOS SDK, Swift sees the class as UTTypeReference; the overlay's UTType struct wraps it.
 NS_SWIFT_NAME(UTTypeReference)
@@ -63,6 +64,9 @@ NS_SWIFT_NAME(UTTypeReference)
 + (nullable UTType *)typeWithTag:(NSString *)tag tagClass:(NSString *)tagClass conformingToType:(nullable UTType *)supertype;
 + (NSArray<UTType *> *)typesWithTag:(NSString *)tag tagClass:(NSString *)tagClass conformingToType:(nullable UTType *)supertype;
 @property (readonly) NSDictionary<NSString *, NSArray<NSString *> *> *tags;
+
+// Private device-model lookup: registered model tags only; nil/unknown codes return nil.
++ (nullable UTType *)_typeWithDeviceModelCode:(nullable NSString *)modelCode;
 
 // Conformance
 - (BOOL)conformsToType:(UTType *)type;

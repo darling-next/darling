@@ -118,6 +118,58 @@ static NSArray *UTDeclarationStrings(id value)
 	return strings;
 }
 
+// Device-model authority: this tree has no vendored implementation of the SPI;
+// darlinghq/darling master still forwards UTType invocations, and VibeDarling's
+// UTType.m (4fbfb1d9 and master) has no _typeWithDeviceModelCode:. Neither can be
+// reused. Reuse the installed CoreServices declarations instead: LaunchServices'
+// kUTTagClassDeviceModelCode is "com.apple.device-model-code", and its tag lookup
+// returns only registered declarations (NULL on a miss). Calling that resolver
+// here would require the LaunchServices database and would not populate this
+// framework's identity/conformance graph. Import only model-tagged declarations
+// and their ancestors, without copying or inventing hardware identities.
+static NSArray *UTDeviceModelDeclarations(void)
+{
+	NSDictionary *info = [[NSBundle bundleWithPath: @"/System/Library/Frameworks/CoreServices.framework"] infoDictionary];
+	NSMutableDictionary *byIdentifier = [NSMutableDictionary dictionary];
+	NSMutableArray *ordered = [NSMutableArray array];
+	NSMutableArray *pending = [NSMutableArray array];
+	for (NSString *section in @[@"UTExportedTypeDeclarations", @"UTImportedTypeDeclarations"]) {
+		id declarations = [info objectForKey: section];
+		if (![declarations isKindOfClass: [NSArray class]])
+			continue;
+		for (id declaration in declarations) {
+			if (![declaration isKindOfClass: [NSDictionary class]])
+				continue;
+			NSString *identifier = [declaration objectForKey: @"UTTypeIdentifier"];
+			if (!UTIdentifierIsValid(identifier))
+				continue;
+			NSString *key = [identifier lowercaseString];
+			if ([byIdentifier objectForKey: key])
+				continue;
+			[byIdentifier setObject: declaration forKey: key];
+			[ordered addObject: key];
+			id tags = [declaration objectForKey: @"UTTypeTagSpecification"];
+			if ([tags isKindOfClass: [NSDictionary class]]
+			    && [UTDeclarationStrings([tags objectForKey: _UTTagClassDeviceModelCode]) count])
+				[pending addObject: key];
+		}
+	}
+	NSMutableSet *selected = [NSMutableSet set];
+	for (NSUInteger i = 0; i < [pending count]; i++) {
+		NSString *key = [pending objectAtIndex: i];
+		if ([selected containsObject: key])
+			continue;
+		[selected addObject: key];
+		for (NSString *parent in UTDeclarationStrings([[byIdentifier objectForKey: key] objectForKey: @"UTTypeConformsTo"]))
+			[pending addObject: [parent lowercaseString]];
+	}
+	NSMutableArray *result = [NSMutableArray arrayWithCapacity: [selected count]];
+	for (NSString *key in ordered)
+		if ([selected containsObject: key])
+			[result addObject: [byIdentifier objectForKey: key]];
+	return result;
+}
+
 @interface UTType ()
 - (instancetype)_initWithIdentifier:(NSString *)identifier kind:(UTTypeKind)kind parents:(NSArray *)parents
                                tags:(NSDictionary *)tags description:(NSString *)description;
@@ -181,16 +233,20 @@ static void UTBuildRegistry(void *context)
 				*rows[i].constant = type;
 		}
 
-		// Keep app declarations in the same graph as built-ins, with a second
-		// parent pass so declarations may refer to a later app declaration.
+		// Keep system model and app declarations in the same graph as built-ins,
+		// with a second parent pass for forward references.
 		NSMutableDictionary *appDeclarations = [NSMutableDictionary dictionary];
 		NSMutableDictionary *appExtensions = [NSMutableDictionary dictionary];
 		NSMutableDictionary *appMimes = [NSMutableDictionary dictionary];
+		NSMutableDictionary *deviceModels = [NSMutableDictionary dictionary];
+		NSMutableArray *declarationGroups = [NSMutableArray arrayWithObject: UTDeviceModelDeclarations()];
 		NSDictionary *info = [[NSBundle mainBundle] infoDictionary];
 		for (NSString *section in @[@"UTExportedTypeDeclarations", @"UTImportedTypeDeclarations"]) {
 			id declarations = [info objectForKey: section];
-			if (![declarations isKindOfClass: [NSArray class]])
-				continue;
+			if ([declarations isKindOfClass: [NSArray class]])
+				[declarationGroups addObject: declarations];
+		}
+		for (NSArray *declarations in declarationGroups) {
 			for (id declaration in declarations) {
 				if (![declaration isKindOfClass: [NSDictionary class]])
 					continue;
@@ -217,6 +273,7 @@ static void UTBuildRegistry(void *context)
 				[appDeclarations setObject: declaration forKey: key];
 				UTIndexAddType(appExtensions, [tags objectForKey: UTTagClassFilenameExtension], type);
 				UTIndexAddType(appMimes, [tags objectForKey: UTTagClassMIMEType], type);
+				UTIndexAddType(deviceModels, [tags objectForKey: _UTTagClassDeviceModelCode], type);
 				[type release];
 			}
 		}
@@ -243,6 +300,7 @@ static void UTBuildRegistry(void *context)
 		UTTagIndex = [@{
 			UTTagClassFilenameExtension: [[extensionIndex copy] autorelease],
 			UTTagClassMIMEType: [[mimeIndex copy] autorelease],
+			_UTTagClassDeviceModelCode: [[deviceModels copy] autorelease],
 		} copy];
 	}
 }
@@ -389,6 +447,12 @@ static UTType *UTRuntimeType(NSString *identifier, UTType *parent)
 	return UTTypeLookup(identifier, NO);
 }
 
++ (UTType *)_typeWithDeviceModelCode:(NSString *)modelCode
+{
+	// Resolve the supplied code, never the host's model or a guessed model family.
+	return [self typeWithTag: modelCode tagClass: _UTTagClassDeviceModelCode conformingToType: nil];
+}
+
 + (NSArray<UTType *> *)typesWithTag:(NSString *)tag tagClass:(NSString *)tagClass conformingToType:(UTType *)supertype
 {
 	UTEnsureRegistry();
@@ -405,7 +469,10 @@ static UTType *UTRuntimeType(NSString *identifier, UTType *parent)
 		if (!supertype || [type conformsToType: supertype])
 			[result addObject: type];
 	}
-	if ([result count] == 0 && [tag rangeOfString: UTDynamicSeparator].location == NSNotFound)
+	// Model codes use the declaration-only LaunchServices contract above. A miss
+	// must not manufacture a data-conforming dynamic type for physical hardware.
+	if ([result count] == 0 && ![tagClass isEqualToString: _UTTagClassDeviceModelCode]
+	    && [tag rangeOfString: UTDynamicSeparator].location == NSNotFound)
 		[result addObject: UTDynamicType(tagClass, tag, supertype ?: UTTypeData)];
 	return result;
 }

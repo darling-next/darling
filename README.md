@@ -184,6 +184,24 @@ entries, including empty values. `tests/src/xtrace_exec_environment_guest.c`
 exercises a traced exec with those settings removed from the caller's environment
 and verifies their reconstructed values in the new guest image.
 
+Mach-port refcount instrumentation is disabled by default. Set
+`DARLING_DIAG=mach-port` before launching the guest to enable its raw-safe
+bootstrap records. `tests/src/mach_port_stdout_guest.c` passes an actual
+directory path through redirected stdout around a real Mach-port operation and
+requires that the captured path still opens the same directory.
+
+UniformTypeIdentifiers resolves device-model tags from the installed CoreServices
+declarations and their ancestor graph. Unknown model codes remain unresolved;
+the framework does not infer hardware from the host or invent a data type.
+`tests/src/uttype_device_model_guest.m` covers model aliases, identifier equality,
+device conformance, misses and unrelated file-type lookup.
+
+Sparse `NSIndexSet` insertion preserves sorted, disjoint ranges. Queries traverse
+those ranges without building an unused cache; the existing ivar layout remains
+unchanged. `tests/src/indexed_collection_filter_guest.m` checks ordered array
+selection, nonmonotonic insertion and set filtering across empty, single-element
+and large sparse collections, including more than 32 ranges.
+
 Code-signing requirement compilation uses the vendored ANTLR lexer and parser
 already linked into Security, rather than loading a separate `csparser.bundle`.
 `tests/src/security_requirement_guest.c` covers valid anchor/identifier
