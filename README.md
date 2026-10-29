@@ -245,6 +245,10 @@ with `xpc_release`. `tests/src/membership_autorelease_guest.m` exercises the rea
 OpenDirectory user-name lookup, UID roundtrip and stable UUID across nested
 autorelease-pool drains.
 
+Successful deferred XPC sends do not destroy their sent Mach rights again.
+The connection retains its send right after queue backpressure; libdispatch
+releases the completed message.
+
 The `posix_spawn` child invalidates libsyscall's cached PID before running
 libSystem child callbacks. Allocators can therefore distinguish child lock
 reinitialization from parent unlock. `tests/src/posix_spawn_pid_cache_guest.c`
@@ -262,6 +266,16 @@ On Linux, Security's single-pass content hashing uses a private
 `F_NOCACHE`; this does not implement `F_NOCACHE` for other callers.
 `tests/src/security_static_validation_guest.c` validates a genuine ad-hoc
 SHA-256 signature and requires modified content to fail the same public API.
+
+Libc's `_os_crash_msg` preserves the optional format/callback separately from
+the composed fatal reason, then terminates the calling process through
+`abort_with_payload`. `tests/src/os_crash_message_guest.c` checks the callback,
+reason propagation, null inputs and `SIGABRT` while the parent stays alive.
+
+`SecTrustCopyCertificateChain` lazily evaluates trust and returns a caller-owned
+snapshot of the evaluated chain, without changing the trust verdict.
+`tests/src/security_chain_copy_guest.c` checks snapshot lifetime after trust
+release and preserves failure for a fixed expired certificate.
 
 Mach-port channel admission may execute on another runnable thread of the same
 task when main is parked. Opening retains the task's IPC space; the later read
