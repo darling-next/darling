@@ -217,6 +217,12 @@ capabilities return Darwin `ENOTSUP`; other native errors remain errors.
 `tests/src/clonefile_guest.c` checks this capability boundary, failed-publication
 cleanup, nofollow, source-offset preservation and destination nonreplacement.
 
+Operation-queue barriers wait for all earlier work to finish, including cancelled
+asynchronous operations, and exclude later work until the barrier finishes.
+Generation fences preserve that ordering independently of queue priorities.
+`tests/src/operation_queue_barrier_guest.m` checks asynchronous completion,
+concurrent-executor exclusion, suspension, cancellation and empty queues.
+
 Code-signing requirement compilation uses the vendored ANTLR lexer and parser
 already linked into Security, rather than loading a separate `csparser.bundle`.
 `tests/src/security_requirement_guest.c` covers valid anchor/identifier
