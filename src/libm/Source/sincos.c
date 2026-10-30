@@ -1,5 +1,12 @@
 #include "math.h"
 
+/*
+ * These functions implement Clang's Darwin sin/cos-combination libcalls.
+ * Do not let the optimizer combine their scalar backend calls back into
+ * __sincos[f]_stret: that would recurse instead of computing either result.
+ * Keep the scalar libm implementations and the public aggregate return ABI.
+ */
+__attribute__((no_builtin("sinf", "cosf")))
 struct __float2 __sincosf_stret(float v)
 {
 	struct __float2 rv = {
@@ -8,6 +15,7 @@ struct __float2 __sincosf_stret(float v)
 	return rv;
 }
 
+__attribute__((no_builtin("sin", "cos")))
 struct __double2 __sincos_stret(double v)
 {
 	struct __double2 rv = {
