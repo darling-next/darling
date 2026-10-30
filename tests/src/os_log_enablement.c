@@ -141,6 +141,24 @@ static void check_hooks(get_type_fn get_type, set_hook_fn set_hook,
 	assert(WTERMSIG(status) == SIGILL || WTERMSIG(status) == SIGTRAP);
 }
 
+static void check_literal_percent(set_hook_fn set_hook, copy_message_fn copy_message)
+{
+	unsigned int calls = 0;
+	unsigned int *observed = &calls;
+	static const char *expected[] = { "%", "loaded printf conversion %s", "7% done: ok%" };
+	release_previous(set_hook(OS_LOG_TYPE_DEFAULT,
+		^(os_log_type_t type, const void *message) {
+			assert(*observed < 3);
+			char *text = copy_message(message);
+			expect_message(text, expected[(*observed)++]);
+			free(text);
+		}));
+	os_log(OS_LOG_DEFAULT, "%%");
+	os_log(OS_LOG_DEFAULT, "loaded printf conversion %%%{public}s", "s");
+	os_log(OS_LOG_DEFAULT, "%d%% done: %{public}s%%", 7, "ok");
+	assert(calls == 3);
+}
+
 static void check_invalid_type(compare_fn compare, os_log_type_t left,
 	os_log_type_t right)
 {
@@ -188,6 +206,7 @@ int main(void)
 	check_invalid_type(compare, (os_log_type_t)3, OS_LOG_TYPE_DEFAULT);
 	check_invalid_type(compare, OS_LOG_TYPE_DEFAULT, (os_log_type_t)UINT8_MAX);
 	check_hooks(get_type, set_hook, copy_message);
+	check_literal_percent(set_hook, copy_message);
 	puts("DARLING_OS_LOG_ENABLEMENT_OK");
 	return 0;
 }
