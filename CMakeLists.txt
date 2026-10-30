@@ -68,6 +68,13 @@ SET(CMAKE_SKIP_RPATH TRUE)
 # SDK deployment target, so we'll just use it and then add it to the compiler flags manually
 set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0 CACHE STRING "The version of macOS we're simulating")
 
+# THE VINTAGE THE GUEST SYSTEM CLAIMS, in one place. Everything that answers "which macOS is this?" derives from
+# here: libsystem_kernel's kern.osproductversion/uname, CoreServices' SystemVersion.plist, and the libdyld image
+# (whose own LC_BUILD_VERSION is what Apple's libxcrun reads as the host version). The pinned Xcode 26.3 requires
+# 15.6 (LSMinimumSystemVersion), so a lower claim makes its tools refuse to run. See the long comment in
+# src/external/xnu/darling/src/libsystem_kernel/emulation/CMakeLists.txt for the measurements behind this number.
+set(DARLING_EMULATED_MACOS_VERSION "15.6" CACHE STRING "macOS version the guest system reports")
+
 project(darling)
 
 enable_language(ASM)
