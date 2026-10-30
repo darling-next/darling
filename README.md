@@ -277,6 +277,17 @@ snapshot of the evaluated chain, without changing the trust verdict.
 `tests/src/security_chain_copy_guest.c` checks snapshot lifetime after trust
 release and preserves failure for a fixed expired certificate.
 
+`NSFileManager.homeDirectoryForCurrentUser` returns the directory file URL of
+`NSHomeDirectory()`, retaining the runtime's current-user resolution and URL
+escaping rather than introducing a separate home-directory cache.
+
+An RPC reply saved during signal delivery retains its original transport.
+`InterruptExit` publishes ring replies to the original lane and sequence, even
+after the thread attaches a replacement lane; failed ring publication preserves
+the UDS delivery path. Native `dserver_interrupt_saved_pending` and
+`dserver_interrupt_saved_granted` exercise real semaphore continuations and
+interrupt calls, checking the result, correlation, wake and single delivery.
+
 Mach-port channel admission may execute on another runnable thread of the same
 task when main is parked. Opening retains the task's IPC space; the later read
 uses its explicit receive requester. `tests/src/plane_mach_port_open_guest.c`
