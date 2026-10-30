@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include "elfcalls.h"
 #include "threads.h"
+#include "../anonymous_vm.h"
 #include <sys/un.h>
 #include <sys/socket.h>
 #include <fcntl.h>
@@ -174,4 +175,5 @@ calls->dserver_ring_doorbell = __mldr_ring_doorbell;
 	calls->postfork_parent = __mldr_postfork_parent;
 	calls->dserver_adopt_union_fd = __mldr_adopt_union_fd;
 	calls->dserver_release_union_fd = __mldr_release_union_fd;
+	calls->vm_operation = mldr_vm_operation;
 }

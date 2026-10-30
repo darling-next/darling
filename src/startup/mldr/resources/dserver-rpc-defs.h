@@ -13,6 +13,7 @@
 #include <darlingserver/rpc-supplement.h>
 
 #include "../signal_atomic.h"
+#include "../anonymous_vm.h"
 
 #define dserver_rpc_hooks_msghdr_t struct msghdr
 #define dserver_rpc_hooks_iovec_t struct iovec
@@ -181,6 +182,7 @@ static int __perf3_recvspin_iters(void) {
 static long int dserver_rpc_hooks_receive_message(int socket, dserver_rpc_hooks_msghdr_t* out_message) {
 	ssize_t ret;
 
+retry:;
 	int spin = __perf3_recvspin_iters();
 	if (spin > 0) {
 		// Bounded non-blocking poll: catch a fast reply (server p50 ~8us) without
@@ -220,10 +222,33 @@ got_message:
 	if (ret >= sizeof(dserver_s2c_callhdr_t)) {
 		dserver_s2c_callhdr_t* callhdr = out_message->msg_iov->iov_base;
 		if (callhdr->call_number == 0x52cca11) {
-			// this is an S2C call
-			// mldr shouldn't need to be doing S2C calls
-			fprintf(stderr, "mldr darlingserver RPC hooks received S2C call\n");
-			abort();
+			if (callhdr->s2c_number != dserver_s2c_msgnum_vm ||
+				ret != sizeof(dserver_s2c_call_vm_t)) return -EBADMSG;
+			dserver_s2c_call_vm_t* call = out_message->msg_iov->iov_base;
+			dserver_s2c_reply_vm_t reply = {
+				.header.call_number = 0x52cca11,
+				.header.pid = getpid(),
+				.header.tid = dserver_rpc_hooks_get_tid(),
+				/* This forced-include precedes the generated architecture enum.
+				 * Its wire values are i386=1, x86_64=2, arm32=3, arm64=4. */
+#if defined(__x86_64__)
+				.header.architecture = 2,
+#elif defined(__i386__)
+				.header.architecture = 1,
+#elif defined(__aarch64__)
+				.header.architecture = 4,
+#elif defined(__arm__)
+				.header.architecture = 3,
+#else
+#error Unsupported native VM S2C architecture
+#endif
+				.header.s2c_number = dserver_s2c_msgnum_vm,
+			};
+			reply.status = mldr_vm_operation(&call->request, &reply.result);
+			if (sendto(socket, &reply, sizeof(reply), 0,
+				dserver_rpc_hooks_get_server_address(),
+				dserver_rpc_hooks_get_server_address_length()) < 0) return -errno;
+			goto retry;
 		}
 	}
 

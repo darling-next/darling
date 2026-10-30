@@ -33,6 +33,12 @@ add_executable(darling_mldr_socket_bitmap_test EXCLUDE_FROM_ALL
 target_include_directories(darling_mldr_socket_bitmap_test PRIVATE
 	"${CMAKE_CURRENT_SOURCE_DIR}")
 
+add_executable(darling_anonymous_vm_native_test EXCLUDE_FROM_ALL
+	../tests/anonymous_vm_native_test.c anonymous_vm.c)
+target_include_directories(darling_anonymous_vm_native_test PRIVATE
+	"${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(darling_anonymous_vm_native_test PRIVATE pthread)
+
 if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
 	add_executable(darling_bsd_syscall_abi_test EXCLUDE_FROM_ALL
 		../tests/bsd_syscall_abi_test.c
@@ -45,6 +51,7 @@ endif()
 set(mldr_sources
 	mldr.c
 	socket_bitmap.c
+	anonymous_vm.c
 	${mldr_guest_path_sources}
 	../runtime_mode.c
 	glibc_fork_reset.c

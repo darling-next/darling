@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <darlingserver/anonymous-vm.h>
 
 // perf#30 REMOVAL STEP 3c: there is no per-thread RPC fd to guard any more, so the callback pair that registered and
 // removed one is gone from the ABI. What remains guarded is the PROCESS socket and the process lifetime pipe, both
@@ -155,6 +156,9 @@ struct elf_calls
 	// close completion. Returns zero or negative Linux errno, even on close
 	// error the entry is forgotten. Unknown/wrong-role FDs are never closed.
 	int (*dserver_release_union_fd)(int fd);
+
+	// APPENDED: one native VM authority for dyld, libkernel and S2C.
+	int (*vm_operation)(const struct darling_vm_request*, struct darling_vm_result*);
 
 };
 

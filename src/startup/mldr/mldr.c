@@ -63,6 +63,7 @@ static void mldr_diagf(const char* fmt, ...); // see the definition
 #include "socket_bitmap.h"
 #include "elfcalls/threads.h"
 #include "elfcalls/elfcalls.h"
+#include "anonymous_vm.h"
 #include <sys/resource.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
@@ -2485,9 +2486,11 @@ void __mldr_prefork_prepare(void) {
 		syscall(SYS_futex, &owned_fd_close_epoch, FUTEX_WAIT_PRIVATE, epoch, NULL, NULL, 0);
 		pthread_mutex_lock(&socket_bitmap.mutex);
 	}
+	mldr_vm_prefork();
 }
 
 void __mldr_postfork_parent(void) {
+	mldr_vm_postfork_parent();
 	pthread_mutex_unlock(&socket_bitmap.mutex);
 	mldr_restore_signals(&fork_signal_mask);
 }
@@ -2521,6 +2524,7 @@ void __mldr_postfork_child(void) {
 	// child's first lane attach adopts its own. Writing a stale number here would be a wake for a
 	// descriptor the child no longer owns.
 	ring_doorbell_fd = -1;
+	mldr_vm_postfork_child();
 	mldr_restore_signals(&fork_signal_mask);
 }
 
