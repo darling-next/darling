@@ -151,8 +151,26 @@ int __darling_thread_initialize_main(void* stack_top, size_t stack_size,
 // perf#30 DIAGNOSIS: lock-free, libc-free writer for this file. `mldr_diagf` is static to mldr.c and taking a libc
 // lock here can deadlock the very path being measured (the loader forks while other threads exist). Bounded to the
 // few lines this diagnostic needs, and writes to fd 2 as well as MLDR_DIAG_LOG when named.
+//
+// OFF BY DEFAULT. These lines used to go to fd 2 of EVERY guest process that created a thread, which is the
+// workload's own stderr: MEASURED, autoconf's link probe in the pinned Ruby 3.4.8 build links fine (`$? = 0`) and
+// then rejects the result because conftest.err held 46 `[dthread-entry-tid=]` lines, so `--disable-...` configure
+// checks that treat stderr as failure report "something wrong with LDFLAGS=\"\"". A guest program's stderr belongs
+// to the guest; diagnostics are opt-in through DARLING_THREAD_DIAG (or MLDR_DIAG_LOG, which already names a file).
+static int mldr_thread_diag_active(void) {
+	static int active = -1;
+	if (active < 0) {
+		const char* flag = getenv("DARLING_THREAD_DIAG");
+		const char* logPath = getenv("MLDR_DIAG_LOG");
+		active = ((flag != NULL && *flag != '\0' && *flag != '0') ||
+			(logPath != NULL && *logPath != '\0')) ? 1 : 0;
+	}
+	return active;
+}
+
 static int mldr_thread_diag_fd = -2;
 static void mldr_thread_diag_write(const char* buf, long n) {
+	if (!mldr_thread_diag_active()) { return; }
 	if (mldr_thread_diag_fd == -2) {
 		mldr_thread_diag_fd = 2;
 		const char* path = getenv("MLDR_DIAG_LOG");
@@ -166,6 +184,7 @@ static void mldr_thread_diag_write(const char* buf, long n) {
 }
 
 static void mldr_thread_diagf(const char* fmt, ...) {
+	if (!mldr_thread_diag_active()) { return; }
 	char buf[192];
 	int at = 0;
 	va_list ap;
@@ -337,8 +356,9 @@ static void* darling_thread_entry(void* p)
 	// thread becoming a guest thread) or in the guest entry it jumps to. Four bounded marks name which.
 	// UNCONDITIONAL ENTRY LINE, raw write, no diagf gating: the earlier bounded marks could not distinguish "this
 	// thread never entered the loader" from "the marker did not print for it", and that distinction is the whole
-	// question left in the basic-20 fault. Every entry now leaves this line, whatever its budget state was.
-	{
+	// question left in the basic-20 fault. Every entry now leaves this line, whatever its budget state was --
+	// WHEN the diagnostic is enabled; by default a guest program's stderr stays its own (see mldr_thread_diag_active).
+	if (mldr_thread_diag_active()) {
 		char eb[64];
 		int en = 0;
 		const char* pre = "[dthread-entry-tid=";
