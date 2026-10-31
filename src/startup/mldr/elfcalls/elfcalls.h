@@ -4,7 +4,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <darlingserver/anonymous-vm.h>
+
+// The public callback table only passes opaque VM protocol pointers. SDK
+// consumers such as xtrace do not depend on the server's wire definitions.
+struct darling_vm_request;
+struct darling_vm_result;
 
 // perf#30 REMOVAL STEP 3c: there is no per-thread RPC fd to guard any more, so the callback pair that registered and
 // removed one is gone from the ABI. What remains guarded is the PROCESS socket and the process lifetime pipe, both
