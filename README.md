@@ -105,6 +105,11 @@ mapping modes return errors rather than successful unmapped addresses.
 `src/startup/tests/anonymous_vm_guest_test.c` exercises aligned allocation,
 maximum-rights enforcement, inheritance and the complete guest map lifecycle.
 
+`libmacho` provides `swap_fileset_entry_command` for clients using modern Mach-O
+fileset records. It byte-swaps every scalar field, including the 64-bit address
+and file offset, the entry-name offset and reserved word. The SDK's deprecation
+annotation does not remove binary clients' need for the entry point.
+
 Native server dispatch preserves both a suspended native stack and an unfinished
 XNU wait continuation. Ordinary calls wait until the active call finishes;
 they cannot discard its stack, held locks or pending cleanup. Only kernel wait
