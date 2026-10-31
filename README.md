@@ -95,6 +95,9 @@ New protected descriptor reservations obey the current soft `RLIMIT_NOFILE`,
 including after a forked service lowers its limit before exec. Existing high
 descriptors retain their ownership until close; lowering or restoring the limit
 does not rebase their identities or change the service's configured limits.
+Managed mutation guards preserve no-follow checks on union-owned leaves.
+Unmanaged host paths, including `/dev/fd` process-substitution magic links,
+retain native open semantics; an explicit guest `O_NOFOLLOW` remains enforced.
 
 Anonymous Mach mappings retain their maximum protections and inheritance in
 the native address-space owner. Current protections cannot exceed that maximum;
@@ -128,6 +131,9 @@ publication; the service pass must not also consume or forward that reply.
 Checkout retains its Thread completion owner until a suppressed management reply
 is recorded, even across exec teardown. Ordinary ring/datagram replies keep their
 detached destination.
+RPC signal-atomic regions restore the incoming mask on every ring and socket
+exit, including committed transport failures. They preserve application-blocked
+signals rather than leaving the temporary asynchronous-signal block installed.
 Interrupt entry preserves an already committed semaphore grant, and neither
 interrupt completion nor a previous grant may satisfy a later wait.
 Executable-path and supplementary-group RPCs use the ordinary ring request/reply
