@@ -356,6 +356,14 @@ with `cmake --build build --target darling_bsd_syscall_abi_test`, then run
 `build/src/startup/mldr/darling_bsd_syscall_abi_test`. This host regression is
 not a substitute for guest boot or installed-runtime acceptance.
 
+On i386, Darwin thread-specific state uses `FS`, separately from native Linux
+TLS in `GS`. The current thread's existing GDT descriptor is reused across
+loader and emulation images; an image-global descriptor cache is not thread
+ownership. Descriptor installation initializes every field and checks the
+native result before loading `FS`. A failed native-thread TSD allocation or
+installation aborts startup rather than entering guest code with an invalid or
+inherited thread identity. The x86_64 TLS path is unchanged.
+
 ### Hello world
 
 Let's start with a Hello world:
