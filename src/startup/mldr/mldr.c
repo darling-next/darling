@@ -653,6 +653,8 @@ int main(int argc, char** argv, char** envp)
 	if (__mldr_process_control_ready()) {
 #if defined(__x86_64__)
 		uint64_t archForPlane = mldr_load_results._32on64 ? 1u : 2u;
+#elif defined(__i386__)
+		uint64_t archForPlane = 1u;
 #else
 		uint64_t archForPlane = 4u;
 #endif
@@ -684,6 +686,8 @@ int main(int argc, char** argv, char** envp)
 		// plane failure -- a failure here is fatal and loud, because falling back would hide a broken route.
 #if defined(__x86_64__)
 		uint64_t archForTrap = mldr_load_results._32on64 ? 1u : 2u;
+#elif defined(__i386__)
+		uint64_t archForTrap = 1u;
 #else
 		uint64_t archForTrap = 4u;
 #endif
@@ -2766,6 +2770,8 @@ static void setup_space(struct load_results* lr, bool is_64_bit) {
 	g_pending_checkin.arch_bits =
 #if defined(__x86_64__)
 		mldr_load_results._32on64 ? 1u : 2u;
+#elif defined(__i386__)
+		1u;
 #else
 		4u;
 #endif
