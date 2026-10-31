@@ -96,6 +96,15 @@ including after a forked service lowers its limit before exec. Existing high
 descriptors retain their ownership until close; lowering or restoring the limit
 does not rebase their identities or change the service's configured limits.
 
+Anonymous Mach mappings retain their maximum protections and inheritance in
+the native address-space owner. Current protections cannot exceed that maximum;
+lowering it also clamps current access. Alignment, fixed-address collisions,
+partial-range splits and `VM_INHERIT_NONE` across fork use the same authority
+through local and server-mediated calls. Unsupported shared/object-backed
+mapping modes return errors rather than successful unmapped addresses.
+`src/startup/tests/anonymous_vm_guest_test.c` exercises aligned allocation,
+maximum-rights enforcement, inheritance and the complete guest map lifecycle.
+
 Native server dispatch preserves both a suspended native stack and an unfinished
 XNU wait continuation. Ordinary calls wait until the active call finishes;
 they cannot discard its stack, held locks or pending cleanup. Only kernel wait
