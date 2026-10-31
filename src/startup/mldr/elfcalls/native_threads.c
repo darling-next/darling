@@ -157,6 +157,12 @@ void __darling_native_thread_install_tsd(void)
 	if (dthread == NULL) {
 		/* Loud, never silent: without the block this thread keeps the CREATOR'S GS base, which is the defect. */
 		native_thread_trace("tsd-allocation-FAILED", 0, 0);
+#if defined(__i386__)
+		/* Do not enter native code with the creator's guest identity. */
+		static const char message[] = "Cannot allocate i386 native-thread TSD\n";
+		(void)!write(2, message, sizeof(message) - 1);
+		abort();
+#endif
 		return;
 	}
 
@@ -168,6 +174,13 @@ void __darling_native_thread_install_tsd(void)
 	__asm__ volatile("movq %%gs:24, %0" : "=r"(slot3));
 #endif
 	native_thread_trace((rc == 0) ? "tsd-installed" : "tsd-install-FAILED", (unsigned long)rc, slot3);
+#if defined(__i386__)
+	if (rc != 0) {
+		static const char message[] = "Cannot install i386 native-thread TSD\n";
+		(void)!write(2, message, sizeof(message) - 1);
+		abort();
+	}
+#endif
 }
 
 static void* native_thread_entry(void* p)

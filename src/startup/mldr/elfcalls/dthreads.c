@@ -64,10 +64,21 @@ int __darling_dthread_set_tsd_base(void* tsd_base)
 		unsigned int limit_in_pages:1;
 		unsigned int seg_not_present:1;
 		unsigned int useable:1;
+		unsigned int reserved:25;
 	};
-	static int entry_number = -1;
+	unsigned short fs, gs;
+	__asm__ volatile("movw %%fs, %0; movw %%gs, %1"
+			: "=r"(fs), "=r"(gs));
+	/* Match the guest machdep TLS setter: FS, not a process/image-static
+	 * cache, identifies this thread's guest descriptor. Linux libc's GS
+	 * must never be overwritten. clone/fork inherit FS and its TLS entry,
+	 * so replacing the base also works for reused native pthread stacks.
+	 */
+	if (fs && ((fs & 7) != 3 || fs == gs)) {
+		return -EINVAL;
+	}
 	struct user_desc desc = {
-		.entry_number = entry_number,
+		.entry_number = fs ? fs >> 3 : (unsigned int)-1,
 		.base_addr = (unsigned long)tsd_base,
 		.limit = 4096,
 		.seg_32bit = 1,
@@ -76,14 +87,15 @@ int __darling_dthread_set_tsd_base(void* tsd_base)
 		.limit_in_pages = 1,
 		.seg_not_present = 0,
 		.useable = 1,
+		.reserved = 0,
 	};
 
 	if (syscall(SYS_set_thread_area, &desc) == -1) {
 		return -errno;
 	}
 
-	entry_number = desc.entry_number;
-	__asm__ volatile("movl %0, %%fs" :: "r"(entry_number * 8 + 3));
+	__asm__ volatile("movw %0, %%fs"
+			:: "r"((unsigned short)(desc.entry_number * 8 + 3)) : "memory");
 	return 0;
 #else
 	(void)tsd_base;
