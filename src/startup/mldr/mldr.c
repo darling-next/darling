@@ -2275,21 +2275,16 @@ char wake = 0;
 		return map;
 	}
 	close(memfd); // the mapping holds the reference
-	if (rc != 0 || reject != dserver_ring_ok || wake_fd < 0) {
+	if (rc != 0 || reject != dserver_ring_ok) {
 		munmap(map, total);
 		if (wake_fd >= 0) close(wake_fd);
 		mldr_ring_lane_state = -1;
 		return 0;
 	}
-	// EXPERIMENT C: do NOT adopt the process doorbell here. The doorbell is the loader's canonical fd;
-	// adopting it this early is a candidate cause of the boot break (A/B showed the harm is not the
-	// adoption of the lane by a later image, so the remaining suspect is this step). The lane keeps a
-	// non-owning reference semantics either way -- the FIRST RUNTIME ATTACH adopts the doorbell exactly
-	// as it does today.
-	MLDR_TAG("[mldr-seed] doorbell-in pid=%d wake=%d mode=%s\n", (int)getpid(), wake_fd, getenv("MLDR_SEED_KEEP_DOORBELL") ? "adopt" : "close");
-	// The seed ALWAYS adopts the canonical doorbell: experiment C showed closing it changes nothing about
-	// the boot break, while leaving it closed left every later image (and therefore every borrowed view)
-	// with doorbell=-1 and no way to wake the server.
+	// The courier delivers one canonical process doorbell. A successful
+	// reattach may carry no fresh descriptor; resolve the existing owner below
+	// and still reject an attach with no usable doorbell.
+	MLDR_TAG("[mldr-seed] doorbell-in pid=%d wake=%d\n", (int)getpid(), wake_fd);
 	int doorbell = __mldr_ring_doorbell(wake_fd);
 	MLDR_TAG("[mldr-seed] doorbell-out pid=%d fd=%d\n", (int)getpid(), doorbell);
 	if (doorbell < 0) { munmap(map, total); mldr_ring_lane_state = -1; return 0; }
