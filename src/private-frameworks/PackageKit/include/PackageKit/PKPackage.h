@@ -45,6 +45,14 @@ extern NSString * const PKPackageOptionValidateDigest;
  * methods report a trusted or installed package.
  */
 @interface PKPackage : NSObject
+{
+@private
+    NSURL *_fileURL;
+    NSDictionary *_options;
+    PKArchive *_archive;
+    PKPackageInfo *_packageInfo;
+    NSDictionary *_componentMap;
+}
 
 + (instancetype) packageWithPath: (NSString *) path;
 + (instancetype) packageWithPath: (NSString *) path options: (NSDictionary *) options;

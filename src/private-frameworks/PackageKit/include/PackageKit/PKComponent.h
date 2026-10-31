@@ -27,6 +27,17 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
  * bookkeeping (installation material) is not implemented.
  */
 @interface PKComponent : NSObject
+{
+@private
+    NSString *_identifier;
+    NSString *_version;
+    /* The owning package owns its component map, so retaining it here would
+     * only create a cycle; the native component stores it unretained too. */
+    __unsafe_unretained PKPackage *_package;
+    BOOL _relocatable;
+    BOOL _versionChecked;
+    BOOL _strictIdentifier;
+}
 
 - (instancetype) initWithIdentifier: (NSString *) identifier
                             version: (NSString *) version;

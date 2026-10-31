@@ -63,12 +63,6 @@ static xar_file_t PKXARArchiveFileForSubpath (xar_t xar, NSString *subpath)
 }
 
 @implementation PKXARArchive
-{
-    NSString *_path;
-    NSData *_tocDigest;
-    xar_t _xar;
-    BOOL _skipsVerifyIfUnsigned;
-}
 
 - (instancetype) initForReadingFromPath: (NSString *) path
 {

@@ -29,6 +29,14 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
  * ("<major>.<minor>.<patch>"); sourceVersion and buildVersion are raw.
  */
 @interface PKBundleComponentVersion : NSObject
+{
+@private
+    NSString *_shortVersionString;
+    NSString *_bundleVersion;
+    NSString *_sourceVersion;
+    NSString *_buildVersion;
+    BOOL _onDiskComponent;
+}
 
 + (instancetype) bundleComponentVersionWithPackageAttributes: (NSDictionary *) attributes;
 + (instancetype) bundleComponentVersionWithOnDiskCFBundle: (CFBundleRef) bundle;

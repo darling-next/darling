@@ -29,6 +29,13 @@ extern NSString * const PKBundleStorageTypeCFBundle;
  * root; prefixPath is its parent directory (nil for a top-level bundle).
  */
 @interface PKBundleComponent : PKComponent
+{
+@private
+    NSString *_storageType;
+    NSString *_bundlePath;
+    PKBundleComponentVersion *_bundleVersion;
+    NSInteger _overwriteAction;
+}
 
 - (instancetype) initWithIdentifier: (NSString *) identifier
                    versionAttributes: (NSDictionary *) versionAttributes

@@ -115,9 +115,6 @@ static NSString *PKRelativeBundlePath (NSString *path)
 }
 
 @implementation PKPackageInfo
-{
-    NSXMLDocument *_xmlDocument;
-}
 
 - (instancetype) initWithData: (NSData *) data
 {

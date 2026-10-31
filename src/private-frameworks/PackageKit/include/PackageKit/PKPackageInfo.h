@@ -28,6 +28,10 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
  * are not parsed here.
  */
 @interface PKPackageInfo : NSObject
+{
+@private
+    NSXMLDocument *_xmlDocument;
+}
 
 - (instancetype) initWithData: (NSData *) data;
 

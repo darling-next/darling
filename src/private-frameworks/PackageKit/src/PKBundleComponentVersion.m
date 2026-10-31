@@ -69,13 +69,6 @@ static NSString *PKStringFromVersionValue (id value)
 }
 
 @implementation PKBundleComponentVersion
-{
-    NSString *_shortVersionString;
-    NSString *_bundleVersion;
-    NSString *_sourceVersion;
-    NSString *_buildVersion;
-    BOOL _onDiskComponent;
-}
 
 + (instancetype) bundleComponentVersionWithPackageAttributes: (NSDictionary *) attributes
 {

@@ -22,12 +22,6 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 #import <PackageKit/PKPackageReference.h>
 
 @implementation PKPackageSpecifier
-{
-    PKPackageReference *_packageReference;
-    NSString *_prefixPath;
-    NSData *_archiveDigestData;
-    PKPackage *_package;
-}
 
 - (instancetype) initWithPackage: (PKPackage *) package
 {

@@ -25,6 +25,11 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
  * nor records that any digest was verified.
  */
 @interface PKPackageReference : NSObject
+{
+@private
+    NSDictionary *_dictionaryRepresentation;
+    NSURL *_baseURL;
+}
 
 - (instancetype) initWithURL: (NSURL *) url
                   identifier: (NSString *) identifier

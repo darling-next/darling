@@ -24,12 +24,6 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 NSString * const PKBundleStorageTypeCFBundle = @"cfbundle";
 
 @implementation PKBundleComponent
-{
-    NSString *_storageType;
-    NSString *_bundlePath;
-    PKBundleComponentVersion *_bundleVersion;
-    NSInteger _overwriteAction;
-}
 
 - (instancetype) initWithIdentifier: (NSString *) identifier
                    versionAttributes: (NSDictionary *) versionAttributes

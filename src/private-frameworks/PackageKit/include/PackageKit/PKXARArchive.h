@@ -19,6 +19,8 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 
 #import <PackageKit/PKArchive.h>
 
+struct __xar_t;
+
 /*
  * Flat XAR archive reader backed by the vendored libxar C API.
  *
@@ -27,6 +29,13 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
  * first open so it stays available after the handle is closed.
  */
 @interface PKXARArchive : PKArchive
+{
+@private
+    NSString *_path;
+    NSData *_tocDigest;
+    const struct __xar_t *_xar;
+    BOOL _skipsVerifyIfUnsigned;
+}
 
 - (instancetype) initForReadingFromPath: (NSString *) path;
 - (instancetype) initForReadingFromPath: (NSString *) path options: (NSDictionary *) options;

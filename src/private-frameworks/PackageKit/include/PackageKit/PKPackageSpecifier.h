@@ -28,6 +28,13 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
  * evaluating such a request is not implemented.
  */
 @interface PKPackageSpecifier : NSObject
+{
+@private
+    PKPackageReference *_packageReference;
+    NSString *_prefixPath;
+    NSData *_archiveDigestData;
+    PKPackage *_package;
+}
 
 - (instancetype) initWithPackage: (PKPackage *) package;
 - (instancetype) initWithPackageReference: (PKPackageReference *) packageReference;

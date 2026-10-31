@@ -31,13 +31,6 @@ NSString * const PKPackageOptionValidateDigest = @"ValidateDigest";
 @end
 
 @implementation PKPackage
-{
-    NSURL *_fileURL;
-    NSDictionary *_options;
-    PKArchive *_archive;
-    PKPackageInfo *_packageInfo;
-    NSDictionary *_componentMap;
-}
 
 + (instancetype) packageWithPath: (NSString *) path
 {

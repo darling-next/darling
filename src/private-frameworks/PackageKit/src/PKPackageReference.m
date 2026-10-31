@@ -34,10 +34,6 @@ static NSString * const PKReferenceLegacyMD5Key = @"MD5";
 static const NSInteger PKReferenceMD5HashAlgorithm = 100;
 
 @implementation PKPackageReference
-{
-    NSDictionary *_dictionaryRepresentation;
-    NSURL *_baseURL;
-}
 
 - (instancetype) initWithURL: (NSURL *) url
                   identifier: (NSString *) identifier
