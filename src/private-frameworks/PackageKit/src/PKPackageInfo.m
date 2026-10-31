@@ -292,10 +292,18 @@ static NSString *PKRelativeBundlePath (NSString *path)
                 }
 
                 NSXMLElement *existing = [bundleElements objectForKey: identifier];
-                if (existing != nil)
+                if (existing != nil) {
+                    /* ID-only directives must not erase packaged paths or
+                     * versions; explicitly supplied later attributes win. */
+                    for (NSXMLNode *attribute in [existing attributes]) {
+                        NSString *name = [attribute name];
+                        if ([attributes objectForKey: name] == nil)
+                            [attributes setObject: [attribute stringValue] forKey: name];
+                    }
                     [existing setAttributesAsDictionary: attributes];
-                else
+                } else {
                     [bundleElements setObject: element forKey: identifier];
+                }
 
                 NSArray *children = [element elementsForName: PKBundleElementName];
                 if (children != nil) {

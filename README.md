@@ -113,6 +113,15 @@ fileset records. It byte-swaps every scalar field, including the 64-bit address
 and file offset, the entry-name offset and reserved word. The SDK's deprecation
 annotation does not remove binary clients' need for the entry point.
 
+URLSession WebSocket connection updates flush pending output before servicing
+input on the shared session worker. Plain-socket read callbacks recheck actual
+descriptor readiness before advertising bytes: an earlier read may already have
+consumed a coalesced event's data. Dropping a stale event rearms the callback,
+because these streams do not enable automatic read-callback rearming.
+The Swift overlay's `URLSessionNetworking.swift` and `networking_adversarial.swift`
+consumers exercise protocol completion, cancellation, slow draining, control
+frames and untrusted-TLS rejection through the installed runtime.
+
 The IOKit platform expert publishes `IOPlatformUUID` from the same stable host
 identity as `gethostuuid`, without inventing Apple model, serial or board values.
 In-band single-service matching returns a registered service or not-found.
