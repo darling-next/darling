@@ -108,6 +108,13 @@ mapping modes return errors rather than successful unmapped addresses.
 `src/startup/tests/anonymous_vm_guest_test.c` exercises aligned allocation,
 maximum-rights enforcement, inheritance and the complete guest map lifecycle.
 
+Mach `VM_PROT_COPY` reuses private native COW mappings without copying pages or
+remapping backing files. It can add WRITE to the previous maximum, not arbitrary
+READ/EXECUTE, and preserves inheritance and file/shared-alias isolation.
+Shared-to-private conversion and current-rights changes across multiple native
+VMAs return unsupported before mutation. The guest VM fixture checks these
+boundaries, maximum-rights changes and private-file isolation.
+
 `libmacho` provides `swap_fileset_entry_command` for clients using modern Mach-O
 fileset records. It byte-swaps every scalar field, including the 64-bit address
 and file offset, the entry-name offset and reserved word. The SDK's deprecation
