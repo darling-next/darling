@@ -17,6 +17,27 @@ You should have received a copy of the GNU General Public License
 along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#import <Foundation/Foundation.h>
+
+@class PKPackage;
+@class PKPackageReference;
+
+/*
+ * A package plus the destination prefix it is being considered for.  This is
+ * the metadata object an install request would be built from; building or
+ * evaluating such a request is not implemented.
+ */
 @interface PKPackageSpecifier : NSObject
+
+- (instancetype) initWithPackage: (PKPackage *) package;
+- (instancetype) initWithPackageReference: (PKPackageReference *) packageReference;
+
+/* The package, loaded from the reference on demand. */
+- (PKPackage *) package;
+- (PKPackageReference *) packageReference;
+- (void) setPackageReference: (PKPackageReference *) packageReference;
+
+- (NSString *) prefixPath;
+- (void) setPrefixPath: (NSString *) prefixPath;
 
 @end

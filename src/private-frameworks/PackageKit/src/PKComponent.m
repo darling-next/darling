@@ -18,15 +18,93 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #import <PackageKit/PackageKit.h>
+#import <PackageKit/PKComponent.h>
 
 @implementation PKComponent
-
-- (NSMethodSignature *)methodSignatureForSelector:(SEL)aSelector {
-    return [NSMethodSignature signatureWithObjCTypes: "v@:"];
+{
+    NSString *_identifier;
+    NSString *_version;
+    /* The owning package owns its component map, so retaining it here would
+     * only create a cycle; the native component stores it unretained too. */
+    __unsafe_unretained PKPackage *_package;
+    BOOL _relocatable;
+    BOOL _versionChecked;
+    BOOL _strictIdentifier;
 }
 
-- (void)forwardInvocation:(NSInvocation *)anInvocation {
-    NSLog(@"Stub called: %@ in %@", NSStringFromSelector([anInvocation selector]), [self class]);
+- (instancetype) initWithIdentifier: (NSString *) identifier
+                            version: (NSString *) version
+{
+    if (identifier == nil) {
+        [NSException raise: NSInvalidArgumentException
+                    format: @"-[%@ %@]: an identifier is required",
+                            [self class], NSStringFromSelector(_cmd)];
+    }
+
+    if (version == nil) {
+        [NSException raise: NSInvalidArgumentException
+                    format: @"-[%@ %@]: a version is required",
+                            [self class], NSStringFromSelector(_cmd)];
+    }
+
+    self = [super init];
+    if (self == nil)
+        return nil;
+
+    _identifier = [identifier copy];
+    _version = [version copy];
+
+    return self;
+}
+
+- (NSString *) identifier
+{
+    return _identifier;
+}
+
+- (NSString *) version
+{
+    return _version;
+}
+
+- (PKPackage *) package
+{
+    return _package;
+}
+
+- (void) setPackage: (PKPackage *) package
+{
+    _package = package;
+}
+
+- (BOOL) relocatable
+{
+    return _relocatable;
+}
+
+- (void) setRelocatable: (BOOL) flag
+{
+    _relocatable = flag;
+}
+
+- (BOOL) versionChecked
+{
+    return _versionChecked;
+}
+
+- (void) setVersionChecked: (BOOL) flag
+{
+    _versionChecked = flag;
+}
+
+- (BOOL) strictIdentifier
+{
+    return _strictIdentifier;
+}
+
+- (void) setStrictIdentifier: (BOOL) flag
+{
+    _strictIdentifier = flag;
 }
 
 @end

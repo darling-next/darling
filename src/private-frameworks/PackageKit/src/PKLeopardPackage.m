@@ -18,15 +18,73 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #import <PackageKit/PackageKit.h>
+#import <PackageKit/PKLeopardPackage.h>
+#import <PackageKit/PKPackageInfo.h>
+
+/* Implemented by PKPackage.m. */
+@interface PKPackage (PKLeopardPackagePrivate)
+
+- (void) _setPackageInfo: (PKPackageInfo *) packageInfo;
+
+@end
 
 @implementation PKLeopardPackage
 
-- (NSMethodSignature *)methodSignatureForSelector:(SEL)aSelector {
-    return [NSMethodSignature signatureWithObjCTypes: "v@:"];
+- (instancetype) initWithURL: (NSURL *) url
+{
+    return [self initWithURL: url options: nil];
 }
 
-- (void)forwardInvocation:(NSInvocation *)anInvocation {
-    NSLog(@"Stub called: %@ in %@", NSStringFromSelector([anInvocation selector]), [self class]);
+/* A URL may carry a fragment naming the product payload the package lives
+ * in; the percent-decoded fragment is the archive subpath prefix. */
+- (NSString *) _archiveSubpathWithFileName: (NSString *) fileName
+{
+    NSString *fragment = [[[self fileURL] fragment] stringByRemovingPercentEncoding];
+
+    if (fragment == nil)
+        return fileName;
+
+    return [fragment stringByAppendingPathComponent: fileName];
+}
+
+- (instancetype) initWithURL: (NSURL *) url options: (NSDictionary *) options
+{
+    NSString *packageInfoPath;
+    NSData *packageInfoData;
+    PKPackageInfo *packageInfo;
+    NSNumber *formatVersion;
+
+    self = [super initWithURL: url options: options];
+    if (self == nil)
+        return nil;
+
+    packageInfoPath = [self _archiveSubpathWithFileName: @"PackageInfo"];
+    packageInfoData = [[self archive] dataForPath: packageInfoPath];
+    if (packageInfoData == nil) {
+        NSLog(@"PackageKit: %@ has no readable %@ member", [url path], packageInfoPath);
+        return nil;
+    }
+
+    packageInfo = [[PKPackageInfo alloc] initWithData: packageInfoData];
+    if (packageInfo == nil) {
+        NSLog(@"PackageKit: %@ has a malformed %@ member", [url path], packageInfoPath);
+        return nil;
+    }
+
+    if ([packageInfo identifier] == nil) {
+        NSLog(@"PackageKit: %@ names no package identifier", [url path]);
+        return nil;
+    }
+
+    formatVersion = [packageInfo formatVersion];
+    if ([formatVersion compare: @2] == NSOrderedDescending) {
+        NSLog(@"PackageKit: %@ uses unsupported format-version %@", [url path], formatVersion);
+        return nil;
+    }
+
+    [self _setPackageInfo: packageInfo];
+
+    return self;
 }
 
 @end

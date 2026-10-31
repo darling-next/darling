@@ -17,6 +17,27 @@ You should have received a copy of the GNU General Public License
 along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-@interface PKXARArchive : PKMutableArchive
+#import <PackageKit/PKArchive.h>
+
+/*
+ * Flat XAR archive reader backed by the vendored libxar C API.
+ *
+ * The archive is opened lazily and closed again by -closeArchive, matching
+ * PKPackage's factory contract: the table-of-contents digest is captured at
+ * first open so it stays available after the handle is closed.
+ */
+@interface PKXARArchive : PKArchive
+
+- (instancetype) initForReadingFromPath: (NSString *) path;
+- (instancetype) initForReadingFromPath: (NSString *) path options: (NSDictionary *) options;
+
+- (NSString *) archivePath;
+- (BOOL) closeArchive;
+- (NSData *) dataForPath: (NSString *) path;
+- (NSData *) archiveDigestData;
+- (BOOL) fileExistsAtPath: (NSString *) path;
+
+/* Member checksum verification is skipped for unsigned archives when set. */
+- (void) _setSkipsVerifyIfUnsigned: (BOOL) skip;
 
 @end

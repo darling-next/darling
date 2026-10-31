@@ -17,6 +17,24 @@ You should have received a copy of the GNU General Public License
 along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#import <Foundation/Foundation.h>
+
+/*
+ * The pkg-info document of a flat package.
+ *
+ * Only the root metadata used by package identity and the bundle graph is
+ * modelled: identifier, version, format-version and the bundle/directive
+ * elements.  Payload/script file containers are installation material and
+ * are not parsed here.
+ */
 @interface PKPackageInfo : NSObject
+
+- (instancetype) initWithData: (NSData *) data;
+
+- (NSString *) identifier;
+- (NSString *) version;
+
+/* Root format-version as a number; a missing attribute defaults to 2. */
+- (NSNumber *) formatVersion;
 
 @end

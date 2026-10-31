@@ -18,15 +18,22 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #import <PackageKit/PackageKit.h>
+#import <PackageKit/PKInstallRequest.h>
 
 @implementation PKInstallRequest
 
-- (NSMethodSignature *)methodSignatureForSelector:(SEL)aSelector {
-    return [NSMethodSignature signatureWithObjCTypes: "v@:"];
-}
+/* There is no trust evaluation, authorization, SystemPolicy preflight or
+ * install service in this tree.  Reporting a request here would let a caller
+ * treat an unverified package as installable, so this boundary raises. */
++ (instancetype) requestWithPackages: (NSArray *) packages
+                         destination: (NSString *) destination
+{
+    [NSException raise: NSInvalidArgumentException
+                format: @"+[PKInstallRequest requestWithPackages:destination:] is unimplemented: "
+                        @"PackageKit trust evaluation, authorization and the install service "
+                        @"are not available"];
 
-- (void)forwardInvocation:(NSInvocation *)anInvocation {
-    NSLog(@"Stub called: %@ in %@", NSStringFromSelector([anInvocation selector]), [self class]);
+    return nil;
 }
 
 @end

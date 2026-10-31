@@ -17,6 +17,31 @@ You should have received a copy of the GNU General Public License
 along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#import <PackageKit/PKComponent.h>
+
+@class PKBundleComponentVersion;
+
+/* Storage type used when a bundle element names none. */
+extern NSString * const PKBundleStorageTypeCFBundle;
+
+/*
+ * A bundle inside a package.  bundlePath is relative to the package payload
+ * root; prefixPath is its parent directory (nil for a top-level bundle).
+ */
 @interface PKBundleComponent : PKComponent
+
+- (instancetype) initWithIdentifier: (NSString *) identifier
+                   versionAttributes: (NSDictionary *) versionAttributes
+                          bundlePath: (NSString *) bundlePath
+                        storageType: (NSString *) storageType;
+
+- (NSString *) bundlePath;
+- (PKBundleComponentVersion *) bundleVersion;
+- (NSString *) prefixPath;
+- (NSString *) storageType;
+
+/* Bundle directive action: 0 none, 1 upgrade, 2 update, 3 atomic update. */
+- (NSInteger) overwriteAction;
+- (void) setOverwriteAction: (NSInteger) action;
 
 @end

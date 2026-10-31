@@ -18,15 +18,71 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #import <PackageKit/PackageKit.h>
+#import <PackageKit/PKXARArchive.h>
+
+NSString * const PKArchiveOpenOptionValidatedDigest = @"ValidatedHash";
+
+@interface PKArchive (PKConcreteArchiveInitializer)
+
+- (instancetype) initForReadingFromPath: (NSString *) path options: (NSDictionary *) options;
+
+@end
 
 @implementation PKArchive
 
-- (NSMethodSignature *)methodSignatureForSelector:(SEL)aSelector {
-    return [NSMethodSignature signatureWithObjCTypes: "v@:"];
++ (instancetype) archiveWithPath: (NSString *) path
+{
+    return [self archiveWithPath: path options: nil];
 }
 
-- (void)forwardInvocation:(NSInvocation *)anInvocation {
-    NSLog(@"Stub called: %@ in %@", NSStringFromSelector([anInvocation selector]), [self class]);
++ (instancetype) archiveWithPath: (NSString *) path options: (NSDictionary *) options
+{
+    NSString *standardizedPath = [path stringByStandardizingPath];
+
+    for (id archiveClass in [self _allArchiveClasses]) {
+        PKArchive *archive = [[archiveClass alloc] initForReadingFromPath: standardizedPath
+                                                                  options: options];
+
+        if (archive != nil)
+            return archive;
+    }
+
+    return nil;
+}
+
++ (NSArray *) _allArchiveClasses
+{
+    /* PKFolderArchive is not implemented, so it is not advertised here. */
+    return @[ [PKXARArchive class] ];
+}
+
+- (NSString *) archivePath
+{
+    [NSException raise: NSInvalidArgumentException
+                format: @"-[%@ %@]: abstract method, implement it in a concrete archive reader",
+                        [self class], NSStringFromSelector(_cmd)];
+    return nil;
+}
+
+- (BOOL) closeArchive
+{
+    [NSException raise: NSInvalidArgumentException
+                format: @"-[%@ %@]: abstract method, implement it in a concrete archive reader",
+                        [self class], NSStringFromSelector(_cmd)];
+    return NO;
+}
+
+- (NSData *) dataForPath: (NSString *) path
+{
+    [NSException raise: NSInvalidArgumentException
+                format: @"-[%@ %@]: abstract method, implement it in a concrete archive reader",
+                        [self class], NSStringFromSelector(_cmd)];
+    return nil;
+}
+
+- (NSData *) archiveDigestData
+{
+    return nil;
 }
 
 @end

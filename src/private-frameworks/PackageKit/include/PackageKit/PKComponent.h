@@ -17,6 +17,34 @@ You should have received a copy of the GNU General Public License
 along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#import <Foundation/Foundation.h>
+
+@class PKPackage;
+
+/*
+ * A package component.  This class models the identity and the bundle
+ * directive flags that the metadata path needs; payload subpath and script
+ * bookkeeping (installation material) is not implemented.
+ */
 @interface PKComponent : NSObject
+
+- (instancetype) initWithIdentifier: (NSString *) identifier
+                            version: (NSString *) version;
+
+- (NSString *) identifier;
+- (NSString *) version;
+
+/* The package that owns this component; not retained by the component. */
+- (PKPackage *) package;
+- (void) setPackage: (PKPackage *) package;
+
+- (BOOL) relocatable;
+- (void) setRelocatable: (BOOL) flag;
+
+- (BOOL) versionChecked;
+- (void) setVersionChecked: (BOOL) flag;
+
+- (BOOL) strictIdentifier;
+- (void) setStrictIdentifier: (BOOL) flag;
 
 @end

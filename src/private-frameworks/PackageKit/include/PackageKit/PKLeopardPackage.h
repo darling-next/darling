@@ -16,8 +16,17 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
-#import "PKPackage.h"
 
+#import <PackageKit/PKPackage.h>
+
+/*
+ * The flat-XAR ("Leopard") package reader: opens the archive, parses the
+ * PackageInfo member and rejects a package without an identifier or with a
+ * format-version newer than 2.
+ */
 @interface PKLeopardPackage : PKPackage
+
+- (instancetype) initWithURL: (NSURL *) url;
+- (instancetype) initWithURL: (NSURL *) url options: (NSDictionary *) options;
 
 @end
