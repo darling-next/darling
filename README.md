@@ -122,6 +122,14 @@ The Swift overlay's `URLSessionNetworking.swift` and `networking_adversarial.swi
 consumers exercise protocol completion, cancellation, slow draining, control
 frames and untrusted-TLS rejection through the installed runtime.
 
+PackageKit reads local flat-XAR `PackageInfo` metadata. ID-only component
+directives preserve previously supplied paths and versions; explicit later
+attributes override them. Bundle enumeration joins nested paths and reports
+the nearest packaged ancestor in path order. Malformed XML, unsupported package
+format versions and mismatched expected TOC digests fail rather than yielding
+partial metadata. TOC/data-integrity parsing is not publisher trust,
+authorization or installation; the install-request factory remains unsupported.
+
 The IOKit platform expert publishes `IOPlatformUUID` from the same stable host
 identity as `gethostuuid`, without inventing Apple model, serial or board values.
 In-band single-service matching returns a registered service or not-found.
