@@ -113,6 +113,12 @@ fileset records. It byte-swaps every scalar field, including the 64-bit address
 and file offset, the entry-name offset and reserved word. The SDK's deprecation
 annotation does not remove binary clients' need for the entry point.
 
+The IOKit platform expert publishes `IOPlatformUUID` from the same stable host
+identity as `gethostuuid`, without inventing Apple model, serial or board values.
+In-band single-service matching returns a registered service or not-found.
+Property serialization uses out-of-line data rather than direct writes into a
+client's address space.
+
 Native server dispatch preserves both a suspended native stack and an unfinished
 XNU wait continuation. Ordinary calls wait until the active call finishes;
 they cannot discard its stack, held locks or pending cleanup. Only kernel wait
