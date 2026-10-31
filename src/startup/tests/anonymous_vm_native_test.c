@@ -38,7 +38,49 @@ static void* worker(void* unused) {
 	}
 	return NULL;
 }
+static void protect_copy_contract(void) {
+	struct darling_vm_result r;
+	assert(!operate((struct darling_vm_request){ .operation = DARLING_VM_ANONYMOUS_MAP,
+		.size = 4096, .flags = 1, .protection = 1, .maximum = 1,
+		.inheritance = 2, .fd = -1 }, &r));
+	uint64_t address = r.address;
+	struct darling_vm_request protect = { .operation = DARLING_VM_MACH_PROTECT,
+		.address = address, .size = 4096, .protection = 0x15 };
+	assert(operate(protect, NULL) == -EACCES);
+	protect.protection = 0x13;
+	assert(!operate(protect, NULL));
+	r = query(address);
+	assert(r.protection == 3 && r.maximum == 3 && r.inheritance == 2 && !r.shared);
+	*(volatile char*)(uintptr_t)address = 42;
+	protect.protection = 0x11;
+	protect.set_maximum = 1;
+	assert(!operate(protect, NULL));
+	r = query(address);
+	assert(r.protection == 1 && r.maximum == 1 && r.inheritance == 2);
+	protect.operation = DARLING_VM_PROTECT;
+	protect.protection = 0x13;
+	assert(operate(protect, NULL) == -EINVAL);
+	assert(*(volatile char*)(uintptr_t)address == 42);
+	assert(!operate((struct darling_vm_request){ .operation = DARLING_VM_UNMAP,
+		.address = address, .size = 4096 }, NULL));
+	assert(!operate((struct darling_vm_request){ .operation = DARLING_VM_MMAP,
+		.size = 4096, .protection = 3, .flags = MAP_SHARED | MAP_ANONYMOUS,
+		.fd = -1 }, &r));
+	address = r.address;
+	struct darling_vm_result before_copy = query(address);
+	protect = (struct darling_vm_request){ .operation = DARLING_VM_MACH_PROTECT,
+		.address = address, .size = 4096, .protection = 0x11, .set_maximum = 1 };
+	assert(operate(protect, NULL) == -ENOTSUP);
+	r = query(address);
+	assert(r.protection == before_copy.protection && r.maximum == before_copy.maximum);
+	assert(r.inheritance == before_copy.inheritance && r.shared == before_copy.shared);
+	*(volatile char*)(uintptr_t)address = 71;
+	assert(!operate((struct darling_vm_request){ .operation = DARLING_VM_UNMAP,
+		.address = address, .size = 4096 }, NULL));
+}
+
 int main(void) {
+	protect_copy_contract();
 	struct darling_vm_result r;
 	struct darling_vm_request map = { .operation = DARLING_VM_ANONYMOUS_MAP,
 		.size = 1u << 24, .mask = (1u << 24) - 1, .flags = 1,

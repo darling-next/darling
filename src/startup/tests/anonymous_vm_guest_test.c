@@ -26,8 +26,75 @@ static vm_region_basic_info_data_64_t attributes(mach_vm_address_t address, mach
 	return info;
 }
 
+static void protect_copy_contract(mach_vm_size_t page) {
+	char path[] = "/tmp/anonymous-vm-copy-XXXXXX";
+	int fd = mkstemp(path);
+	REQUIRE(fd >= 0);
+	REQUIRE(unlink(path) == 0);
+	REQUIRE(ftruncate(fd, 2 * page) == 0);
+	unsigned char* shared = mmap(NULL, 2 * page, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	unsigned char* private = mmap(NULL, 2 * page, PROT_READ, MAP_PRIVATE, fd, 0);
+	REQUIRE(shared != MAP_FAILED && private != MAP_FAILED);
+	shared[0] = 0x35;
+	mach_vm_address_t address = (mach_vm_address_t)(uintptr_t)private;
+	REQUIRE(mach_vm_inherit(mach_task_self(), address, page, VM_INHERIT_NONE) == KERN_SUCCESS);
+	REQUIRE(mach_vm_protect(mach_task_self(), address, page, TRUE, VM_PROT_READ) == KERN_SUCCESS);
+	/* COPY adds WRITE even when the old maximum was READ, not arbitrary
+	 * READ/EXECUTE rights. It must preserve file/alias isolation and inheritance. */
+	REQUIRE(mach_vm_protect(mach_task_self(), address, page, FALSE,
+		VM_PROT_COPY | VM_PROT_READ | VM_PROT_EXECUTE) == KERN_PROTECTION_FAILURE);
+	REQUIRE(mach_vm_protect(mach_task_self(), address, page, FALSE,
+		VM_PROT_COPY | VM_PROT_READ | VM_PROT_WRITE) == KERN_SUCCESS);
+	mach_vm_size_t size;
+	vm_region_basic_info_data_64_t info = attributes(address, &size);
+	REQUIRE(info.max_protection == (VM_PROT_READ | VM_PROT_WRITE));
+	REQUIRE(info.protection == (VM_PROT_READ | VM_PROT_WRITE));
+	REQUIRE(info.inheritance == VM_INHERIT_NONE && !info.shared);
+	REQUIRE(private[0] == 0x35);
+	private[0] = 0x71;
+	unsigned char byte = 0;
+	REQUIRE(pread(fd, &byte, 1, 0) == 1 && byte == 0x35 && shared[0] == 0x35);
+	/* set_maximum clamps current rights too; POSIX mprotect cannot regain
+	 * WRITE without another explicit Mach COPY operation. */
+	REQUIRE(mach_vm_protect(mach_task_self(), address, page, TRUE,
+		VM_PROT_COPY | VM_PROT_READ) == KERN_SUCCESS);
+	info = attributes(address, &size);
+	REQUIRE(info.max_protection == VM_PROT_READ && info.protection == VM_PROT_READ);
+	REQUIRE(info.inheritance == VM_INHERIT_NONE);
+	REQUIRE(mprotect(private, page, PROT_READ | PROT_WRITE) == -1 && errno == EACCES);
+	REQUIRE(private[0] == 0x71);
+
+	/* Linux cannot safely transact shared-to-private conversion here. A real
+	 * unsupported result must leave current/max/inheritance/data unchanged;
+	 * never report successful COPY while writes still reach the file. */
+	address = (mach_vm_address_t)(uintptr_t)shared;
+	vm_region_basic_info_data_64_t before = attributes(address, &size);
+	REQUIRE(mach_vm_protect(mach_task_self(), address, page, TRUE,
+		VM_PROT_COPY | VM_PROT_READ) == KERN_NOT_SUPPORTED);
+	info = attributes(address, &size);
+	REQUIRE(info.protection == before.protection && info.max_protection == before.max_protection);
+	REQUIRE(info.inheritance == before.inheritance && info.shared);
+	shared[0] = 0x47;
+	REQUIRE(pread(fd, &byte, 1, 0) == 1 && byte == 0x47 && private[0] == 0x71);
+
+	/* Two native VMAs with a rights change are also rejected before mutation,
+	 * not partly protected and then "rolled back" with fallible syscalls. */
+	address = (mach_vm_address_t)(uintptr_t)private;
+	REQUIRE(mprotect(private + page, page, PROT_READ | PROT_WRITE) == 0);
+	REQUIRE(mach_vm_protect(mach_task_self(), address, 2 * page, FALSE,
+		VM_PROT_COPY | VM_PROT_READ) == KERN_NOT_SUPPORTED);
+	info = attributes(address + page, &size);
+	REQUIRE(info.protection == (VM_PROT_READ | VM_PROT_WRITE));
+	info = attributes(address, &size);
+	REQUIRE(info.protection == VM_PROT_READ && info.max_protection == VM_PROT_READ);
+	REQUIRE(munmap(private, 2 * page) == 0);
+	REQUIRE(munmap(shared, 2 * page) == 0);
+	REQUIRE(close(fd) == 0);
+}
+
 int main(void) {
 	const mach_vm_size_t page = (mach_vm_size_t)getpagesize();
+	protect_copy_contract(page);
 	const mach_vm_size_t alignment = 16 * 1024 * 1024;
 	mach_vm_address_t address = 0;
 	/* Exact JSC shape: RW maximum (not ALL), NONE inheritance, large mask. */
@@ -105,6 +172,11 @@ int main(void) {
 	REQUIRE(munmap((void*)(uintptr_t)(address + page), page) == 0);
 	REQUIRE(mach_vm_protect(mach_task_self(), address, 3 * page, FALSE,
 		VM_PROT_READ) == KERN_INVALID_ADDRESS);
+	REQUIRE(mach_vm_protect(mach_task_self(), address, 3 * page, FALSE,
+		VM_PROT_COPY | VM_PROT_READ) == KERN_INVALID_ADDRESS);
+	info = attributes(address, &region_size);
+	REQUIRE(info.protection == (VM_PROT_READ | VM_PROT_WRITE));
+	REQUIRE(info.max_protection == (VM_PROT_READ | VM_PROT_WRITE));
 	void* replacement = mmap((void*)(uintptr_t)address, page,
 		PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
 	REQUIRE(replacement == (void*)(uintptr_t)address);

@@ -240,6 +240,74 @@ static int fill_range(uintptr_t start, uintptr_t end) {
 	return 0;
 }
 
+/* Vendored XNU vm_map_protect/remap_extract makes a COW mapping, preserves
+ * inheritance, and adds only WRITE to maximum. Current upstream retains that
+ * contract (with additional platform security checks). Its VM objects/pmap
+ * cannot back a native Linux task. Existing MAP_PRIVATE mappings already
+ * provide write isolation, so neither a remap nor a page copy is necessary.
+ *
+ * Linux has no transactional shared-to-private conversion. Do not replace a
+ * live shared mapping with a copied anonymous buffer: later remap/protection
+ * failure cannot reliably restore the original mapping. Reject it unchanged.
+ * Likewise mprotect across native VMAs can partially succeed; reject a
+ * multi-VMA rights change rather than offer non-atomic COPY semantics. */
+static int copy_protection(uintptr_t start, uintptr_t end, int protection,
+	int set_maximum, int* native_protection) {
+	uintptr_t at = start;
+	int regions = 0, current = 0, needs_change = 0;
+	while (at < end) {
+		uintptr_t a, b;
+		int p, shared;
+		int status = linux_region(at, &a, &b, &p, NULL, &shared);
+		if (status || a > at) return status && status != -ENOENT ? status : -ENOMEM;
+		if (shared) return -ENOTSUP;
+		int desired = set_maximum ? p & protection : protection;
+		needs_change |= desired != p;
+		current = p;
+		/* Only distinguish a single native VMA from multiple VMAs. */
+		regions = regions ? 2 : 1;
+		at = b;
+	}
+	*native_protection = -1;
+	if (!needs_change) return 0;
+	if (regions != 1) return -ENOTSUP;
+	*native_protection = set_maximum ? current & protection : protection;
+	return 0;
+}
+
+static int mach_copy_protect(uintptr_t start, uintptr_t end, int protection, int set_maximum) {
+	int native_protection;
+	int status = copy_protection(start, end, protection, set_maximum, &native_protection);
+	if (status) return status;
+	/* COPY grants WRITE in the new private object, never READ or EXECUTE
+	 * that the original maximum did not authorize. Validate the whole range
+	 * before changing mappings or attributes. */
+	int change_maximum = set_maximum;
+	for (struct interval* n = intervals; n && n->start < end; n = n->next) {
+		if (n->end <= start) continue;
+		if (protection & ~(n->maximum | PROT_WRITE)) return -EACCES;
+		if (!(n->maximum & PROT_WRITE)) change_maximum = 1;
+	}
+	if (change_maximum) {
+		struct interval *left, *right;
+		status = prepare_splits(start, end, &left, &right);
+		if (status) return status;
+		split_at(start, left); split_at(end, right);
+	}
+	if (set_maximum) {
+		status = fill_range(start, end);
+		if (status) return status;
+	}
+	if (native_protection >= 0 &&
+		syscall(SYS_mprotect, start, end - start, native_protection) < 0) status = -errno;
+	if (!status && change_maximum)
+		for (struct interval* n = intervals; n && n->start < end; n = n->next)
+			if (n->end > start)
+				n->maximum = set_maximum ? protection : n->maximum | PROT_WRITE;
+	if (change_maximum && !set_maximum) coalesce();
+	return status;
+}
+
 static int operation_locked(const struct darling_vm_request* r, struct darling_vm_result* out) {
 	if (r->reserved) return -EINVAL;
 	if (r->operation == DARLING_VM_REGION) {
@@ -334,6 +402,10 @@ static int operation_locked(const struct darling_vm_request* r, struct darling_v
 		r->operation != DARLING_VM_MACH_PROTECT && r->operation != DARLING_VM_INHERIT) return -ENOSYS;
 	if (r->operation == DARLING_VM_UNMAP && start == end) return -EINVAL;
 	if (start == end) return 0;
+	if (r->operation == DARLING_VM_MACH_PROTECT && (r->protection & 0x10)) {
+		if (r->protection & ~0x17) return -EINVAL;
+		return mach_copy_protect(start, end, r->protection & 7, r->set_maximum);
+	}
 	if ((r->operation == DARLING_VM_PROTECT || r->operation == DARLING_VM_MACH_PROTECT) &&
 		(r->protection & ~7)) return -EINVAL;
 	if (r->operation == DARLING_VM_INHERIT && r->inheritance != 1 && r->inheritance != 2) return -ENOTSUP;
