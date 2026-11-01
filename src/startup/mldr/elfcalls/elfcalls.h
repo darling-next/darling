@@ -62,6 +62,8 @@ struct elf_calls
 	int (*shm_open)(const char* name, int oflag, unsigned short mode);
 	int (*shm_unlink)(const char* name);
 
+	// Guest process syscall termination must not run inherited host atexit
+	// handlers; guest exit(3) performs its own cleanup before this boundary.
 	void (*exit)(int ec);
 
 	// Memory allocation

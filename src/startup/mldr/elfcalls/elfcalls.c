@@ -126,7 +126,7 @@ void elfcalls_make(struct elf_calls* calls)
 	calls->darling_thread_get_stack = __darling_thread_get_stack;
 
 	calls->get_errno = get_errno;
-	calls->exit = exit;
+	calls->exit = _Exit;
 
 	calls->malloc = malloc;
 	calls->free = free;

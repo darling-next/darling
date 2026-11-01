@@ -99,6 +99,13 @@ Managed mutation guards preserve no-follow checks on union-owned leaves.
 Unmanaged host paths, including `/dev/fd` process-substitution magic links,
 retain native open semantics; an explicit guest `O_NOFOLLOW` remains enforced.
 
+Guest `_exit` uses immediate host termination, without running inherited ELF
+`atexit` handlers or flushing host stdio. Normal guest `exit(3)` still performs
+guest finalization before reaching the same syscall boundary. This distinction
+also applies after fork, when a parent's native worker threads no longer exist.
+`tests/src/guest_immediate_exit_guest.c` observes real host and guest handlers,
+checks exact child statuses and verifies that the host observer is live.
+
 Anonymous Mach mappings retain their maximum protections and inheritance in
 the native address-space owner. Current protections cannot exceed that maximum;
 lowering it also clamps current access. Alignment, fixed-address collisions,
