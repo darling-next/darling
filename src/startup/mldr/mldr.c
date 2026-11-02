@@ -303,6 +303,9 @@ int __mldr_process_control_request(uint32_t op, uint64_t p0, uint64_t p1, uint64
 int __mldr_process_control_ready(void);
 int __mldr_process_control_wait_ready(int timeout_ms);
 void* __mldr_process_control_page(void);
+// The PURE view of the same page: no creation, no mapping, no allocation, no diagnostics, so a raw signal
+// handler can reach it. Defined next to the creating accessor; absent/foreign incarnations report NULL.
+void* __mldr_process_control_page_existing(void);
 // Forward declarations: both are defined far below, and the control-page setup (which runs early) needs them to
 // try to adopt the process doorbell before the first plane publish.
 int __mldr_ring_doorbell(int fd);
@@ -1704,6 +1707,22 @@ void* __mldr_process_control_page(void) {
 		}
 	}
 	return g_process_control_page;
+}
+
+// The PURE view for signal context: it reads the pointer and the owner word only. It must never create, map,
+// allocate, lock, print or repair the inherited-page case -- a raw handler cannot afford any of those, and the
+// fork child's own pre-publication route is what recreates the page. A page owned by another incarnation is
+// reported as absent for exactly the reason the creating accessor abandons it: publishing a child's request
+// into its parent's page addresses the reply to the wrong process.
+void* __mldr_process_control_page_existing(void) {
+	struct dserver_process_control* page = g_process_control_page;
+	if (page == NULL) {
+		return NULL;
+	}
+	if (page->owner_pid != (int32_t)getpid()) {
+		return NULL;
+	}
+	return page;
 }
 
 // One request through the page: publish, wait for the server's answer on the same page, read the status.

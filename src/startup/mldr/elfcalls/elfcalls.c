@@ -168,6 +168,9 @@ calls->dserver_ring_doorbell = __mldr_ring_doorbell;
 	calls->dserver_fd_courier_socket = __mldr_fd_courier_socket;
 	calls->dserver_fd_courier_reset = __mldr_fd_courier_reset;
 	calls->dserver_process_control_page = __mldr_process_control_page;
+	// APPENDED: the pure (signal-safe, non-creating) view of the same page.
+	extern void* __mldr_process_control_page_existing(void);
+	calls->dserver_process_control_page_existing = __mldr_process_control_page_existing;
 	// perf#30 OPERATION LEDGER: APPENDED (see the struct comment).
 	extern uint32_t __mldr_op_ledger_limit(void);
 	calls->dserver_op_ledger_limit = __mldr_op_ledger_limit;

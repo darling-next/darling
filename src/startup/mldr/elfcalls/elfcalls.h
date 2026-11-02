@@ -166,6 +166,13 @@ struct elf_calls
 	// APPENDED: one native VM authority for dyld, libkernel and S2C.
 	int (*vm_operation)(const struct darling_vm_request*, struct darling_vm_result*);
 
+	// The SAME management page as dserver_process_control_page, but PURE: it never creates a
+	// page, never maps, never allocates and never prints, so a raw signal handler may call it.
+	// It returns NULL when this image's pointer is absent or belongs to another process
+	// incarnation (a fork child), which is exactly the pre-publication case the caller's
+	// existing route handles. APPENDED: preserve every preceding loader/guest ABI field offset.
+	void* (*dserver_process_control_page_existing)(void);
+
 };
 
 #endif
