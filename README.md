@@ -34,6 +34,9 @@ guest commands, libraries, framework links, services and runtime data (including
 ICU and Objective-C trampolines). No workspace, patch profile, deployment JSON,
 test metadata or test-only build option is required.
 
+The normal build also installs the source-built `/usr/lib/libmdns.dylib`
+client object library. This does not enable the mDNSResponder daemon.
+
 The runtime root is the configured `CMAKE_INSTALL_PREFIX`, not `DPREFIX`.
 Runtime paths are compiled in: configure with the final absolute installation
 root rather than relocating with `cmake --install --prefix`. `DESTDIR` remains
