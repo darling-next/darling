@@ -208,3 +208,13 @@ InstallSymlink("follow-remove"
     "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/xattr-state/remove-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
 InstallSymlink("nofollow"
     "${CMAKE_INSTALL_PREFIX}/${_eunion_state_fixture_root}/xattr-state/nofollow-link" COMPONENT tests-data EXCLUDE_FROM_ALL)
+
+# Source-owned generic HFS+ input and declarations for the StorageKit consumer.
+install(FILES
+    "data/storagekit/storagekit.dmg"
+    "data/storagekit/payload.txt"
+    "data/storagekit/corrupt.txt"
+    "${CMAKE_SOURCE_DIR}/src/frameworks/StorageKit/src/SKInternal.h"
+    DESTINATION "libexec/darling/usr/share/darling/tests/storagekit"
+    PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+    COMPONENT tests-data EXCLUDE_FROM_ALL)

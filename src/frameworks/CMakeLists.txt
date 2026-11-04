@@ -23,6 +23,13 @@ if (COMPONENT_cli OR COMPONENT_dev_gui_common)
 
 	add_subdirectory(CoreServices)
 
+	# StorageKit: the measured CoreDevice disk-image provider. Its attach operation
+	# runs the in-guest hdiutil, which is built by the CLI component, so the
+	# framework is only installed where that backend exists.
+	if (COMPONENT_cli)
+		add_subdirectory(StorageKit)
+	endif()
+
 	# these are also stubs, but they're needed for Security
 	add_subdirectory(Accounts)
 	add_subdirectory(CloudKit)

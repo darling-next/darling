@@ -1,0 +1,3 @@
+Darling StorageKit filesystem regression fixture.
+0123456789abcdef
+Attach, read, external detach and reattach must preserve these bytes.
