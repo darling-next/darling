@@ -341,7 +341,7 @@ if (COMPONENT_cli OR COMPONENT_dev_gui_common)
 	add_subdirectory(external/fmdb)
 	add_subdirectory(external/libnetwork)
 	# The complete object library is separate from the still-disabled DNS daemon.
-	add_subdirectory(external/mDNSResponder/mDNSMacOSX/mdns_objects EXCLUDE_FROM_ALL)
+	add_subdirectory(external/mDNSResponder/mDNSMacOSX/mdns_objects)
 	add_subdirectory(libMobileGestalt)
 	add_subdirectory(libRosetta)
 	add_subdirectory(liboah)
