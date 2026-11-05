@@ -636,6 +636,84 @@ char *remote_device_copy_product_type(remote_device_t device)
     return result;
 }
 
+/* No implementation is present in the vendored or sibling reference tree;
+ * the newer darlinghq component source/listing is unavailable (HTTP 404).
+ * Native RSD disassembly (macOS 26.5,
+ * CA4D9399-0E89-3014-92DD-B722678ED9F6) establishes OSVersion as strdup-owned
+ * text and AppleInternal as a bool, despite the latter's "copy" spelling. */
+char *remote_device_copy_os_version(remote_device_t device)
+{
+    xpc_object_t value = remote_device_copy_property(device, "OSVersion");
+    char *result = value && xpc_get_type(value) == XPC_TYPE_STRING
+        ? strdup(xpc_string_get_string_ptr(value)) : NULL;
+    if (value) xpc_release(value);
+    return result;
+}
+
+bool remote_device_copy_internal_build(remote_device_t device)
+{
+    xpc_object_t value = remote_device_copy_property(device, "AppleInternal");
+    bool result = value && xpc_get_type(value) == XPC_TYPE_BOOL
+        && xpc_bool_get_value(value);
+    if (value) xpc_release(value);
+    return result;
+}
+
+/* Native sends list_services to the device endpoint, not to the catalog
+ * broker, and retains the services XPC array. Unlike native's error fallback,
+ * preserve transport failure as NULL rather than a successful empty catalog. */
+xpc_object_t remote_device_copy_service_names(remote_device_t device)
+{
+    if (!device) return NULL;
+    OS_remote_device *object = (OS_remote_device *)device;
+    __block xpc_connection_t connection = NULL;
+    dispatch_sync(object->storage->queue, ^{
+        connection = object->storage->connection;
+        if (connection) xpc_retain(connection);
+    });
+    if (!connection) return NULL;
+    xpc_object_t request = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(request, "cmd", "list_services");
+    xpc_object_t reply = xpc_connection_send_message_with_reply_sync(connection, request);
+    xpc_object_t result = NULL;
+    if (reply && xpc_get_type(reply) == XPC_TYPE_DICTIONARY) {
+        xpc_object_t services = xpc_dictionary_get_value(reply, "services");
+        if (services && xpc_get_type(services) == XPC_TYPE_ARRAY)
+            result = xpc_retain(services);
+    }
+    if (reply) xpc_release(reply);
+    xpc_release(request);
+    xpc_release(connection);
+    return result;
+}
+
+/* Native completion is v12@?0B8: true only for result == "OK", false for
+ * XPC errors. XPC owns the copied reply block through completion/cancellation. */
+void remote_device_heartbeat(remote_device_t device, dispatch_queue_t queue,
+    void (^callback)(bool success))
+{
+    if (!device || !callback) return;
+    OS_remote_device *object = (OS_remote_device *)device;
+    __block xpc_connection_t connection = NULL;
+    dispatch_sync(object->storage->queue, ^{
+        connection = object->storage->connection;
+        if (connection) xpc_retain(connection);
+    });
+    if (!connection) {
+        dispatch_async(queue ? queue : dispatch_get_main_queue(), ^{ callback(false); });
+        return;
+    }
+    xpc_object_t request = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(request, "cmd", "heartbeat");
+    xpc_connection_send_message_with_reply(connection, request, queue, ^(xpc_object_t reply) {
+        const char *result = reply && xpc_get_type(reply) == XPC_TYPE_DICTIONARY
+            ? rsd_string(reply, "result") : NULL;
+        callback(result && strcmp(result, "OK") == 0);
+    });
+    xpc_release(request);
+    xpc_release(connection);
+}
+
 uint64_t remote_device_get_xpc_remote_connection_version_flags(remote_device_t device)
 {
     uint64_t flags = 0;
@@ -705,6 +783,11 @@ static uint32_t rsd_type_from_description(const char *description)
     return 0;
 }
 
+uint32_t remote_device_type_parse(const char *description)
+{
+    return rsd_type_from_description(description);
+}
+
 static void rsd_browser_handle_event(OS_remote_device_browser *browser, xpc_object_t event)
 {
     if (!browser || !browser->storage) return;
@@ -732,6 +815,8 @@ static void rsd_browser_handle_event(OS_remote_device_browser *browser, xpc_obje
     [device release];
 }
 
+void remote_device_browser_cancel(remote_device_t browser);
+
 static OS_remote_device_browser *rsd_start_browser(uint32_t type, dispatch_queue_t queue,
     void (^callback)(id device, BOOL removed), xpc_object_t request)
 {
@@ -753,12 +838,29 @@ static OS_remote_device_browser *rsd_start_browser(uint32_t type, dispatch_queue
         return nil;
     }
     s->connection = connection;
-    __unsafe_unretained OS_remote_device_browser *weak_browser = browser;
-    xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
-        rsd_browser_handle_event(weak_browser, event);
-    });
+    if (xpc_dictionary_get_bool(request, "present_only")) {
+        xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
+            if (xpc_get_type(event) == XPC_TYPE_ERROR) {
+                remote_device_browser_cancel(browser);
+                xpc_connection_set_event_handler(browser->storage->connection,
+                    ^(xpc_object_t ignored) { (void)ignored; });
+            } else if (!browser->storage->cancelling) {
+                rsd_browser_handle_event(browser, event);
+            }
+        });
+    } else {
+        __unsafe_unretained OS_remote_device_browser *weak_browser = browser;
+        xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
+            rsd_browser_handle_event(weak_browser, event);
+        });
+    }
     xpc_connection_activate(connection);
-    xpc_connection_send_message(connection, request);
+    if (xpc_dictionary_get_bool(request, "present_only")) {
+        xpc_connection_send_message_with_reply(connection, request, s->queue,
+            ^(xpc_object_t reply) { (void)reply; });
+    } else {
+        xpc_connection_send_message(connection, request);
+    }
     xpc_release(request);
     return [browser autorelease];
 }
@@ -822,6 +924,21 @@ void remote_device_browser_cancel(remote_device_t browser)
         s->cancelled = YES;
     }
     [object release];
+}
+
+/* Native browse_present returns void, with a connection-retained browser.
+ * Native's event handler cancels on XPC errors; cancellation delivers the
+ * terminal (NULL, true) callback and breaks the connection/browser ownership. */
+void remote_device_browse_present(uint32_t type, dispatch_queue_t queue,
+    void (^callback)(id device, BOOL removed))
+{
+    if (!callback) return;
+    if (!type) type = 0xffff;
+    xpc_object_t request = xpc_dictionary_create(NULL, NULL, 0);
+    xpc_dictionary_set_string(request, "cmd", "browse");
+    xpc_dictionary_set_uint64(request, "device_type", type);
+    xpc_dictionary_set_bool(request, "present_only", true);
+    rsd_start_browser(type, queue, callback, request);
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -934,6 +1051,14 @@ xpc_object_t remote_service_copy_property(remote_service_t service, const char *
     xpc_object_t properties = ((OS_remote_service *)service)->storage->properties;
     xpc_object_t value = properties ? xpc_dictionary_get_value(properties, key) : NULL;
     return value ? xpc_retain(value) : NULL;
+}
+
+/* Native returns the retained properties dictionary, not a deep copy. */
+xpc_object_t remote_service_copy_properties(remote_service_t service)
+{
+    if (!service) return NULL;
+    xpc_object_t properties = ((OS_remote_service *)service)->storage->properties;
+    return properties ? xpc_retain(properties) : NULL;
 }
 
 static xpc_object_t rsd_connect_request(RSDServiceStorage *s)

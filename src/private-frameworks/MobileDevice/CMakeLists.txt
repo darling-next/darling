@@ -16,6 +16,8 @@ generate_sdk_framework(MobileDevice
 )
 
 add_framework(MobileDevice
+    # Keep the link target for SDK users, not as a runtime implementation.
+    NO_INSTALL
     FAT
     CURRENT_VERSION
     PRIVATE
@@ -33,3 +35,8 @@ add_framework(MobileDevice
         objc
         Foundation
 )
+
+# The system framework is an OS-owned alias to the separately installed Apple
+# payload. Without that package the alias intentionally remains dangling.
+InstallSymlink("../../../Library/Apple/System/Library/PrivateFrameworks/MobileDevice.framework"
+    "${CMAKE_INSTALL_PREFIX}/libexec/darling/System/Library/PrivateFrameworks/MobileDevice.framework")

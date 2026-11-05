@@ -37,9 +37,30 @@ test metadata or test-only build option is required.
 The normal build also installs the source-built `/usr/lib/libmdns.dylib`
 client object library. This does not enable the mDNSResponder daemon.
 The CLI components also build `RemoteServiceDiscovery.framework` from its
-broker/device/service client source. Device build/model strings are owned copies
-of the corresponding XPC properties; missing broker services remain errors,
-not synthetic devices.
+broker/device/service client source. Build, OS-version and model strings are
+owned copies of XPC properties; the internal-build accessor returns a boolean.
+Service enumeration and heartbeat use the device endpoint. Missing broker
+services remain errors or terminal browser callbacks, not synthetic devices.
+
+CFNetwork request proxy settings are immutable snapshots. Explicit settings
+override system policy across request copies, parcels and ordinary redirects;
+an empty dictionary selects direct transport, while NULL restores inheritance.
+The connection applies that policy to each initial or replacement HTTP stream.
+
+An unknown XPC Mach-service name invalidates the connection and outstanding
+asynchronous replies with `XPC_ERROR_CONNECTION_INVALID`, including requests
+queued before activation. A deferred reply retains internal connection state
+until its callback completes; releasing the caller's reference does not free
+that state early. Other bootstrap failures are not reclassified as absent
+services, and established named-peer interruption remains distinct.
+
+`/System/Library/PrivateFrameworks/MobileDevice.framework` is an ordinary
+framework-root symlink to
+`/Library/Apple/System/Library/PrivateFrameworks/MobileDevice.framework`,
+matching the separately installed Apple payload.
+The normal image does not ship Darling's old MobileDevice runtime stub or
+provide that package. Without the package the link remains dangling; install
+the genuine package through the guest installer, without library-path overrides.
 
 The runtime root is the configured `CMAKE_INSTALL_PREFIX`, not `DPREFIX`.
 Runtime paths are compiled in: configure with the final absolute installation
