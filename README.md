@@ -36,6 +36,10 @@ test metadata or test-only build option is required.
 
 The normal build also installs the source-built `/usr/lib/libmdns.dylib`
 client object library. This does not enable the mDNSResponder daemon.
+The CLI components also build `RemoteServiceDiscovery.framework` from its
+broker/device/service client source. Device build/model strings are owned copies
+of the corresponding XPC properties; missing broker services remain errors,
+not synthetic devices.
 
 The runtime root is the configured `CMAKE_INSTALL_PREFIX`, not `DPREFIX`.
 Runtime paths are compiled in: configure with the final absolute installation

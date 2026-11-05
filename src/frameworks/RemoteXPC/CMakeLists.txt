@@ -35,8 +35,6 @@ target_include_directories(RemoteXPC PRIVATE
 )
 
 
-# The native provider imports the RSD service accessors. Link the tracked RSD substitute so the
+# The native provider imports the RSD service accessors. Link the source-built RSD target so the
 # two-level imports resolve to the same installed image the consumer loads; no local fake is added.
-target_link_libraries(RemoteXPC PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/external/swift/substitutes/System/Library/PrivateFrameworks/RemoteServiceDiscovery.framework/Versions/A/RemoteServiceDiscovery
-)
+target_link_libraries(RemoteXPC PRIVATE RemoteServiceDiscovery)

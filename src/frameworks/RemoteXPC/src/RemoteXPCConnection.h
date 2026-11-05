@@ -3,7 +3,7 @@
  *
  * The measured signatures are declared here. The two remote-service constructors implement the
  * measured native constructor bodies; the RSD service/listener transport is resolved from the
- * tracked RemoteServiceDiscovery image rather than replaced locally.
+ * source-built RemoteServiceDiscovery framework rather than replaced locally.
  */
 
 #ifndef REMOTEXPC_CONNECTION_H

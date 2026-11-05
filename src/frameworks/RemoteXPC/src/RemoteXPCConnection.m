@@ -51,7 +51,7 @@
 #include "RemoteXPCConnection.h"
 #include "xr_wire.h"
 
-/* RemoteServiceDiscovery's measured service surface, supplied by the tracked RSD substitute. */
+/* RemoteServiceDiscovery's measured service surface, supplied by the source-built framework. */
 typedef const void* remote_service_t;
 extern uint64_t remote_service_get_xpc_remote_connection_version_flags(remote_service_t service);
 extern void remote_service_connect_socket(remote_service_t service, dispatch_queue_t queue,
