@@ -1,4 +1,22 @@
-This is a completely dummy implementation.
+Darling implements an image-backed subset of DiskArbitration through the
+darling-dmg HFS+/HFSX reader. Only a producer retaining a successfully opened
+regular image publishes media; arbitrary host mounts are not discovered as disks.
 
-One could implement some of this functionality by wrapping polkit, udisks, etc.
+Image media have stable producer-lifetime identities, whole/volume descriptions,
+and real mount paths while mounted. They are not BSD block devices:
+DADiskGetBSDName returns NULL and no IOKit media object is published for them.
+A handle created from a BSD name alone does not establish that media exists.
 
+Mount/eject requests run asynchronously and complete on the session's scheduled
+runloop or dispatch queue. Description and disappearance callbacks retain their
+event snapshots. Unscheduling pauses delivery without consuming queued events.
+Mount arguments are limited to the reader's read-only capabilities; unsupported
+options return errors rather than granting writable access.
+
+Unmount approvals are consulted across scheduled sessions and processes in the
+same prefix, including hdiutil detach. Each voter runs on its scheduled context;
+missing, incomplete or timed-out decisions never become implicit consent.
+Mounted state is checked against the actual kernel mount ID and producer source.
+
+tests/image_backend.c exercises real attach, symlink mount paths, payload bytes,
+callback pause/resume, separate-session and hdiutil vetoes, and actual eject.

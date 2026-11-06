@@ -1,84 +1,41 @@
-#include "DADissenter.h"
+#include <DiskArbitration/DADissenter.h>
 #include <CoreFoundation/CFRuntime.h>
 
-struct _DADissenter
-{
-  CFRuntimeBase _parent;
-  const CFArrayCallBacks *_callBacks;
+struct __DADissenter {
+    CFRuntimeBase base;
+    DAReturn status;
+    CFStringRef string;
 };
 
-static CFTypeID _kDADissenterTypeID = 0;
-static void DADissenterFinalize(CFTypeRef cf);
-static Boolean DADissenterEqual(CFTypeRef cf1, CFTypeRef cf2);
-static CFHashCode DADissenterHash(CFTypeRef cf);
-static DADissenterRef DADissenterCreateCopy (CFAllocatorRef allocator, DADissenterRef disk);
+static CFTypeID dissenterType;
 
-static CFRuntimeClass DADissenterClass = {
-  0,
-  "DADissenter",
-  NULL,
-  (CFTypeRef (*)(CFAllocatorRef, CFTypeRef)) DADissenterCreateCopy,
-  DADissenterFinalize,
-  DADissenterEqual,
-  DADissenterHash,
-  NULL,
-  NULL
+static void DADissenterFinalize(CFTypeRef object)
+{
+    DADissenterRef dissenter = (DADissenterRef)object;
+    if (dissenter->string) CFRelease(dissenter->string);
+}
+
+static const CFRuntimeClass dissenterClass = {
+    0, "DADissenter", NULL, NULL, DADissenterFinalize, NULL, NULL, NULL, NULL
 };
 
-__attribute__((constructor))
-void
-DADissenterInitialize (void)
+__attribute__((constructor)) static void DADissenterInitialize(void)
 {
-	_kDADissenterTypeID = _CFRuntimeRegisterClass (&DADissenterClass);
+    dissenterType = _CFRuntimeRegisterClass(&dissenterClass);
 }
 
-#define DADISSENTER_SIZE sizeof(struct _DADissenter) - sizeof(CFRuntimeBase)
-
-static void
-DADissenterFinalize (CFTypeRef cf)
-{
-}
-
-static Boolean
-DADissenterEqual (CFTypeRef cf1, CFTypeRef cf2)
-{
-	return 0;
-}
-
-static CFHashCode
-DADissenterHash (CFTypeRef cf)
-{
-	return 0;
-}
-
-static DADissenterRef
-DADissenterCreateCopy (CFAllocatorRef allocator, DADissenterRef disk)
-{
-	return (DADissenterRef) CFRetain(disk);
-}
-
-CFTypeID DADissenterGetTypeID(void)
-{
-	return _kDADissenterTypeID;
-}
+CFTypeID DADissenterGetTypeID(void) { return dissenterType; }
 
 DADissenterRef DADissenterCreate(CFAllocatorRef allocator, DAReturn status, CFStringRef string)
 {
-	DADissenterRef new;
-	
-	new = (DADissenterRef) _CFRuntimeCreateInstance (allocator,
-												_kDADissenterTypeID,
-												DADISSENTER_SIZE, 0);
-	
-	return new;
+    struct __DADissenter *dissenter = (struct __DADissenter *)_CFRuntimeCreateInstance(
+        allocator, dissenterType, sizeof(*dissenter) - sizeof(CFRuntimeBase), NULL);
+    if (!dissenter) return NULL;
+    dissenter->status = status;
+    dissenter->string = string ? CFStringCreateCopy(allocator, string) : NULL;
+    if (string && !dissenter->string) { CFRelease(dissenter); return NULL; }
+    return dissenter;
 }
 
-DAReturn DADissenterGetStatus(DADissenterRef dissenter)
-{
-	return 0;
-}
-
-CFStringRef DADissenterGetStatusString(DADissenterRef dissenter)
-{
-	return CFSTR("dummy");
-}
+DAReturn DADissenterGetStatus(DADissenterRef dissenter) { return dissenter->status; }
+CFStringRef DADissenterGetStatusString(DADissenterRef dissenter) { return dissenter->string; }
