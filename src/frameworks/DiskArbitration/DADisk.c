@@ -354,6 +354,7 @@ static DAReturn DAImageError(int error)
 	case 0: return kDAReturnSuccess;
 	case EBUSY: return kDAReturnBusy;
 	case ENOENT: case ECONNREFUSED: return kDAReturnNotFound;
+	case ENODEV: return kDAReturnNotMounted;
 	case EACCES: case EPERM: return kDAReturnNotPermitted;
 	case EINVAL: case ENAMETOOLONG: return kDAReturnBadArgument;
 	case ENOMEM: return kDAReturnNoResources;
@@ -367,7 +368,9 @@ DAReturn _DAImagePerformOperation(DADiskRef disk, unsigned operation, CFURLRef p
 {
 	int error = 0;
 	if ((operation == DA_IMAGE_EJECT && options) ||
-		(operation == DA_IMAGE_MOUNT && (options & ~kDADiskMountOptionWhole))) error = ENOTSUP;
+		(operation == DA_IMAGE_MOUNT && (options & ~kDADiskMountOptionWhole)) ||
+		(operation == DA_IMAGE_UNMOUNT && (options & ~kDADiskUnmountOptionWhole)))
+		error = ENOTSUP;
 	/* The existing FUSE reader is read-only; never accept a writable request. */
 	if (!error && arguments) {
 		for (CFIndex i = 0; i < CFArrayGetCount(arguments); ++i) {
@@ -380,6 +383,9 @@ DAReturn _DAImagePerformOperation(DADiskRef disk, unsigned operation, CFURLRef p
 	struct DAImageLookup lookup = { .identity = disk->identity };
 	if (!error) error = DAVisitImages(DAFindImage, &lookup);
 	if (!error && !lookup.found) error = ENOENT;
+	if (!error && operation == DA_IMAGE_UNMOUNT && lookup.whole &&
+		lookup.state.partitioned && !(options & kDADiskUnmountOptionWhole))
+		error = ENOTSUP;
 	struct DAImageRequest request = { .version = DA_IMAGE_VERSION, .operation = operation };
 	if (!error && operation == DA_IMAGE_MOUNT) {
 		if (lookup.whole && lookup.state.partitioned && !(options & kDADiskMountOptionWhole))
@@ -431,5 +437,12 @@ void DADiskEject(DADiskRef disk, DADiskEjectOptions options,
 	DADiskEjectCallback callback, void *context)
 {
 	if (disk) _DASessionQueueOperation(disk->session, disk, DA_IMAGE_EJECT, NULL,
+		options, callback, context, NULL);
+}
+
+void DADiskUnmount(DADiskRef disk, DADiskUnmountOptions options,
+	DADiskUnmountCallback callback, void *context)
+{
+	if (disk) _DASessionQueueOperation(disk->session, disk, DA_IMAGE_UNMOUNT, NULL,
 		options, callback, context, NULL);
 }

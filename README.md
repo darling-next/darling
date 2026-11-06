@@ -42,6 +42,12 @@ owned copies of XPC properties; the internal-build accessor returns a boolean.
 Service enumeration and heartbeat use the device endpoint. Missing broker
 services remain errors or terminal browser callbacks, not synthetic devices.
 
+DiskArbitration separates image attachment from filesystem mounting.
+`DADiskUnmount` honors unmount approvals and retains the opened image for
+remounting; `DADiskEject` releases it. The read-only HFS image backend rejects
+force-unmount and does not publish BSD devices or IOMedia. It is not a
+DiskImages2/APFS provider.
+
 The CLI image installs a source-built `/usr/lib/libimg4.dylib` for generic-x86
 Cryptex chip instantiation with the version-6 ABI. Identity comes from the
 Image4 properties in `IODeviceTree:/options`; absent individual properties are
