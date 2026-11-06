@@ -10,3 +10,4 @@ target_link_libraries(img4 system CoreFoundation IOKit)
 make_fat(img4)
 
 install(TARGETS img4 DESTINATION libexec/darling/usr/lib)
+install(DIRECTORY include/img4 DESTINATION libexec/darling/usr/include)

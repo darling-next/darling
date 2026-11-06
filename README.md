@@ -48,6 +48,20 @@ Image4 properties in `IODeviceTree:/options`; absent individual properties are
 omitted, and an unavailable oracle returns `EXDEV`. This does not manufacture
 device identity or provide firmware authentication or Cryptex personalization.
 
+The source-built `/usr/lib/libcryptex.dylib` provides reference-counted attribute
+objects, lazy `Restore/BuildManifest.plist` parsing, chip/variant selection and
+descriptor-backed manifest attachment/copying. Bundle construction consumes the
+directory descriptor; manifest attachment and copying preserve the caller's
+descriptors. Copies include data and metadata. These operations do not authenticate
+the supplied files. Cryptex personalization and mount/unmount are not implemented
+or exported; this library does not yet satisfy Xcode's complete Cryptex imports.
+
+Reuse review found no Cryptex provider in the vendored or reviewed sibling tree.
+The reviewed public Apple sources provide Image4 declarations/kernel registration;
+device-side TSS clients do not implement these host object/bundle operations.
+This implementation reuses Darling's OS objects, Foundation plist parser and
+`copyfile`, rather than installing native cache binaries.
+
 Bundled trust-anchor lookup hashes follow Security's X.501 normalization:
 only PrintableString values fold ASCII case and horizontal whitespace; other
 string encodings remain byte-exact. This does not add anchors or relax chain
