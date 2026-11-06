@@ -48,6 +48,12 @@ Image4 properties in `IODeviceTree:/options`; absent individual properties are
 omitted, and an unavailable oracle returns `EXDEV`. This does not manufacture
 device identity or provide firmware authentication or Cryptex personalization.
 
+Bundled trust-anchor lookup hashes follow Security's X.501 normalization:
+only PrintableString values fold ASCII case and horizontal whitespace; other
+string encodings remain byte-exact. This does not add anchors or relax chain
+validation. Generator regressions run with
+`python3 -B -m unittest discover -s src/external/openssl_certificates/tests -v`.
+
 CFNetwork request proxy settings are immutable snapshots. Explicit settings
 override system policy across request copies, parcels and ordinary redirects;
 an empty dictionary selects direct transport, while NULL restores inheritance.
