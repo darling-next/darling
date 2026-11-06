@@ -42,6 +42,12 @@ owned copies of XPC properties; the internal-build accessor returns a boolean.
 Service enumeration and heartbeat use the device endpoint. Missing broker
 services remain errors or terminal browser callbacks, not synthetic devices.
 
+The CLI image installs a source-built `/usr/lib/libimg4.dylib` for generic-x86
+Cryptex chip instantiation with the version-6 ABI. Identity comes from the
+Image4 properties in `IODeviceTree:/options`; absent individual properties are
+omitted, and an unavailable oracle returns `EXDEV`. This does not manufacture
+device identity or provide firmware authentication or Cryptex personalization.
+
 CFNetwork request proxy settings are immutable snapshots. Explicit settings
 override system policy across request copies, parcels and ordinary redirects;
 an empty dictionary selects direct transport, while NULL restores inheritance.
