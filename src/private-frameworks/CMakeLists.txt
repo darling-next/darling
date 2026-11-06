@@ -28,7 +28,7 @@ if (COMPONENT_dev_gui_common)
 	add_subdirectory(DebugSymbols)
 endif()
 
-# same here, except this is for stubs that Xcode needs
+# Compatibility frameworks used by Xcode, including source-built providers.
 if (COMPONENT_dev_gui_stubs_common)
 	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "cli_dev_gui_stubs_common")
 
@@ -46,6 +46,7 @@ if (COMPONENT_dev_gui_stubs_common)
 	add_subdirectory(DeviceIdentity)
 	add_subdirectory(DiskImages)
 	add_subdirectory(DiskManagement)
+	add_subdirectory(DiskImages2)
 	add_subdirectory(Espresso)
 	add_subdirectory(IconServices)
 	add_subdirectory(IOPlatformPluginFamily)

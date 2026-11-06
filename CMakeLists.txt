@@ -242,7 +242,7 @@ install(DIRECTORY DESTINATION libexec/darling/usr)
 install(DIRECTORY DESTINATION libexec/darling/usr/local)
 install(DIRECTORY DESTINATION libexec/darling/usr/local/share)
 
-InstallSymlink(/Volumes/SystemRoot/dev ${CMAKE_INSTALL_PREFIX}/libexec/darling/dev)
+install(DIRECTORY DESTINATION libexec/darling/dev)
 InstallSymlink(private/tmp ${CMAKE_INSTALL_PREFIX}/libexec/darling/tmp)
 
 InstallSymlink(/proc/self/mounts ${CMAKE_INSTALL_PREFIX}/libexec/darling/private/etc/mtab)

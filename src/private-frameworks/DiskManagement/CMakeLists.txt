@@ -32,4 +32,5 @@ add_framework(DiskManagement
 		system
 		objc
 		Foundation
+		DiskArbitration
 )

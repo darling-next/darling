@@ -23,6 +23,10 @@
 #include <stdio.h>
 #include <stdbool.h>
 
+/* MobileAsset's asset-dictionary keys, not self-named symbol placeholders. */
+NSString * const ASAttributeDownloadSize = @"_DownloadSize";
+NSString * const ASAttributeUnarchivedSize = @"_UnarchivedSize";
+
 static int verbose = 0;
 
 __attribute__((constructor))
@@ -184,6 +188,14 @@ void MASetPallasAudienceForType(NSString *audience, NSString *assetType)
         } else {
             [configuration removeObjectForKey: @"audience"];
         }
+    }
+}
+
+NSURL *MAGetPallasUrlForType(NSString *assetType)
+{
+    @synchronized ([MAAsset class]) {
+        NSMutableDictionary *configuration = pallasConfigurationForType(assetType, NO);
+        return [[[configuration objectForKey: @"url"] retain] autorelease];
     }
 }
 

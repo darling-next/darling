@@ -6,6 +6,9 @@
 #include <CoreFoundation/CFURL.h>
 #include <CoreFoundation/CFDictionary.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <CoreFoundation/CFUUID.h>
+#include <IOKit/IOKitLib.h>
+#include <IOKit/storage/IOMedia.h>
 #include "DAImageInternal.h"
 #include "../../external/darling-dmg/src/DAImageProtocol.h"
 #include <dirent.h>
@@ -150,19 +153,57 @@ DADiskRef _DADiskCreateImageSnapshot(DASessionRef session, CFStringRef identity,
 	char *bytes = malloc((size_t)capacity);
 	if (!bytes) return NULL;
 	if (!CFStringGetCString(identity, bytes, capacity, kCFStringEncodingUTF8)) { free(bytes); return NULL; }
-	DADiskRef disk = DACreateDisk(NULL, session, bytes,
-		!strncmp(bytes, "/dev/", 5) ? bytes + 5 : NULL);
+	const char *bsdName = !strncmp(bytes, "/dev/", 5) ? bytes + 5 : NULL;
+	char bsdNameBuffer[128];
+	if (description) {
+		CFTypeRef value = CFDictionaryGetValue(description, kDADiskDescriptionMediaBSDNameKey);
+		if (value && CFGetTypeID(value) == CFStringGetTypeID() &&
+			CFStringGetCString(value, bsdNameBuffer, sizeof(bsdNameBuffer), kCFStringEncodingUTF8))
+			bsdName = bsdNameBuffer;
+	}
+	DADiskRef disk = DACreateDisk(NULL, session, bytes, bsdName);
 	free(bytes);
 	if (disk && description) disk->snapshot = (CFDictionaryRef)CFRetain(description);
 	return disk;
 }
 
+/* Disk identity remains the opened-image identity; a BSD name or a live
+ * registry entry is an additional, independently validated alias. */
+typedef int (*DAImageVisitor)(const char *, const struct DAImageReply *, void *);
+
+struct DAImageLookup {
+	const char *identity;
+	const char *mount;
+	const char *bsdName;
+	uint64_t registryID;
+	struct DAImageReply state;
+	char socket[280];
+	Boolean found;
+	Boolean whole;
+};
+
+static int DAVisitImages(DAImageVisitor visitor, void *context);
+static int DAFindImage(const char *socket, const struct DAImageReply *reply, void *opaque);
+
 DADiskRef DADiskCreateFromBSDName(CFAllocatorRef allocator, DASessionRef session,
 	const char *name)
 {
 	if (!name) return NULL;
-	/* Native construction creates a token even for nonexistent BSD names. */
 	if (!strncmp(name, "/dev/", 5)) name += 5;
+	/* A published producer reply is the only authority for a real device. */
+	struct DAImageLookup lookup = { .bsdName = name };
+	int error = DAVisitImages(DAFindImage, &lookup);
+	if (!error && lookup.found) {
+		char identity[DA_IMAGE_ID + 16];
+		if (lookup.whole)
+			strlcpy(identity, lookup.state.identity, sizeof(identity));
+		else
+			snprintf(identity, sizeof(identity), "%s:%u",
+				lookup.state.identity, lookup.state.partitionIndex);
+		const char *bsdName = lookup.whole ? lookup.state.wholeBSDName : lookup.state.bsdName;
+		return DACreateDisk(allocator, session, identity, bsdName[0] ? bsdName : name);
+	}
+	/* Native construction creates a token even for nonexistent BSD names. */
 	size_t length = strlen(name);
 	char *identity = malloc(length + 6);
 	if (!identity) return NULL;
@@ -173,17 +214,49 @@ DADiskRef DADiskCreateFromBSDName(CFAllocatorRef allocator, DASessionRef session
 	return disk;
 }
 
-DADiskRef DADiskCreateFromIOMedia(CFAllocatorRef allocator, DASessionRef session,
-	io_service_t media)
+const char *DADiskGetBSDName(DADiskRef disk) { return disk ? disk->bsdName : NULL; }
+
+/* Resolve a live iokitd IOMedia service for the state's selected or whole
+ * object. Registry IDs are authoritative when the producer supplies them;
+ * the BSD name remains the stable alias and is always cross-checked. */
+static Boolean DAServiceHasBSDName(io_service_t service, const char *name)
 {
-	/* The image provider does not publish IOKit objects. */
-	return NULL;
+	if (!service || MACH_PORT_NULL == service || !name || !name[0]) return false;
+	CFTypeRef value = IORegistryEntryCreateCFProperty(service, CFSTR("BSD Name"), NULL, 0);
+	Boolean matches = false;
+	if (value && CFGetTypeID(value) == CFStringGetTypeID()) {
+		char buffer[128];
+		if (CFStringGetCString(value, buffer, sizeof(buffer), kCFStringEncodingUTF8))
+			matches = !strcmp(buffer, name);
+	}
+	if (value) CFRelease(value);
+	return matches;
 }
 
-const char *DADiskGetBSDName(DADiskRef disk) { return disk ? disk->bsdName : NULL; }
-io_service_t DADiskCopyIOMedia(DADiskRef disk) { return 0; }
-
-typedef int (*DAImageVisitor)(const char *, const struct DAImageReply *, void *);
+static io_service_t DACopyImageService(const struct DAImageReply *state, Boolean whole)
+{
+	const char *name = whole ? state->wholeBSDName : state->bsdName;
+	if (!name[0] && !whole) name = state->wholeBSDName;
+	uint64_t registryID = whole ? state->wholeRegistryEntryID : state->registryEntryID;
+	io_service_t service = MACH_PORT_NULL;
+	if (registryID) {
+		CFMutableDictionaryRef matching = IORegistryEntryIDMatching(registryID);
+		if (matching) service = IOServiceGetMatchingService(kIOMasterPortDefault, matching);
+		if (service && name[0] && !DAServiceHasBSDName(service, name)) {
+			IOObjectRelease(service);
+			service = MACH_PORT_NULL;
+		}
+	}
+	if (MACH_PORT_NULL == service && name[0]) {
+		CFMutableDictionaryRef matching = IOBSDNameMatching(kIOMasterPortDefault, 0, name);
+		if (matching) service = IOServiceGetMatchingService(kIOMasterPortDefault, matching);
+		if (service && !DAServiceHasBSDName(service, name)) {
+			IOObjectRelease(service);
+			service = MACH_PORT_NULL;
+		}
+	}
+	return service;
+}
 
 static int DAVisitImages(DAImageVisitor visitor, void *context)
 {
@@ -220,12 +293,21 @@ static void DASetNumber(CFMutableDictionaryRef description, CFStringRef key, uin
 	if (number) { CFDictionarySetValue(description, key, number); CFRelease(number); }
 }
 
+static void DASetString(CFMutableDictionaryRef description, CFStringRef key, const char *value)
+{
+	if (!value || !value[0]) return;
+	CFStringRef string = CFStringCreateWithCString(NULL, value, kCFStringEncodingUTF8);
+	if (string) { CFDictionarySetValue(description, key, string); CFRelease(string); }
+}
+
 static CFDictionaryRef DAImageDescription(const struct DAImageReply *state, Boolean whole)
 {
 	CFMutableDictionaryRef description = CFDictionaryCreateMutable(NULL, 0,
 		&kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 	if (!description) return NULL;
 	Boolean volume = !whole || !state->partitioned;
+	const char *diskBSDName = whole ? state->wholeBSDName : state->bsdName;
+	if (!diskBSDName[0]) diskBSDName = state->bsdName[0] ? state->bsdName : state->wholeBSDName;
 	CFDictionarySetValue(description, kDADiskDescriptionMediaWholeKey,
 		whole ? kCFBooleanTrue : kCFBooleanFalse);
 	CFDictionarySetValue(description, kDADiskDescriptionMediaLeafKey,
@@ -234,16 +316,41 @@ static CFDictionaryRef DAImageDescription(const struct DAImageReply *state, Bool
 	CFDictionarySetValue(description, kDADiskDescriptionMediaWritableKey, kCFBooleanFalse);
 	DASetNumber(description, kDADiskDescriptionMediaSizeKey,
 		whole ? state->imageSize : state->partitionSize);
-	if (volume) {
-		CFDictionarySetValue(description, kDADiskDescriptionVolumeMountableKey, kCFBooleanTrue);
-		CFDictionarySetValue(description, kDADiskDescriptionVolumeKindKey, CFSTR("hfs"));
-		CFDictionarySetValue(description, kDADiskDescriptionVolumeNetworkKey, kCFBooleanFalse);
-		CFDictionarySetValue(description, kDADiskDescriptionMediaContentKey, CFSTR("Apple_HFS"));
-		if (state->mountID && state->mount[0]) {
-			CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL,
-				(const UInt8 *)state->mount, strlen(state->mount), true);
-			if (url) { CFDictionarySetValue(description, kDADiskDescriptionVolumePathKey, url); CFRelease(url); }
-		}
+	if (state->blockSize)
+		DASetNumber(description, kDADiskDescriptionMediaBlockSizeKey, state->blockSize);
+	DASetString(description, kDADiskDescriptionMediaBSDNameKey, diskBSDName);
+	/* The producer publishes one minor for the selected data node. A whole
+	 * partitioned media has a different minor that is not in this reply. */
+	if (volume && state->deviceMinor)
+		DASetNumber(description, kDADiskDescriptionMediaBSDMinorKey, state->deviceMinor);
+	/* The producer publishes the selected partition's content; a partitioned
+	 * whole media has a different (unpublished) partition-map content. */
+	if (volume) DASetString(description, kDADiskDescriptionMediaContentKey, state->content);
+	if (!volume) {
+		CFDictionarySetValue(description, kDADiskDescriptionVolumeMountableKey, kCFBooleanFalse);
+		return description;
+	}
+	CFDictionarySetValue(description, kDADiskDescriptionVolumeMountableKey,
+		state->filesystem[0] ? kCFBooleanTrue : kCFBooleanFalse);
+	DASetString(description, kDADiskDescriptionVolumeKindKey, state->filesystem);
+	/* VolumeType is the human filesystem type, derived only from the actually
+	 * probed filesystem; the DVTDownloads consumer compares it with "APFS". */
+	if (!strcmp(state->filesystem, "apfs"))
+		DASetString(description, kDADiskDescriptionVolumeTypeKey, "APFS");
+	else if (!strcmp(state->filesystem, "hfs"))
+		DASetString(description, kDADiskDescriptionVolumeTypeKey, "HFS");
+	CFDictionarySetValue(description, kDADiskDescriptionVolumeNetworkKey, kCFBooleanFalse);
+	DASetString(description, kDADiskDescriptionVolumeNameKey, state->volumeName);
+	if (state->volumeUUID[0]) {
+		CFStringRef text = CFStringCreateWithCString(NULL, state->volumeUUID, kCFStringEncodingUTF8);
+		CFUUIDRef uuid = text ? CFUUIDCreateFromString(NULL, text) : NULL;
+		if (uuid) { CFDictionarySetValue(description, kDADiskDescriptionVolumeUUIDKey, uuid); CFRelease(uuid); }
+		if (text) CFRelease(text);
+	}
+	if (state->mountID && state->mount[0]) {
+		CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL,
+			(const UInt8 *)state->mount, strlen(state->mount), true);
+		if (url) { CFDictionarySetValue(description, kDADiskDescriptionVolumePathKey, url); CFRelease(url); }
 	}
 	return description;
 }
@@ -261,29 +368,74 @@ DADiskRef _DAImageCreateApprovalDisk(DASessionRef session, const struct DAImageR
 	return disk;
 }
 
-struct DAImageLookup {
-	const char *identity;
-	const char *mount;
-	struct DAImageReply state;
-	char socket[280];
-	Boolean found;
-	Boolean whole;
-};
-
 static int DAFindImage(const char *socket, const struct DAImageReply *reply, void *opaque)
 {
 	struct DAImageLookup *lookup = opaque;
 	char partition[DA_IMAGE_ID + 16];
 	snprintf(partition, sizeof(partition), "%s:%u", reply->identity, reply->partitionIndex);
-	Boolean whole = lookup->identity && !strcmp(lookup->identity, reply->identity);
-	Boolean child = lookup->identity && reply->partitioned && !strcmp(lookup->identity, partition);
-	Boolean mount = lookup->mount && reply->mountID && !strcmp(lookup->mount, reply->mount);
-	if (!whole && !child && !mount) return 0;
+	Boolean match = false, whole = false;
+	if (lookup->identity) {
+		if (!strcmp(lookup->identity, reply->identity)) { match = true; whole = true; }
+		else if (reply->partitioned && !strcmp(lookup->identity, partition)) { match = true; whole = false; }
+	}
+	if (!match && lookup->bsdName && lookup->bsdName[0]) {
+		if (reply->wholeBSDName[0] && !strcmp(lookup->bsdName, reply->wholeBSDName)) { match = true; whole = true; }
+		else if (reply->bsdName[0] && !strcmp(lookup->bsdName, reply->bsdName)) {
+			match = true;
+			whole = !reply->partitioned;
+		}
+	}
+	if (!match && lookup->registryID) {
+		if (reply->wholeRegistryEntryID && reply->wholeRegistryEntryID == lookup->registryID) {
+			match = true;
+			whole = true;
+		} else if (reply->registryEntryID && reply->registryEntryID == lookup->registryID) {
+			match = true;
+			whole = !reply->partitioned;
+		}
+	}
+	if (!match && lookup->mount && reply->mountID && !strcmp(lookup->mount, reply->mount)) {
+		match = true;
+		whole = !reply->partitioned;
+	}
+	if (!match) return 0;
 	lookup->state = *reply;
 	strlcpy(lookup->socket, socket, sizeof(lookup->socket));
 	lookup->found = true;
-	lookup->whole = whole || (!reply->partitioned && mount);
+	lookup->whole = whole;
 	return 1;
+}
+
+DADiskRef DADiskCreateFromIOMedia(CFAllocatorRef allocator, DASessionRef session,
+	io_service_t media)
+{
+	if (!media || MACH_PORT_NULL == media || !IOObjectConformsTo(media, kIOMediaClass))
+		return NULL;
+	CFTypeRef value = IORegistryEntryCreateCFProperty(media, CFSTR("BSD Name"), NULL, 0);
+	if (!value || CFGetTypeID(value) != CFStringGetTypeID()) {
+		if (value) CFRelease(value);
+		return NULL;
+	}
+	char bsdName[128];
+	Boolean converted = CFStringGetCString(value, bsdName, sizeof(bsdName), kCFStringEncodingUTF8);
+	CFRelease(value);
+	if (!converted) return NULL;
+	struct DAImageLookup lookup = { .bsdName = bsdName };
+	if (DAVisitImages(DAFindImage, &lookup) || !lookup.found) return NULL;
+	char identity[DA_IMAGE_ID + 16];
+	if (lookup.whole) strlcpy(identity, lookup.state.identity, sizeof(identity));
+	else snprintf(identity, sizeof(identity), "%s:%u",
+		lookup.state.identity, lookup.state.partitionIndex);
+	const char *diskBSDName = lookup.whole ? lookup.state.wholeBSDName : lookup.state.bsdName;
+	return DACreateDisk(allocator, session, identity, diskBSDName[0] ? diskBSDName : bsdName);
+}
+
+io_service_t DADiskCopyIOMedia(DADiskRef disk)
+{
+	if (!disk) return MACH_PORT_NULL;
+	struct DAImageLookup lookup = { .identity = disk->identity };
+	if (DAVisitImages(DAFindImage, &lookup) || !lookup.found) return MACH_PORT_NULL;
+	return DACopyImageService(&lookup.state, lookup.whole);
 }
 
 CFDictionaryRef DADiskCopyDescription(DADiskRef disk)
@@ -309,7 +461,9 @@ DADiskRef DADiskCreateFromVolumePath(CFAllocatorRef allocator, DASessionRef sess
 	if (lookup.state.partitioned)
 		snprintf(identity, sizeof(identity), "%s:%u", lookup.state.identity, lookup.state.partitionIndex);
 	else strlcpy(identity, lookup.state.identity, sizeof(identity));
-	return DACreateDisk(allocator, session, identity, NULL);
+	const char *bsdName = lookup.state.bsdName[0] ? lookup.state.bsdName :
+		(lookup.state.wholeBSDName[0] ? lookup.state.wholeBSDName : NULL);
+	return DACreateDisk(allocator, session, identity, bsdName);
 }
 
 DADiskRef DADiskCopyWholeDisk(DADiskRef disk)
@@ -317,7 +471,8 @@ DADiskRef DADiskCopyWholeDisk(DADiskRef disk)
 	if (!disk) return NULL;
 	struct DAImageLookup lookup = { .identity = disk->identity };
 	if (DAVisitImages(DAFindImage, &lookup) || !lookup.found) return NULL;
-	return DACreateDisk(CFGetAllocator(disk), disk->session, lookup.state.identity, NULL);
+	const char *bsdName = lookup.state.wholeBSDName[0] ? lookup.state.wholeBSDName : NULL;
+	return DACreateDisk(CFGetAllocator(disk), disk->session, lookup.state.identity, bsdName);
 }
 
 struct DAImageEnumeration { DASessionRef session; CFMutableArrayRef disks; };
@@ -329,7 +484,10 @@ static int DAAppendImage(const char *socket, const struct DAImageReply *state, v
 		char identity[DA_IMAGE_ID + 16];
 		if (child) snprintf(identity, sizeof(identity), "%s:%u", state->identity, state->partitionIndex);
 		else strlcpy(identity, state->identity, sizeof(identity));
-		DADiskRef disk = DACreateDisk(NULL, enumeration->session, identity, NULL);
+		const char *bsdName = child ? state->bsdName : state->wholeBSDName;
+		if (!bsdName[0]) bsdName = child ? state->wholeBSDName : state->bsdName;
+		DADiskRef disk = DACreateDisk(NULL, enumeration->session, identity,
+			bsdName[0] ? bsdName : NULL);
 		if (!disk) return -ENOMEM;
 		disk->snapshot = DAImageDescription(state, !child);
 		if (!disk->snapshot) { CFRelease(disk); return -ENOMEM; }

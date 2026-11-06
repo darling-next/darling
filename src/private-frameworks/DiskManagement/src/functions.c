@@ -25,3 +25,9 @@ __attribute__((constructor)) static void initme(void) {
 }
 void* DMLocalizedUserErrorString(void) { if (verbose) puts("STUB: DMLocalizedUserErrorString called"); return NULL; }
 void* DMUnlocalizedTechnicalErrorString(void) { if (verbose) puts("STUB: DMUnlocalizedTechnicalErrorString called"); return NULL; }
+/* Native metadata and the retained DVTDownloads/simdiskimaged call sites bind
+ * this as an object-returning function taking one int in edi and accept a nil
+ * result (they build their own richer error in that case). No error domain or
+ * mapping evidence exists, so returning a synthetic NSError here would invent
+ * semantics. */
+void* DMNSError(int error) { (void)error; return NULL; }

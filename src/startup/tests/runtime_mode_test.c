@@ -1728,9 +1728,13 @@ static void require_same_file(int directory_fd, const char* left,
  */
 static void test_rootless_namespace_layout(void)
 {
-	char root[] = "/tmp/darling-prefix-namespace-test.XXXXXX";
+	const char* state_root = getenv("DW_STATE_ROOT");
+	require(state_root != NULL, "DW_STATE_ROOT is required for namespace fixtures");
+	char root[4096];
+	require(snprintf(root, sizeof(root), "%s/prefix-namespace.XXXXXX",
+			state_root) < (int)sizeof(root), "namespace fixture path is too long");
 	char* directory = mkdtemp(root);
-	require(directory != NULL, "mkdtemp namespace fixture");
+	require(directory != NULL, "create namespace fixture");
 	char prefix[2048];
 	snprintf(prefix, sizeof(prefix), "%s/prefix", directory);
 
@@ -1755,6 +1759,46 @@ static void test_rootless_namespace_layout(void)
 	require(fstatat(created->directory_fd, "var/tmp", &status, 0) == 0 &&
 			S_ISDIR(status.st_mode),
 		"standardized /var/tmp does not resolve to a directory");
+
+	require(fstatat(created->directory_fd, "dev", &status,
+			AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(status.st_mode),
+		"rootless /dev is not a retained directory namespace");
+	int device_fd = openat(created->directory_fd, "dev",
+		O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	require(device_fd >= 0, "cannot retain rootless /dev");
+	struct stat retained;
+	require(fstat(device_fd, &retained) == 0 &&
+			status.st_dev == retained.st_dev && status.st_ino == retained.st_ino,
+		"/dev directory descriptor names a different object");
+	close(device_fd);
+
+	/* Simulate an idle prefix produced by the prior runtime. */
+	require(unlinkat(created->directory_fd, "dev", AT_REMOVEDIR) == 0 &&
+			symlinkat("/Volumes/SystemRoot/dev", created->directory_fd, "dev") == 0,
+		"create legacy product device namespace");
+	char error[512] = {0};
+	require(darling_runtime_prefix_prepare(created,
+			DARLING_RUNTIME_MODE_ROOTLESS_EUNION, "tester", getuid(), getgid(),
+			&result, error, sizeof(error)) == 0, error);
+	require(fstatat(created->directory_fd, "dev", &status,
+			AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(status.st_mode),
+		"legacy device namespace was not migrated");
+
+	/* A different symlink is not ours to replace, even with the same owner. */
+	require(unlinkat(created->directory_fd, "dev", AT_REMOVEDIR) == 0 &&
+			symlinkat("/etc", created->directory_fd, "dev") == 0,
+		"create foreign device namespace");
+	require(fstatat(created->directory_fd, "dev", &retained,
+			AT_SYMLINK_NOFOLLOW) == 0, "inspect foreign namespace");
+	require(darling_runtime_prefix_prepare(created,
+			DARLING_RUNTIME_MODE_ROOTLESS_EUNION, "tester", getuid(), getgid(),
+			&result, error, sizeof(error)) != 0,
+		"foreign device namespace was accepted");
+	require(fstatat(created->directory_fd, "dev", &status,
+			AT_SYMLINK_NOFOLLOW) == 0 &&
+			status.st_dev == retained.st_dev && status.st_ino == retained.st_ino,
+		"rejected namespace changed its existing object");
+	require_symlink_target(created->directory_fd, "dev", "/etc");
 
 	darling_runtime_mode_close_prefix(created);
 	remove_fixture_tree(directory);

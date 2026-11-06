@@ -42,11 +42,18 @@ owned copies of XPC properties; the internal-build accessor returns a boolean.
 Service enumeration and heartbeat use the device endpoint. Missing broker
 services remain errors or terminal browser callbacks, not synthetic devices.
 
-DiskArbitration separates image attachment from filesystem mounting.
-`DADiskUnmount` honors unmount approvals and retains the opened image for
-remounting; `DADiskEject` releases it. The read-only HFS image backend rejects
-force-unmount and does not publish BSD devices or IOMedia. It is not a
-DiskImages2/APFS provider.
+DiskArbitration, DiskImages2 and DiskManagement use the same live image producer.
+Read-only guest `/dev/diskd…` and `/dev/rdiskd…` nodes serve decoded logical
+image/partition bytes through lazy Reader-backed FUSE files. Their `stat` and
+disk ioctls describe that backing; IOMedia registry IDs and notifications refer
+to the same producer. No host block nodes, privileged device modules or native
+macOS providers are required. Unmount honors approval callbacks and retains the
+attachment for remounting; eject retires it. Force-unmount remains unsupported.
+A separate namespace worker keeps device FUSE dispatchable throughout filesystem
+mount/unmount and subprocess lifecycle operations.
+The filesystem adapters support HFS/HFS+ and read-only APFS; the vendored
+libfsapfs backend rejects encrypted and sealed volumes rather than bypassing
+their checks.
 
 The CLI image installs a source-built `/usr/lib/libimg4.dylib` for generic-x86
 Cryptex chip instantiation with the version-6 ABI. Identity comes from the
@@ -67,6 +74,10 @@ The reviewed public Apple sources provide Image4 declarations/kernel registratio
 device-side TSS clients do not implement these host object/bundle operations.
 This implementation reuses Darling's OS objects, Foundation plist parser and
 `copyfile`, rather than installing native cache binaries.
+
+MobileAsset exports the `_DownloadSize` and `_UnarchivedSize` attribute keys
+and a process-local Pallas URL override register with a matching getter.
+This does not implement the MobileAsset catalog, asset store or download service.
 
 Bundled trust-anchor lookup hashes follow Security's X.501 normalization:
 only PrintableString values fold ASCII case and horizontal whitespace; other

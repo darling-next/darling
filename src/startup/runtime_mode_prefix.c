@@ -2976,6 +2976,11 @@ static int validate_complete_prefix_contents(
 	return 0;
 }
 
+static int prepare_rootless_device_directory(
+	const darling_runtime_prefix handle, bool require_idle,
+	char* error, size_t error_size
+);
+
 static int initialize_staged_prefix(
 	const darling_runtime_prefix target,
 	const struct lifecycle_names* names,
@@ -3009,6 +3014,9 @@ static int initialize_staged_prefix(
 	if (staged->parent_fd < 0 ||
 		darling_runtime_mode_setup_prefix(staged, user_name,
 			owner_uid, owner_gid, error, error_size) != 0 ||
+		(darling_runtime_mode_is_rootless(mode) &&
+		 prepare_rootless_device_directory(staged, false,
+			error, error_size) < 0) ||
 		(fchmod(stage_fd, 0755) != 0 &&
 		 prefix_error(error, error_size,
 			"cannot finalize staged prefix mode: %s",
@@ -3333,6 +3341,112 @@ static int clone_has_no_runtime_owner(
 		return prefix_error(error, error_size,
 			"runtime ownership is active or uninspectable: %s", strerror(errno));
 	return 0;
+}
+
+/*
+ * A real guest /dev retains directory-fd authority across exec. Only the old
+ * product-owned host-device symlink may be migrated, under the lifecycle lock
+ * and before any runtime owns this prefix. Exchange preserves the old entry
+ * until both retained inode identities have been checked.
+ */
+static int prepare_rootless_device_directory(
+	const darling_runtime_prefix handle, bool require_idle,
+	char* error, size_t error_size
+)
+{
+	int previous_fd = openat(handle->directory_fd, "dev",
+		O_PATH | O_NOFOLLOW | O_CLOEXEC);
+	if (previous_fd < 0)
+		return prefix_error(error, error_size,
+			"cannot open guest device namespace: %s", strerror(errno));
+	struct stat previous;
+	if (fstat(previous_fd, &previous) != 0) {
+		int saved = errno;
+		close(previous_fd);
+		errno = saved;
+		return prefix_error(error, error_size,
+			"cannot inspect guest device namespace: %s", strerror(errno));
+	}
+	if (S_ISDIR(previous.st_mode)) {
+		close(previous_fd);
+		return 0;
+	}
+	static const char old_target[] = "/Volumes/SystemRoot/dev";
+	char target[sizeof(old_target)];
+	struct stat prefix;
+	if (!S_ISLNK(previous.st_mode) ||
+		fstat(handle->directory_fd, &prefix) != 0 ||
+		previous.st_uid != prefix.st_uid ||
+		readlinkat(previous_fd, "", target, sizeof(target)) !=
+			(ssize_t)(sizeof(old_target) - 1) ||
+		memcmp(target, old_target, sizeof(old_target) - 1) != 0) {
+		close(previous_fd);
+		errno = EINVAL;
+		return prefix_error(error, error_size,
+			"guest device namespace is not a recognized product entry: %s", "dev");
+	}
+	if (require_idle &&
+		(ensure_prefix_not_running(handle, error, error_size) != 0 ||
+		 clone_has_no_runtime_owner(handle, error, error_size) != 0)) {
+		close(previous_fd);
+		return -1;
+	}
+	char temporary[64];
+	snprintf(temporary, sizeof(temporary), ".darling-dev-%ld-%lu",
+		(long)getpid(), directory_sequence++);
+	int replacement_fd = create_and_open_directory(handle->directory_fd,
+		temporary, 0755, error, error_size);
+	if (replacement_fd < 0) {
+		close(previous_fd);
+		return -1;
+	}
+	struct stat replacement;
+	int result = fstat(replacement_fd, &replacement);
+	if (result == 0)
+		result = renameat2(handle->directory_fd, temporary,
+			handle->directory_fd, "dev", RENAME_EXCHANGE);
+	if (result != 0) {
+		int saved = errno;
+		unlinkat(handle->directory_fd, temporary, AT_REMOVEDIR);
+		close(replacement_fd);
+		close(previous_fd);
+		errno = saved;
+		return prefix_error(error, error_size,
+			"cannot publish guest device namespace: %s", strerror(errno));
+	}
+	struct stat moved, published;
+	if (fstatat(handle->directory_fd, temporary, &moved,
+			AT_SYMLINK_NOFOLLOW) != 0 ||
+		fstatat(handle->directory_fd, "dev", &published,
+			AT_SYMLINK_NOFOLLOW) != 0 ||
+		moved.st_dev != previous.st_dev || moved.st_ino != previous.st_ino ||
+		published.st_dev != replacement.st_dev ||
+		published.st_ino != replacement.st_ino) {
+		if (renameat2(handle->directory_fd, temporary,
+				handle->directory_fd, "dev", RENAME_EXCHANGE) == 0 &&
+			fstatat(handle->directory_fd, temporary, &moved,
+				AT_SYMLINK_NOFOLLOW) == 0 &&
+			moved.st_dev == replacement.st_dev &&
+			moved.st_ino == replacement.st_ino)
+			unlinkat(handle->directory_fd, temporary, AT_REMOVEDIR);
+		close(replacement_fd);
+		close(previous_fd);
+		errno = ESTALE;
+		return prefix_error(error, error_size,
+			"guest device namespace changed during publication: %s", "dev");
+	}
+	result = unlinkat(handle->directory_fd, temporary, 0);
+	int saved = errno;
+	close(replacement_fd);
+	close(previous_fd);
+	errno = saved;
+	if (result != 0)
+		return prefix_error(error, error_size,
+			"cannot retire old guest device namespace: %s", strerror(errno));
+	if (fsync_directory(handle->directory_fd, "guest device namespace",
+			error, error_size) != 0)
+		return -1;
+	return 1;
 }
 
 static int clone_is_stable(
@@ -3875,6 +3989,15 @@ int darling_runtime_prefix_prepare(
 			result_code = 0;
 			break;
 		}
+	}
+	if (result_code == 0 && darling_runtime_mode_is_rootless(mode)) {
+		int migrated = prepare_rootless_device_directory(handle, true,
+			error, error_size);
+		if (migrated < 0)
+			result_code = -1;
+		else if (migrated && result != NULL &&
+			result->action == DARLING_RUNTIME_PREFIX_REUSED)
+			result->action = DARLING_RUNTIME_PREFIX_REPAIRED;
 	}
 	close(lock_fd);
 	return result_code;

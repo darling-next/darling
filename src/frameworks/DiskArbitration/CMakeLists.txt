@@ -30,4 +30,5 @@ add_framework(DiskArbitration
 	DEPENDENCIES
 		system
 		CoreFoundation
+		IOKit
 )

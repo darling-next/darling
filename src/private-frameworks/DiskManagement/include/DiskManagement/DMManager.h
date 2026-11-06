@@ -17,6 +17,34 @@ You should have received a copy of the GNU General Public License
 along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-@interface DMManager : NSObject
+#import <Foundation/Foundation.h>
+#import <DiskArbitration/DiskArbitration.h>
+
+/* The image-backed operations below are synchronous: they run the requested
+ * DiskArbitration operation on the manager's own session and return after the
+ * completion callback, or after the caller's timeout. They never report a
+ * result the backing store did not produce. */
+@interface DMManager : NSObject {
+	/* Native DiskManagement has one @-typed instance variable here. Keeping
+	 * the layout in the interface also keeps the i386 (fragile ABI) slice
+	 * buildable. */
+	id _instPriv;
+}
+
++ (instancetype)sharedManagerForThread;
+
+- (BOOL)mountDisk:(DADiskRef)disk
+	entireDisk:(BOOL)entireDisk
+	   atPath:(NSString *)path
+	 readOnly:(BOOL)readOnly
+ otherArguments:(NSArray *)otherArguments
+	  timeout:(double)timeout
+	errorDict:(NSDictionary **)errorDict;
+
+- (BOOL)unmountVolumePath:(NSString *)path
+		    force:(BOOL)force
+		errorDict:(NSDictionary **)errorDict;
+
+- (BOOL)ejectDisk:(DADiskRef)disk errorDict:(NSDictionary **)errorDict;
 
 @end

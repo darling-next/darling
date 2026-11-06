@@ -37,6 +37,9 @@
 #import <MobileAsset/MAProgressNotification.h>
 #import <MobileAsset/MAXpcConnection.h>
 
+FOUNDATION_EXPORT NSString * const ASAttributeDownloadSize;
+FOUNDATION_EXPORT NSString * const ASAttributeUnarchivedSize;
+
 void* ASEnsureDataVault(void);
 void* ASNonUserInitiatedDownloadsAllowed(void);
 void* ASServerURLForAssetType(void);
@@ -47,6 +50,7 @@ void* ASSetLogLevel(void);
 void* MACleanV1Repository(void);
 NSString *MAGetPallasAudience(NSString *assetType);
 void MAGetPallasEnabled(NSString *assetType, bool *enabled);
+NSURL *MAGetPallasUrlForType(NSString *assetType);
 void* MAMigrateAssets(void);
 void* MAPurgeAll(void);
 void* MASendRepairState(void);

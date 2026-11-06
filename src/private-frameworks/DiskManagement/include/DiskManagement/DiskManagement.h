@@ -19,6 +19,7 @@ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 
 void* DMLocalizedUserErrorString(void);
 void* DMUnlocalizedTechnicalErrorString(void);
+void* DMNSError(int error);
 
 #import <Foundation/Foundation.h>
 #import <DiskManagement/_DMListDA.h>
