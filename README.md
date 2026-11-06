@@ -42,6 +42,14 @@ owned copies of XPC properties; the internal-build accessor returns a boolean.
 Service enumeration and heartbeat use the device endpoint. Missing broker
 services remain errors or terminal browser callbacks, not synthetic devices.
 
+QuartzCore's legacy remote-layer server/client and context/host APIs connect
+source-built Darling peers through Mach IPC, carrying actual layer snapshots
+and supported image pixels. Transaction publication, invalidation and producer
+death update the hosted scene. This is a Darling protocol, not Apple's private
+render-server protocol; it does not supply native CoreSimulator surface sharing
+or render fences. See the [Cocotron contract and guest fixture](src/external/cocotron/README.md#quartzcore-remote-layers)
+for supported rendering and explicit limits.
+
 DiskArbitration, DiskImages2 and DiskManagement use the same live image producer.
 Read-only guest `/dev/diskd…` and `/dev/rdiskd…` nodes serve decoded logical
 image/partition bytes through lazy Reader-backed FUSE files. Their `stat` and
