@@ -10,7 +10,7 @@
  * __darwin_cpl3_query_property_*, expert_compute_udid. No native image is linked
  * or loaded. Fixed values below describe the virtual family, NOT the host AP.
  *
- * There is intentionally no firmware authentication or personalization API.
+ * Chip instantiation does not authenticate firmware or personalize Cryptex.
  * An instance with omitted fields is not proof of any security property.
  */
 #include <img4/chip.h>
@@ -18,6 +18,7 @@
 #include <IOKit/IOKitLib.h>
 #include <errno.h>
 #include <string.h>
+#include "chip_internal.h"
 
 struct _img4_chip {
     uint32_t identifier;
@@ -59,7 +60,16 @@ static int read_identity(io_registry_entry_t oracle, CFStringRef key,
     return error;
 }
 
-#define ORACLE_KEY(name) CFSTR("94B73556-2197-4702-82A8-3E1337DAFBFB:" name)
+int _img4_query_oracle_value(CFStringRef key, size_t width, uint64_t *value)
+{
+    io_registry_entry_t oracle = IORegistryEntryFromPath(kIOMasterPortDefault,
+                                                        "IODeviceTree:/options");
+    if (oracle == IO_OBJECT_NULL)
+        return EXDEV;
+    int error = read_identity(oracle, key, width, value);
+    IOObjectRelease(oracle);
+    return error;
+}
 
 int img4_chip_instantiate(const img4_chip_t *chip, img4_chip_instance_t *instance)
 {
@@ -85,7 +95,7 @@ int img4_chip_instantiate(const img4_chip_t *chip, img4_chip_instance_t *instanc
      * epoch, cryptex chip/type/subtype. The x86 runtime defines product class
      * 0xf0. None of these values asserts a physical machine identity.
      */
-    result.chid_cepo = 1;
+    result.chid_cepo = IMG4_GENERIC_X86_CERTIFICATE_EPOCH;
     result.chid_fchp = 0xff11;
     result.chid_type = 3;
     result.chid_styp = 0xff;
@@ -97,7 +107,7 @@ int img4_chip_instantiate(const img4_chip_t *chip, img4_chip_instance_t *instanc
     int error = 0;
     uint64_t value;
 #define READ_FIELD(field, name, width, omit) do { \
-    error = read_identity(oracle, ORACLE_KEY(name), width, &value); \
+    error = read_identity(oracle, IMG4_ORACLE_KEY(name), width, &value); \
     if (!error) { \
         result.field = value; \
         result.chid_omit &= ~(uint64_t)(omit); \

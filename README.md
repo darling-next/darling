@@ -64,10 +64,26 @@ libfsapfs backend rejects encrypted and sealed volumes rather than bypassing
 their checks.
 
 The CLI image installs a source-built `/usr/lib/libimg4.dylib` for generic-x86
-Cryptex chip instantiation with the version-6 ABI. Identity comes from the
-Image4 properties in `IODeviceTree:/options`; absent individual properties are
-omitted, and an unavailable oracle returns `EXDEV`. This does not manufacture
-device identity or provide firmware authentication or Cryptex personalization.
+Cryptex chip instantiation (version-6 ABI) and non-executable Image4 sentinel
+chain selection. Selection requires `SUBSEQUENT_STAGE` and authenticates the
+complete signed manifest against the pinned Apple Extra Content Global Root
+CA - G1, using the RSA-4096/SHA-384 DDI-global profile. It checks certificate
+signatures and CA/key-usage constraints, rejects unsupported critical extensions,
+and applies required, prohibited and pinned Image4 role properties to every
+object set. It does not authorize payloads, runtime identity, nonce/replay,
+execution, personalization or mounting.
+
+The public version-1 userspace runtime provides real allocation/logging and
+Image4 identity queries. Identity comes from `IODeviceTree:/options`; missing
+production/security state is never manufactured. Chip instantiation omits absent
+individual properties and returns `EXDEV` for an unavailable oracle; runtime
+callbacks distinguish absent properties from oracle errors. A previous
+secure-boot manifest hash is not available in this userspace runtime.
+Sentinel objects use caller-owned storage. Attaching a manifest transfers its
+deallocator without copying its bytes; destruction releases it once, and a
+replacement immediately releases the superseded attachment.
+The [guest regression](src/libimg4/tests/sentinel.c) exercises genuine and
+untrusted signatures, changed input after selection, malformed data and ownership.
 
 The source-built `/usr/lib/libcryptex.dylib` provides reference-counted attribute
 objects, lazy `Restore/BuildManifest.plist` parsing, chip/variant selection and
