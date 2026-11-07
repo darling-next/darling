@@ -8,3 +8,4 @@ _img4_firmware_attach_manifest
 _img4_firmware_select_chip
 _img4_firmware_destroy
 _darling_img4_verify_asset
+_darling_img4_verify_apfs_seal

@@ -82,6 +82,14 @@ verification, and later consumption must use exactly those bytes. This does not
 decode IM4P, select an APFS root-hash slot, or authorize chip environment,
 nonce/replay, mounting or execution; it is not Apple's firmware-evaluation API.
 
+`darling_img4_verify_apfs_seal` builds on that content proof for a bare `gtgv`
+IM4P. It authenticates the complete asset before decoding the 208-byte APFS seal
+descriptor, selects the 4096-byte-block root, and returns its SHA-256 digest and
+integrity version together. Versions 1/2, zero integrity flags and SHA-256 with
+a 32-byte digest are supported; other profiles are rejected. The consumer must
+enforce that expected version as well as the root digest. No environment,
+replay, execution or Cryptex authorization is granted by this helper.
+
 The public version-1 userspace runtime provides real allocation/logging and
 Image4 identity queries. Identity comes from `IODeviceTree:/options`; missing
 production/security state is never manufactured. Chip instantiation omits absent

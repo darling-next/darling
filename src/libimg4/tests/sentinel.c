@@ -477,6 +477,81 @@ static unsigned char *copy_input(const void *input, size_t length)
 #define ASSET_GTGV UINT32_C(0x67746776)
 #define ASSET_GINF UINT32_C(0x67696e66)
 
+
+static void apfs_seal_descriptor(void)
+{
+    static const unsigned char expected_root[32] = {
+        0xc6, 0x84, 0x69, 0xb4, 0xef, 0x9a, 0xbe, 0x23,
+        0xc8, 0x4e, 0xfc, 0x6c, 0xb2, 0xdc, 0x33, 0x9c,
+        0xb6, 0xbe, 0xfd, 0x4b, 0x6f, 0x12, 0x63, 0x2c,
+        0xbd, 0xeb, 0x3a, 0x75, 0x47, 0xb1, 0x0b, 0x04,
+    };
+    darling_img4_apfs_seal_t seal;
+    memset(&seal, 0xa5, sizeof(seal));
+    CHECK(darling_img4_verify_apfs_seal(genuine_manifest,
+        sizeof(genuine_manifest), genuine_gtgv, sizeof(genuine_gtgv),
+        4096, &seal) == 0);
+    CHECK(seal.integrity_version == 2);
+    CHECK(memcmp(seal.root_hash, expected_root, sizeof(expected_root)) == 0);
+
+    unsigned char *manifest = copy_input(genuine_manifest, sizeof(genuine_manifest));
+    unsigned char *asset = copy_input(genuine_gtgv, sizeof(genuine_gtgv));
+    /* Every failing call must preserve every output byte, including padding. */
+#define SEAL_FAILURE(m, ml, a, al, bs, rc) do { \
+        memset(&seal, 0xa5, sizeof(seal)); \
+        unsigned char before[sizeof(seal)]; \
+        memcpy(before, &seal, sizeof(seal)); \
+        CHECK(darling_img4_verify_apfs_seal((m), (ml), (a), (al), \
+            (bs), &seal) == (rc)); \
+        CHECK(memcmp(before, &seal, sizeof(seal)) == 0); \
+    } while (0)
+    const uint32_t unsupported_blocks[] = { 0, 512, 8192, 16384, UINT32_MAX };
+    for (size_t i = 0; i < sizeof(unsupported_blocks) / sizeof(unsupported_blocks[0]); i++)
+        SEAL_FAILURE(manifest, sizeof(genuine_manifest), asset,
+            sizeof(genuine_gtgv), unsupported_blocks[i], ENOTSUP);
+    /* ginf is independently signed by this ticket but is not its gtgv asset. */
+    SEAL_FAILURE(manifest, sizeof(genuine_manifest), genuine_ginf,
+        sizeof(genuine_ginf), 4096, EAUTH);
+    SEAL_FAILURE(untrusted_manifest, sizeof(untrusted_manifest), asset,
+        sizeof(genuine_gtgv), 4096, EAUTH);
+    SEAL_FAILURE(manifest, 12, asset, sizeof(genuine_gtgv), 4096, EFTYPE);
+    manifest[96] ^= 0xff; /* canonical signed BOOLEAN true -> false */
+    SEAL_FAILURE(manifest, sizeof(genuine_manifest), asset,
+        sizeof(genuine_gtgv), 4096, EAUTH);
+    manifest[96] ^= 0xff;
+    const size_t changed_bytes[] = { 0, 21, sizeof(genuine_gtgv) - 1 };
+    for (size_t i = 0; i < sizeof(changed_bytes) / sizeof(changed_bytes[0]); i++) {
+        asset[changed_bytes[i]] ^= 1;
+        SEAL_FAILURE(manifest, sizeof(genuine_manifest), asset,
+            sizeof(genuine_gtgv), 4096, EAUTH);
+        asset[changed_bytes[i]] ^= 1;
+        CHECK(darling_img4_verify_apfs_seal(manifest, sizeof(genuine_manifest),
+            asset, sizeof(genuine_gtgv), 4096, &seal) == 0);
+        CHECK(seal.integrity_version == 2);
+        CHECK(memcmp(seal.root_hash, expected_root, sizeof(expected_root)) == 0);
+    }
+    SEAL_FAILURE(manifest, sizeof(genuine_manifest), asset,
+        sizeof(genuine_gtgv) - 1, 4096, EAUTH);
+    SEAL_FAILURE(manifest, sizeof(genuine_manifest), asset + 21,
+        sizeof(genuine_gtgv) - 21, 4096, EAUTH);
+    SEAL_FAILURE(NULL, sizeof(genuine_manifest), asset,
+        sizeof(genuine_gtgv), 4096, EINVAL);
+    SEAL_FAILURE(manifest, 0, asset, sizeof(genuine_gtgv), 4096, EINVAL);
+    SEAL_FAILURE(manifest, sizeof(genuine_manifest), NULL,
+        sizeof(genuine_gtgv), 4096, EINVAL);
+    SEAL_FAILURE(manifest, sizeof(genuine_manifest), NULL, 0, 4096, EAUTH);
+    CHECK(darling_img4_verify_apfs_seal(manifest, sizeof(genuine_manifest),
+        asset, sizeof(genuine_gtgv), 4096, NULL) == EINVAL);
+#undef SEAL_FAILURE
+    /* Mutated profiles cannot pass the genuine ticket's whole-asset digest.
+     * These cases exercise public authentication, not post-auth format branches;
+     * no test root or verification override is used to pretend otherwise.
+     */
+    CHECK(memcmp(manifest, genuine_manifest, sizeof(genuine_manifest)) == 0);
+    CHECK(memcmp(asset, genuine_gtgv, sizeof(genuine_gtgv)) == 0);
+    free(asset);
+    free(manifest);
+}
 static void asset_integrity_only(void)
 {
     unsigned char *manifest = copy_input(genuine_manifest, sizeof(genuine_manifest));
@@ -736,6 +811,7 @@ static void missing_runtime_identity_preserves_output(void)
 int main(void)
 {
     asset_integrity_only();
+    apfs_seal_descriptor();
     genuine_and_mutable_input();
     signed_region_corruption(639, "manifest signature");
     signed_region_corruption(1484, "leaf RSA public key");

@@ -978,3 +978,72 @@ darling_img4_verify_asset(const void *manifest, size_t manifest_length,
     CC_SHA384_Final(actual, &context);
     return memcmp(actual, digest.content, sizeof(actual)) == 0 ? 0 : EAUTH;
 }
+
+/*
+ * Bounded gtgv reuse audit: vendored libcryptex has no payload decoder;
+ * current apfs-fuse only initializes sealed-volume fexts, and libfsapfs's
+ * format documentation supplies no gtgv/IM4P schema. Apple's public APFS
+ * repository endpoint returned 404, not proof that source does not exist.
+ * Native APFS2811.120.14 (UUID b1326ec3-44d2-34b0-843d-8c54ff18d538),
+ * _validate_payload_and_manifest / _authenticate_root_hash, is the behavioral
+ * reference, not reusable source. It authenticates firmware before comparing
+ * this 208-byte descriptor to independent integrity metadata. Its selector
+ * uses +16/+80/+144 for 4K/8K/16K; we support only 4K, without its unknown-size
+ * fallback. Native equality checks version/type/length/selected digest, NOT
+ * flags: flags zero below is our supported-profile restriction.
+ */
+static uint32_t
+img4_seal_le32(const uint8_t *bytes)
+{
+    return (uint32_t)bytes[0] | (uint32_t)bytes[1] << 8 |
+           (uint32_t)bytes[2] << 16 | (uint32_t)bytes[3] << 24;
+}
+
+int
+darling_img4_verify_apfs_seal(const void *manifest, size_t manifest_length,
+                             const void *asset, size_t asset_length,
+                             uint32_t block_size,
+                             darling_img4_apfs_seal_t *seal)
+{
+    if (seal == NULL) return EINVAL;
+    int error = darling_img4_verify_asset(manifest, manifest_length,
+        UINT32_C(0x67746776), asset, asset_length);
+    if (error != 0) return error;
+
+    /* Parse only the same immutable whole asset whose digest was verified. */
+    error = _img4_der_validate(asset, asset_length);
+    if (error != 0) return error;
+    size_t offset = 0;
+    img4_der_item_t sequence;
+    error = _img4_der_read(asset, asset_length, &offset, &sequence, 0);
+    if (error != 0) return error;
+    if (offset != asset_length || sequence.tag != ASN1_CONSTR_SEQUENCE)
+        return EFTYPE;
+    img4_der_item_t fields[4];
+    offset = 0;
+    for (size_t i = 0; i < 4; i++) {
+        error = _img4_der_read(sequence.content, sequence.content_length,
+                               &offset, &fields[i], 0);
+        if (error != 0) return error;
+    }
+    if (offset != sequence.content_length ||
+        fields[0].tag != ASN1_IA5_STRING || fields[0].content_length != 4 ||
+        memcmp(fields[0].content, "IM4P", 4) != 0 ||
+        fields[1].tag != ASN1_IA5_STRING || fields[1].content_length != 4 ||
+        memcmp(fields[1].content, "gtgv", 4) != 0 ||
+        fields[2].tag != ASN1_IA5_STRING ||
+        fields[3].tag != ASN1_OCTET_STRING || fields[3].content_length != 208)
+        return EFTYPE;
+    const uint8_t *payload = fields[3].content;
+    uint32_t version = img4_seal_le32(payload);
+    if (block_size != 4096 || (version != 1 && version != 2) ||
+        img4_seal_le32(payload + 4) != 0 ||
+        img4_seal_le32(payload + 8) != 1 ||
+        img4_seal_le32(payload + 12) != 32)
+        return ENOTSUP;
+
+    darling_img4_apfs_seal_t result = { .integrity_version = version };
+    memcpy(result.root_hash, payload + 16, sizeof(result.root_hash));
+    *seal = result;
+    return 0;
+}

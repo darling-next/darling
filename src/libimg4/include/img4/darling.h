@@ -47,6 +47,34 @@ int darling_img4_verify_asset(const void *manifest, size_t manifest_length,
                               uint32_t object_type,
                               const void *asset, size_t asset_length);
 
+typedef struct {
+    uint32_t integrity_version;
+    uint8_t root_hash[32];
+} darling_img4_apfs_seal_t;
+
+/*
+ * Authenticate the entire borrowed asset using verify_asset's pinned chain,
+ * body and role policy for the fixed signed object "gtgv", then decode its
+ * bare IM4P APFS seal descriptor. Both buffers have the same immutability and
+ * subsequent-consumption requirements as verify_asset above.
+ *
+ * Supported profile: 4096-byte blocks, integrity version 1 or 2, flags zero,
+ * hash type 1 (SHA256), digest length 32. Only the 4K slot is selected; other
+ * slots are neither searched nor required to be zero. The backend must bind
+ * BOTH returned fields to independently parsed volume integrity metadata.
+ *
+ * Zero proves authenticated content and a supported root descriptor only,
+ * NOT environment, replay, peer, mount or execution authorization.
+ * seal must be non-NULL and is left untouched on every error.
+ * Returns verify_asset's errno family, plus EFTYPE for malformed IM4P,
+ * wrong type or payload length, and ENOTSUP for unsupported valid profiles
+ * (including block size). Invalid arguments return EINVAL.
+ */
+int darling_img4_verify_apfs_seal(const void *manifest, size_t manifest_length,
+                                 const void *asset, size_t asset_length,
+                                 uint32_t block_size,
+                                 darling_img4_apfs_seal_t *seal);
+
 #ifdef __cplusplus
 }
 #endif
