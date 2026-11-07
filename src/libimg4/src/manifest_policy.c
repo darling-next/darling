@@ -262,7 +262,8 @@ img4_next_property(const img4_der_item_t *set, size_t *offset,
  * properties, so their structure and scope cannot escape validation. */
 static int
 img4_apply_constraints(const img4_der_item_t *role,
-                       const img4_der_item_t *body)
+                       const img4_der_item_t *body,
+                       img4_der_item_t *digest)
 {
     size_t ro = 0, bo = 0;
     DERTag rp = 0, bp = 0;
@@ -282,6 +283,11 @@ img4_apply_constraints(const img4_der_item_t *role,
             }
             if (value.value_tag == ASN1_CONSTR_SET) {
                 return EFTYPE;
+            }
+            if (digest != NULL &&
+                value.name == IMG4_DER_TAG_4CC('D', 'G', 'S', 'T')) {
+                if (value.value_tag != ASN1_OCTET_STRING) return EFTYPE;
+                *digest = value.value;
             }
             have_value = true;
         }
@@ -307,14 +313,23 @@ img4_apply_constraints(const img4_der_item_t *role,
         int error = img4_next_property(body, &bo, &bp, &value, false);
         if (error != 0) return error;
         if (value.value_tag == ASN1_CONSTR_SET) return EFTYPE;
+        if (digest != NULL &&
+            value.name == IMG4_DER_TAG_4CC('D', 'G', 'S', 'T')) {
+            if (value.value_tag != ASN1_OCTET_STRING) return EFTYPE;
+            *digest = value.value;
+        }
     }
     return 0;
 }
 
 int
-_img4_manifest_check_role(const void *role, size_t role_length,
-                          const void *manifest_body, size_t manifest_body_length)
+_img4_manifest_check_role_asset(const void *role, size_t role_length,
+                               const void *manifest_body,
+                               size_t manifest_body_length,
+                               uint32_t object_type,
+                               img4_der_item_t *digest)
 {
+    if (digest != NULL) memset(digest, 0, sizeof(*digest));
     int error = _img4_der_validate(role, role_length);
     if (error != 0) return error;
     error = _img4_der_validate(manifest_body, manifest_body_length);
@@ -384,20 +399,24 @@ _img4_manifest_check_role(const void *role, size_t role_length,
         if (is_manp) has_manp = true;
         else has_object = true;
         const img4_der_item_t *constraints = is_manp ? &manp : &objp;
+        bool selected = digest != NULL && !is_manp && set.name == object_type;
         error = img4_apply_constraints(
-            constraints->start != NULL ? constraints : NULL, &set.props);
+            constraints->start != NULL ? constraints : NULL, &set.props,
+            selected ? digest : NULL);
         if (error != 0) return error;
+        if (selected && digest->start == NULL) return EFTYPE;
     }
     if (!has_manp && manp.start != NULL) {
-        error = img4_apply_constraints(&manp, NULL);
+        error = img4_apply_constraints(&manp, NULL, NULL);
         if (error != 0) return error;
     }
     if (!has_object && objp.start != NULL) {
-        error = img4_apply_constraints(&objp, NULL);
+        error = img4_apply_constraints(&objp, NULL, NULL);
         if (error != 0) return error;
     }
-    return 0;
+    return digest != NULL && digest->start == NULL ? ENOENT : 0;
 }
+
 
 int
 _img4_der_read(const uint8_t *buffer, size_t length, size_t *offset,

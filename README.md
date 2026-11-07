@@ -59,9 +59,10 @@ macOS providers are required. Unmount honors approval callbacks and retains the
 attachment for remounting; eject retires it. Force-unmount remains unsupported.
 A separate namespace worker keeps device FUSE dispatchable throughout filesystem
 mount/unmount and subprocess lifecycle operations.
-The filesystem adapters support HFS/HFS+ and read-only APFS; the vendored
-libfsapfs backend rejects encrypted and sealed volumes rather than bypassing
-their checks.
+The filesystem adapters support HFS/HFS+ and read-only APFS. Unencrypted sealed
+APFS with 4096-byte blocks and SHA256 requires an independently authenticated
+seal root; encrypted or unsupported profiles remain rejected. See the
+[image backend](src/external/darling-dmg/README.md) for the trusted-root interface.
 
 The CLI image installs a source-built `/usr/lib/libimg4.dylib` for generic-x86
 Cryptex chip instantiation (version-6 ABI) and non-executable Image4 sentinel
@@ -73,6 +74,14 @@ and applies required, prohibited and pinned Image4 role properties to every
 object set. It does not authorize payloads, runtime identity, nonce/replay,
 execution, personalization or mounting.
 
+Darling's `<img4/darling.h>` adds `darling_img4_verify_asset` for a narrower
+content proof: the same pinned chain/body/role verifier binds one requested
+manifest object's 48-byte SHA384 `DGST` to the complete supplied asset, including
+its stored wrapper. Both borrowed buffers must remain immutable throughout
+verification, and later consumption must use exactly those bytes. This does not
+decode IM4P, select an APFS root-hash slot, or authorize chip environment,
+nonce/replay, mounting or execution; it is not Apple's firmware-evaluation API.
+
 The public version-1 userspace runtime provides real allocation/logging and
 Image4 identity queries. Identity comes from `IODeviceTree:/options`; missing
 production/security state is never manufactured. Chip instantiation omits absent
@@ -83,7 +92,9 @@ Sentinel objects use caller-owned storage. Attaching a manifest transfers its
 deallocator without copying its bytes; destruction releases it once, and a
 replacement immediately releases the superseded attachment.
 The [guest regression](src/libimg4/tests/sentinel.c) exercises genuine and
-untrusted signatures, changed input after selection, malformed data and ownership.
+untrusted signatures, complete asset binding, cross-object substitution,
+truncation/wrapper loss, changed input after verification, malformed data and
+ownership.
 
 The source-built `/usr/lib/libcryptex.dylib` provides reference-counted attribute
 objects, lazy `Restore/BuildManifest.plist` parsing, chip/variant selection and

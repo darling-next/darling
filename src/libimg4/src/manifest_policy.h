@@ -73,12 +73,19 @@ bool _img4_der_item_equal(const img4_der_item_t *a, const img4_der_item_t *b);
  * contents.  Every object property set in the body (not just one payload) is
  * checked against the OBJP constraints.
  *
- * Returns 0 on success, EFTYPE for malformed/ambiguous encoding, EAUTH for
- * unsupported role semantics, EACCES for a role constraint mismatch.
+ * A non-NULL digest selects object_type's DGST during the same complete MANB
+ * validation. MANP is never an asset. On success the OCTET STRING view borrows
+ * the body; no digest profile is assumed. NULL performs role validation only.
+ *
+ * Returns 0 on success, EFTYPE for malformed/ambiguous encoding or an invalid
+ * selected DGST, EAUTH for unsupported role semantics, EACCES for a constraint
+ * mismatch, and ENOENT when a requested object is absent.
  */
 __attribute__((visibility("hidden")))
-int _img4_manifest_check_role(const void *role, size_t role_length,
-                              const void *manifest_body,
-                              size_t manifest_body_length);
+int _img4_manifest_check_role_asset(const void *role, size_t role_length,
+                                    const void *manifest_body,
+                                    size_t manifest_body_length,
+                                    uint32_t object_type,
+                                    img4_der_item_t *digest);
 
 #endif /* DARLING_IMG4_MANIFEST_POLICY_H */

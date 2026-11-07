@@ -13,13 +13,17 @@
  * signature algorithms, applies standard X.509 CA/key-usage constraints, and
  * rejects unsupported critical extensions instead of ignoring them.
  *
- * This is certificate/manifest trust evaluation only.  It does not evaluate a
- * payload digest, chip environment, nonce/replay or execution authorization.
+ * The Darling-specific asset entry point additionally binds all supplied
+ * bytes to the signed object's DGST. Neither path evaluates chip environment,
+ * nonce/replay or execution authorization.
  */
 #include <errno.h>
 #include <string.h>
 #include <pthread.h>
 
+#include <limits.h>
+#include <CommonCrypto/CommonDigest.h>
+#include <img4/darling.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/SecItem.h>
 #include <Security/SecKey.h>
@@ -33,6 +37,15 @@
 
 #include "manifest.h"
 #include "trust_anchor.h"
+
+/* Bounded reuse audit for the asset binding replacement: this tree's vendored
+ * libDER/Security provide DER and RSA, not a userspace firmware evaluator.
+ * Apple XNU f6217f891ac0bb64f3d375211650a4c1ff8ca1ea declares evaluation but
+ * supplies no userspace provider; darlinghq 07c2a8 and VibeDarling b456e root
+ * trees likewise lack one. OpenCore 8d8d690 supplies BSD parsing/digest ideas,
+ * but its UEFI environment and digest overrides are not reusable here.
+ * Retain Darling's APSL libDER, pinned anchor, Security and role policy.
+ */
 
 #define IMG4_MAX_CERT_CHAIN 5u
 #define IMG4_MAX_EXTENSIONS 32u
@@ -879,8 +892,9 @@ out:
     return error;
 }
 
-int
-_img4_manifest_authenticate(const void *manifest, size_t length)
+static int
+img4_authenticate(const void *manifest, size_t length, uint32_t object_type,
+                   img4_der_item_t *digest)
 {
     img4_manifest_t parsed;
     int error = img4_parse_manifest(manifest, length, &parsed);
@@ -922,8 +936,45 @@ _img4_manifest_authenticate(const void *manifest, size_t length)
      * interpreted against the complete signed body only after the body
      * signature above has been verified.
      */
-    error = _img4_manifest_check_role(
+    error = _img4_manifest_check_role_asset(
         leaf.role.data, leaf.role.length,
-        parsed.body.start, parsed.body.total_length);
+        parsed.body.start, parsed.body.total_length, object_type, digest);
     return error;
+}
+
+int
+_img4_manifest_authenticate(const void *manifest, size_t length)
+{
+    return img4_authenticate(manifest, length, 0, NULL);
+}
+
+int
+darling_img4_verify_asset(const void *manifest, size_t manifest_length,
+                          uint32_t object_type,
+                          const void *asset, size_t asset_length)
+{
+    if (manifest == NULL || manifest_length == 0 ||
+        (asset == NULL && asset_length != 0)) {
+        return EINVAL;
+    }
+    img4_der_item_t digest;
+    int error = img4_authenticate(manifest, manifest_length, object_type,
+                                  &digest);
+    if (error != 0) return error;
+    /* Only the evidenced whole-file SHA384 profile is supported. */
+    if (digest.content_length != CC_SHA384_DIGEST_LENGTH) return ENOTSUP;
+
+    CC_SHA512_CTX context;
+    unsigned char actual[CC_SHA384_DIGEST_LENGTH];
+    CC_SHA384_Init(&context);
+    const unsigned char *bytes = asset;
+    while (asset_length != 0) {
+        CC_LONG chunk = asset_length > UINT_MAX ? UINT_MAX :
+                        (CC_LONG)asset_length;
+        CC_SHA384_Update(&context, bytes, chunk);
+        bytes += chunk;
+        asset_length -= chunk;
+    }
+    CC_SHA384_Final(actual, &context);
+    return memcmp(actual, digest.content, sizeof(actual)) == 0 ? 0 : EAUTH;
 }
