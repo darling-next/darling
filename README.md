@@ -18,6 +18,10 @@ For build instructions, visit [Darling Docs](https://docs.darlinghq.org/build-in
 With the documented host dependencies, initialized source submodules and the
 Swift Git LFS payload available, a normal production build and installation is:
 
+The Linux host also needs Rust 1.88 or newer and Cargo. The stock build compiles
+the process supervisor as a locked Rust static library; it is linked into
+`darlingserver`, not launched as a separate service.
+
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$HOME/.local/darling"
