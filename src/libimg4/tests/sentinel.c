@@ -797,6 +797,31 @@ static void missing_runtime_identity_preserves_output(void)
         IMG4_IDENTIFIER_CHMH, &digest) == ENOTSUP);
     CHECK(digest.i4d_len == 17 && digest.i4d_bytes[0] == 0x5a);
 
+    /* Current XNU assigns these ordinals after the original v1 identifiers.
+     * Runtime queries must distinguish profile-owned absence from unsupported
+     * ambient state, and must never write an invented profile identity.
+     */
+    CHECK(IMG4_IDENTIFIER_FCHP == 18 && IMG4_IDENTIFIER_TYPE == 19 &&
+          IMG4_IDENTIFIER_STYP == 20 && IMG4_IDENTIFIER_VUID == 25);
+    const img4_identifier_t profile_identifiers[] = {
+        IMG4_IDENTIFIER_FCHP, IMG4_IDENTIFIER_TYPE, IMG4_IDENTIFIER_STYP,
+    };
+    for (size_t i = 0; i < sizeof(profile_identifiers) /
+                           sizeof(profile_identifiers[0]); ++i) {
+        CHECK(runtime->i4rt_get_identifier_uint32(runtime,
+            IMG4_CHIP_CRYPTEX1_GENERIC_X86, profile_identifiers[i],
+            &integer32) == ENOENT);
+        CHECK(integer32 == 0x12345678);
+    }
+    /* No authoritative AMNM producer exists. In particular, absence of a
+     * nonce in the incoming ticket must not become AMNM=true (or false).
+     * The native expert's ENOENT fallback is policy, not a runtime value.
+     */
+    CHECK(runtime->i4rt_get_identifier_bool(runtime,
+        IMG4_CHIP_CRYPTEX1_GENERIC_X86, IMG4_IDENTIFIER_AMNM,
+        &boolean) == ENOTSUP);
+    CHECK(boolean == true);
+
     /* Exercise the live identity oracle without assuming a particular machine
      * has production fuses. Errors must not replace absent state with false.
      */

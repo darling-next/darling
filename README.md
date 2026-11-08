@@ -117,8 +117,11 @@ The public version-1 userspace runtime provides real allocation/logging and
 Image4 identity queries. Identity comes from `IODeviceTree:/options`; missing
 production/security state is never manufactured. Chip instantiation omits absent
 individual properties and returns `EXDEV` for an unavailable oracle; runtime
-callbacks distinguish absent properties from oracle errors. A previous
-secure-boot manifest hash is not available in this userspace runtime.
+callbacks distinguish absent properties from oracle errors. Profile-owned
+`FCHP`, `TYPE` and `STYP` queries return `ENOENT` without changing caller output;
+unsupported ambient identifiers, including `AMNM`, return `ENOTSUP`. Neither
+result supplies production/security state or authorizes firmware execution.
+A previous secure-boot manifest hash is not available in this userspace runtime.
 Sentinel objects use caller-owned storage. Attaching a manifest transfers its
 deallocator without copying its bytes; destruction releases it once, and a
 replacement immediately releases the superseded attachment.

@@ -118,6 +118,18 @@ static int runtime_get_uint32(const img4_runtime_t *runtime,
         *value = IMG4_GENERIC_X86_CERTIFICATE_EPOCH;
         return 0;
     }
+    /* Reuse: current apple-oss-distributions/xnu
+     * EXTERNAL_HEADERS/img4/runtime.h explicitly requires ENOENT for these
+     * profile-owned identifiers. Sibling vibedarling has only XNU declarations,
+     * not a reusable userspace provider. Do not query an ambient registry key
+     * or report the selected profile's constants as independently supplied
+     * runtime identity. ENOTSUP would incorrectly conflate this specified
+     * absence with an identifier this provider cannot implement.
+     */
+    if (identifier == IMG4_IDENTIFIER_FCHP ||
+        identifier == IMG4_IDENTIFIER_TYPE ||
+        identifier == IMG4_IDENTIFIER_STYP)
+        return ENOENT;
     CFStringRef key;
     switch (identifier) {
     case IMG4_IDENTIFIER_BORD: key = IMG4_ORACLE_KEY("ApBoardID"); break;
