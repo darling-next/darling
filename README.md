@@ -34,6 +34,13 @@ guest commands, libraries, framework links, services and runtime data (including
 ICU and Objective-C trampolines). No workspace, patch profile, deployment JSON,
 test metadata or test-only build option is required.
 
+The Mach-O startup loader captures main images and dyld into sealed memory
+files before parsing or mapping them. Header, selected fat-slice, load-command
+and segment-file bounds are checked against that same immutable capture;
+later changes to the original file cannot change those mappings. A source
+modified during capture may still produce mixed bytes. This is not signature
+verification, executable-page mutation exclusion or entitlement authority.
+
 The normal build also installs the source-built `/usr/lib/libmdns.dylib`
 client object library. This does not enable the mDNSResponder daemon.
 The CLI components also build `RemoteServiceDiscovery.framework` from its

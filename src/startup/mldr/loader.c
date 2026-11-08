@@ -57,7 +57,7 @@ void FUNCTION_NAME(int fd, bool expect_dylinker, struct load_results* lr)
 	uintptr_t slide = 0;
 	uintptr_t mmapSize = 0;
 	bool pie = false;
-	uint32_t fat_offset;
+	off_t fat_offset;
 	void* tmp_map_base = NULL;
 
 	if (!expect_dylinker)
@@ -104,7 +104,7 @@ void FUNCTION_NAME(int fd, bool expect_dylinker, struct load_results* lr)
 			struct SEGMENT_STRUCT* seg = (struct SEGMENT_STRUCT*) &cmds[p];
 
 			// Load commands are always sorted, so this will get us the maximum address.
-			if (seg->cmd == SEGMENT_COMMAND && strcmp(seg->segname, "__PAGEZERO") != 0)
+			if (seg->cmd == SEGMENT_COMMAND && strncmp(seg->segname, "__PAGEZERO", sizeof(seg->segname)) != 0)
 			{
 				if (base == -1)
 				{
@@ -176,7 +176,7 @@ no_slide:
 								// if we can't map it, assume everything is fine and the system has already made that area inaccessible
 								rv = 0;
 							} else {
-								fprintf(stderr, "Cannot mmap segment %s at %p: %s\n", seg->segname, (void*)(uintptr_t)seg->vmaddr, strerror(errno));
+								fprintf(stderr, "Cannot mmap segment %.16s at %p: %s\n", seg->segname, (void*)(uintptr_t)seg->vmaddr, strerror(errno));
 								exit(1);
 							}
 						}
@@ -193,7 +193,7 @@ no_slide:
 								// if we can't map it, assume everything is fine and the system has already made that area inaccessible
 								rv = 0;
 							} else {
-								fprintf(stderr, "Cannot mmap segment %s at %p: %s\n", seg->segname, (void*)(uintptr_t)seg->vmaddr, strerror(errno));
+								fprintf(stderr, "Cannot mmap segment %.16s at %p: %s\n", seg->segname, (void*)(uintptr_t)seg->vmaddr, strerror(errno));
 								exit(1);
 							}
 						}
@@ -216,7 +216,7 @@ no_slide:
 							// if we can't map it, assume everything is fine and the system has already made that area inaccessible
 							rv = 0;
 						} else {
-							fprintf(stderr, "Cannot mmap segment %s at %p: %s\n", seg->segname, (void*)(uintptr_t)seg->vmaddr, strerror(errno));
+							fprintf(stderr, "Cannot mmap segment %.16s at %p: %s\n", seg->segname, (void*)(uintptr_t)seg->vmaddr, strerror(errno));
 							exit(1);
 						}
 					}
@@ -228,13 +228,11 @@ no_slide:
 				if (seg->vmaddr + slide + seg->vmsize > lr->vm_addr_max)
 					lr->vm_addr_max = seg->vmaddr + slide + seg->vmsize;
 
-				if (strcmp(SEG_DATA, seg->segname) == 0)
+				if (strncmp(SEG_DATA, seg->segname, sizeof(seg->segname)) == 0)
 				{
 					// Look for section named __all_image_info for GDB integration
 					struct SECTION_STRUCT* sect = (struct SECTION_STRUCT*) (seg+1);
-					struct SECTION_STRUCT* end = (struct SECTION_STRUCT*) (&cmds[p + lc->cmdsize]);
-
-					while (sect < end)
+					for (uint32_t section_index = 0; section_index < seg->nsects; ++section_index)
 					{
 						if (strncmp(sect->sectname, "__all_image_info", 16) == 0)
 						{

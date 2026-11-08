@@ -52,6 +52,7 @@ static void mldr_diagf(const char* fmt, ...); // see the definition
 #include <endian.h>
 #include "commpage.h"
 #include "loader.h"
+#include "image_snapshot.h"
 // perf#30: select the ring definitions in the shared header BEFORE the first include of it, so the
 // bootstrap can see both the process-control ABI and the ring control block from one include.
 #define DSERVER_RING_TRANSPORT 1
@@ -99,7 +100,7 @@ static void load64(int fd, bool expect_dylinker, struct load_results* lr);
 static void reexec32(char** argv);
 #endif
 static void load32(int fd, bool expect_dylinker, struct load_results* lr);
-static void load_fat(int fd, cpu_type_t cpu, bool expect_dylinker, char** argv, struct load_results* lr);
+static void load_fat(int fd, uint64_t image_size, cpu_type_t cpu, bool expect_dylinker, char** argv, struct load_results* lr);
 static void load(const char* path, cpu_type_t cpu, bool expect_dylinker, char** argv, struct load_results* lr);
 static int native_prot(int prot);
 static void setup_space(struct load_results* lr, bool is_64_bit);
@@ -765,8 +766,9 @@ void load(const char* path, cpu_type_t forced_arch, bool expect_dylinker, char**
 {
 	int fd;
 	uint32_t magic;
+	uint64_t image_size;
 
-	fd = open(path, O_RDONLY);
+	fd = open(path, O_RDONLY | O_CLOEXEC);
 	if (fd == -1)
 	{
 		fprintf(stderr, "Cannot open %s: %s\n", path, strerror(errno));
@@ -785,6 +787,32 @@ void load(const char* path, cpu_type_t forced_arch, bool expect_dylinker, char**
 		exit(1);
 	}
 
+	/* Classification above is only a probe. All Mach-O decisions and mappings
+	 * below use the sealed copy of this same open file, never a reopened path. */
+	if (magic == MH_MAGIC_64 || magic == MH_CIGAM_64 ||
+		magic == MH_MAGIC || magic == MH_CIGAM ||
+		magic == FAT_MAGIC || magic == FAT_CIGAM) {
+		int snapshot = mldr_capture_image(fd, &image_size);
+		int error = errno;
+		close(fd);
+		if (snapshot < 0) {
+			fprintf(stderr, "Cannot capture %s: %s\n", path, strerror(error));
+			exit(1);
+		}
+		fd = snapshot;
+		if (read(fd, &magic, sizeof(magic)) != sizeof(magic)) {
+			fprintf(stderr, "Cannot read captured header of %s\n", path);
+			exit(1);
+		}
+		if (magic == MH_MAGIC_64 || magic == MH_CIGAM_64 ||
+			magic == MH_MAGIC || magic == MH_CIGAM) {
+			if (mldr_validate_image(fd, 0, image_size,
+					magic == MH_MAGIC_64 || magic == MH_CIGAM_64) < 0) {
+				fprintf(stderr, "Malformed captured Mach-O: %s\n", path);
+				exit(1);
+			}
+		}
+	}
 	if (magic == MH_MAGIC_64 || magic == MH_CIGAM_64)
 	{
 #ifdef __x86_64__
@@ -807,7 +835,7 @@ void load(const char* path, cpu_type_t forced_arch, bool expect_dylinker, char**
 	else if (magic == FAT_MAGIC || magic == FAT_CIGAM)
 	{
 		lseek(fd, 0, SEEK_SET);
-		load_fat(fd, forced_arch, expect_dylinker, argv, lr);
+		load_fat(fd, image_size, forced_arch, expect_dylinker, argv, lr);
 	}
 	else
 	{
@@ -818,7 +846,7 @@ void load(const char* path, cpu_type_t forced_arch, bool expect_dylinker, char**
 	close(fd);
 }
 
-static void load_fat(int fd, cpu_type_t forced_arch, bool expect_dylinker, char** argv, struct load_results* lr) {
+static void load_fat(int fd, uint64_t image_size, cpu_type_t forced_arch, bool expect_dylinker, char** argv, struct load_results* lr) {
 	struct fat_header fhdr;
 	struct fat_arch best_arch = {0};
 	int bpref_index = -1;
@@ -837,6 +865,11 @@ static void load_fat(int fd, cpu_type_t forced_arch, bool expect_dylinker, char*
 
 	if (swap)
 		SWAP32(fhdr.nfat_arch);
+	if (mldr_image_range(image_size, sizeof(fhdr),
+			(uint64_t)fhdr.nfat_arch * sizeof(struct fat_arch)) < 0) {
+		fprintf(stderr, "Truncated fat architecture table.\n");
+		exit(1);
+	}
 
 	uint32_t i;
 	for (i = 0; i < fhdr.nfat_arch; i++)
@@ -901,6 +934,13 @@ static void load_fat(int fd, cpu_type_t forced_arch, bool expect_dylinker, char*
 	if (best_arch.cputype == CPU_TYPE_ANY)
 	{
 		fprintf(stderr, "No supported architecture found in fat binary.\n");
+		exit(1);
+	}
+
+	if (mldr_image_range(image_size, best_arch.offset, best_arch.size) < 0 ||
+		mldr_validate_image(fd, best_arch.offset, best_arch.size,
+			(best_arch.cputype & CPU_ARCH_ABI64) != 0) < 0) {
+		fprintf(stderr, "Malformed selected fat slice.\n");
 		exit(1);
 	}
 

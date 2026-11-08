@@ -33,6 +33,11 @@ add_executable(darling_mldr_socket_bitmap_test EXCLUDE_FROM_ALL
 target_include_directories(darling_mldr_socket_bitmap_test PRIVATE
 	"${CMAKE_CURRENT_SOURCE_DIR}")
 
+add_executable(darling_mldr_image_snapshot_test EXCLUDE_FROM_ALL
+	../tests/mldr_image_snapshot_test.c image_snapshot.c)
+target_include_directories(darling_mldr_image_snapshot_test PRIVATE
+	"${CMAKE_CURRENT_SOURCE_DIR}")
+
 add_executable(darling_anonymous_vm_native_test EXCLUDE_FROM_ALL
 	../tests/anonymous_vm_native_test.c anonymous_vm.c)
 target_include_directories(darling_anonymous_vm_native_test PRIVATE
@@ -50,6 +55,7 @@ endif()
 
 set(mldr_sources
 	mldr.c
+	image_snapshot.c
 	socket_bitmap.c
 	anonymous_vm.c
 	${mldr_guest_path_sources}
