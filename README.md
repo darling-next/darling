@@ -21,6 +21,10 @@ Swift Git LFS payload available, a normal production build and installation is:
 The Linux host also needs Rust 1.88 or newer and Cargo. The stock build compiles
 the process supervisor as a locked Rust static library; it is linked into
 `darlingserver`, not launched as a separate service.
+The Linux kernel must permit seccomp filters. The trusted launch child installs
+inherited descendant admission before guest entry: untraced clone requests are
+denied, and `clone3` is explicitly unavailable (`ENOSYS`); ordinary traced
+clone/fork/vfork remain supported. This is not code-signing authorization.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
