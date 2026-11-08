@@ -792,14 +792,16 @@ void load(const char* path, cpu_type_t forced_arch, bool expect_dylinker, char**
 	if (magic == MH_MAGIC_64 || magic == MH_CIGAM_64 ||
 		magic == MH_MAGIC || magic == MH_CIGAM ||
 		magic == FAT_MAGIC || magic == FAT_CIGAM) {
-		int snapshot = mldr_capture_image(fd, &image_size);
+		struct mldr_sealed_image snapshot;
+		int captured = mldr_capture_image(fd, &snapshot);
 		int error = errno;
 		close(fd);
-		if (snapshot < 0) {
+		if (captured < 0) {
 			fprintf(stderr, "Cannot capture %s: %s\n", path, strerror(error));
 			exit(1);
 		}
-		fd = snapshot;
+		fd = snapshot.fd;
+		image_size = snapshot.size;
 		if (read(fd, &magic, sizeof(magic)) != sizeof(magic)) {
 			fprintf(stderr, "Cannot read captured header of %s\n", path);
 			exit(1);
@@ -847,6 +849,10 @@ void load(const char* path, cpu_type_t forced_arch, bool expect_dylinker, char**
 }
 
 static void load_fat(int fd, uint64_t image_size, cpu_type_t forced_arch, bool expect_dylinker, char** argv, struct load_results* lr) {
+	if (mldr_require_sealed_image(fd) < 0) {
+		fprintf(stderr, "Fat loader requires a sealed image.\n");
+		exit(1);
+	}
 	struct fat_header fhdr;
 	struct fat_arch best_arch = {0};
 	int bpref_index = -1;

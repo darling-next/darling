@@ -35,11 +35,27 @@ ICU and Objective-C trampolines). No workspace, patch profile, deployment JSON,
 test metadata or test-only build option is required.
 
 The Mach-O startup loader captures main images and dyld into sealed memory
-files before parsing or mapping them. Header, selected fat-slice, load-command
-and segment-file bounds are checked against that same immutable capture;
-later changes to the original file cannot change those mappings. A source
-modified during capture may still produce mixed bytes. This is not signature
-verification, executable-page mutation exclusion or entitlement authority.
+files before parsing or mapping them. Capture borrows the source descriptor
+without changing its offset or lifetime. Its owned descriptor/size result is
+published only after all write/grow/shrink/seal seals are installed; failures
+leave the result unchanged and close the partial copy. Thin and fat loader
+entry points reject descriptors lacking that sealed state. Header, selected
+fat-slice, load-command and segment-file bounds use the same immutable capture.
+Later source changes cannot alter the captured file bytes. Concurrent source
+writes can still produce a mixed capture: this is not atomic source capture,
+cryptographic verification, executable-mapping integrity or entitlement authority.
+
+The opt-in native `darling_mldr_image_snapshot_test` target exercises publication,
+source ownership/offsets, mutation rejection, failure cleanup and slice bounds.
+`darling_mldr_image_snapshot_bench ITERATIONS MAIN_IMAGE DYLD_IMAGE` compares
+full-file 16-KiB `pread` against capture+seal+close using caller-selected genuine
+loader inputs. Build that opt-in target in the normal configured build tree.
+It warms each source first, alternates measurement order, and reports file bytes,
+total baseline-read/capture-read/capture-written bytes, monotonic elapsed times,
+per-image delta and ratio. Open, parsing, mapping and guest execution are excluded;
+this is warm-source-cache copy overhead, not end-to-end startup latency or a
+cold-disk measurement. Record input identities, compiler/build configuration and
+iteration count with results; no avoids-copy or performance-win claim is implied.
 
 The normal build also installs the source-built `/usr/lib/libmdns.dylib`
 client object library. This does not enable the mDNSResponder daemon.

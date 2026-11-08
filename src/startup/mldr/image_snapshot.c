@@ -37,12 +37,21 @@ static int read_exact(int fd, void *buffer, size_t size, uint64_t offset)
 	return 0;
 }
 
-int mldr_capture_image(int source_fd, uint64_t *size)
+int mldr_require_sealed_image(int fd)
+{
+	const int required = F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL;
+	int seals = fcntl(fd, F_GET_SEALS);
+	if (seals < 0) return -1;
+	if ((seals & required) != required) { errno = EPERM; return -1; }
+	return 0;
+}
+
+int mldr_capture_image(int source_fd, struct mldr_sealed_image *result)
 {
 	struct stat st;
 	char buffer[16384];
 	uint64_t offset = 0;
-	if (!size) { errno = EINVAL; return -1; }
+	if (!result) { errno = EINVAL; return -1; }
 	if (fstat(source_fd, &st) < 0) return -1;
 	if (!S_ISREG(st.st_mode) || st.st_size < 0) { errno = EINVAL; return -1; }
 	int fd = memfd_create("mldr-image", MFD_CLOEXEC | MFD_ALLOW_SEALING);
@@ -62,8 +71,8 @@ int mldr_capture_image(int source_fd, uint64_t *size)
 	}
 	if (fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL) < 0 ||
 		lseek(fd, 0, SEEK_SET) < 0) goto fail;
-	*size = offset;
-	return fd;
+	*result = (struct mldr_sealed_image){ .fd = fd, .size = offset };
+	return 0;
 fail:
 	{
 		int error = errno;

@@ -37,6 +37,14 @@ add_executable(darling_mldr_image_snapshot_test EXCLUDE_FROM_ALL
 	../tests/mldr_image_snapshot_test.c image_snapshot.c)
 target_include_directories(darling_mldr_image_snapshot_test PRIVATE
 	"${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(darling_mldr_image_snapshot_test PRIVATE _FILE_OFFSET_BITS=64)
+set_property(TARGET darling_mldr_image_snapshot_test APPEND_STRING PROPERTY
+	LINK_FLAGS " -Wl,--wrap=memfd_create -Wl,--wrap=pread64")
+
+add_executable(darling_mldr_image_snapshot_bench EXCLUDE_FROM_ALL
+	../tests/mldr_image_snapshot_bench.c image_snapshot.c)
+target_include_directories(darling_mldr_image_snapshot_bench PRIVATE
+	"${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_executable(darling_anonymous_vm_native_test EXCLUDE_FROM_ALL
 	../tests/anonymous_vm_native_test.c anonymous_vm.c)

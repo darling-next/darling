@@ -50,6 +50,10 @@ static void* compatible_mmap(void *addr, size_t length, int prot, int flags, int
 
 void FUNCTION_NAME(int fd, bool expect_dylinker, struct load_results* lr)
 {
+	if (mldr_require_sealed_image(fd) < 0) {
+		fprintf(stderr, "Mach-O loader requires a sealed image.\n");
+		exit(1);
+	}
 	struct MACH_HEADER_STRUCT header;
 	uint8_t* cmds;
 	uintptr_t entryPoint = 0, entryPointDylinker = 0;
