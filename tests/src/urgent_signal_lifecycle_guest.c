@@ -64,8 +64,9 @@
  *
  * Runner contract (registration is owned by the integration parent):
  *   guest-c fixture, compile flags -std=gnu11 -Wall -Wextra -Werror,
- *   ok-marker URGENT_SIGNAL_LIFECYCLE_PASS=1, catalog timeout 30 s, internal
- *   watchdog 10 s, no extra privileges or installed dserver tools.
+ *   ok-marker URGENT_SIGNAL_LIFECYCLE_PASS=1, per-shell-stage budget 120 s
+ *   (including cold startup/compilation), internal watchdog 10 s unchanged;
+ *   no extra privileges or installed dserver tools.
  *
  */
 
